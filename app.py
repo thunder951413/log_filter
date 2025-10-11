@@ -109,6 +109,9 @@ app.layout = dbc.Container([
 )
 def add_string(n_clicks, input_string, input_category, data):
     if n_clicks and input_string and input_category:
+        # 去除分类名称前后空格，确保唯一性
+        input_category = input_category.strip()
+        
         # 如果分类不存在，创建新分类
         if input_category not in data["categories"]:
             data["categories"][input_category] = []
@@ -153,21 +156,23 @@ def update_saved_strings(data, selected_category):
     for category, strings in filtered_categories.items():
         if strings:  # 只显示非空分类
             string_elements.append(html.H6(category, className="mt-3 mb-2"))
-            for i, string in enumerate(strings):
-                string_elements.append(
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.P(string, className="mb-0"),
-                            dbc.Button(
-                                "选择",
-                                id={"type": "select-string-btn", "index": f"{category}-{i}"},
-                                color="outline-primary",
-                                size="sm",
-                                className="mt-2"
-                            )
-                        ], className="py-2")
-                    ], className="mb-2")
-                )
+            
+            # 创建一个包含所有按钮的容器，使用d-flex和flex-wrap确保多列显示
+            button_container = html.Div(
+                className="d-flex flex-wrap gap-2",
+                children=[
+                    dbc.Button(
+                        string,
+                        id={"type": "select-string-btn", "index": f"{category}-{i}"},
+                        color="primary",
+                        outline=True,
+                        size="sm",
+                        style={"whiteSpace": "nowrap", "flexShrink": 0}
+                    ) for i, string in enumerate(strings)
+                ]
+            )
+            
+            string_elements.append(button_container)
     
     if not string_elements:
         string_elements = [html.P("没有找到字符串", className="text-muted")]
@@ -279,14 +284,27 @@ def update_selected_strings(selected_strings, data):
     display_elements = []
     for category, strings in categorized_strings.items():
         display_elements.append(html.H6(category, className="mt-3 mb-2"))
+        # 使用flex布局创建紧凑的按钮显示
+        string_buttons = []
         for string in strings:
-            display_elements.append(
-                dbc.Card([
-                    dbc.CardBody([
-                        html.P(string, className="mb-0")
-                    ], className="py-2")
-                ], className="mb-2")
+            string_buttons.append(
+                dbc.Button(
+                    string, 
+                    id={"type": "selected-string-btn", "index": string},
+                    color="primary", 
+                    size="sm",
+                    className="m-1",
+                    style={"whiteSpace": "nowrap", "flexShrink": 0}
+                )
             )
+        # 使用d-flex和flex-wrap实现多列布局
+        display_elements.append(
+            html.Div(
+                string_buttons,
+                className="d-flex flex-wrap gap-2",
+                style={"minHeight": "50px"}
+            )
+        )
     
     return display_elements
 
