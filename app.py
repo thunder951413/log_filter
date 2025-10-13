@@ -12,6 +12,29 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 # 数据存储文件路径
 DATA_FILE = 'string_data.json'
 
+# 获取所有配置文件
+CONFIG_DIR = 'configs'
+
+def ensure_config_dir():
+    """确保配置目录存在"""
+    if not os.path.exists(CONFIG_DIR):
+        os.makedirs(CONFIG_DIR)
+
+def get_config_files():
+    """获取所有配置文件列表"""
+    ensure_config_dir()
+    config_files = []
+    if os.path.exists(CONFIG_DIR):
+        for file in os.listdir(CONFIG_DIR):
+            if file.endswith('.json'):
+                config_files.append(file[:-5])  # 去掉.json后缀
+    return config_files
+
+def get_config_path(config_name):
+    """获取配置文件的完整路径"""
+    ensure_config_dir()
+    return os.path.join(CONFIG_DIR, f"{config_name}.json")
+
 # 加载已保存的数据
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -27,6 +50,9 @@ def save_data(data):
 # 初始数据
 data = load_data()
 
+# 确保配置目录存在
+ensure_config_dir()
+
 # 应用布局
 app.layout = html.Div([
     # 右上角keyword按钮 - 使用绝对定位
@@ -38,11 +64,40 @@ app.layout = html.Div([
         dbc.Tabs([
             # 第一个Tab：字符串管理
             dbc.Tab([
-                # 顶部行：包含保存/加载按钮
+                # 可折叠的配置文件管理菜单
                 dbc.Row([
                     dbc.Col([
-                        dbc.Button("保存选中字符串", id="save-selected-btn", color="success", className="mr-2"),
-                        dbc.Button("加载字符串", id="load-strings-btn", color="secondary"),
+                        dbc.Accordion([
+                            dbc.AccordionItem([
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Input(
+                                            id="config-name-input",
+                                            placeholder="输入配置文件名...",
+                                            type="text",
+                                            style={"width": "200px"}
+                                        )
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
+                                    ], width=8)
+                                ], className="mb-2"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(
+                                            id="config-selector",
+                                            placeholder="选择配置文件...",
+                                            style={"width": "200px"}
+                                        )
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
+                                        html.Span(" "),
+                                        dbc.Button("删除配置", id="delete-config-btn", color="danger"),
+                                    ], width=8)
+                                ])
+                            ], title="配置文件管理", item_id="config-management")
+                        ], flush=True, start_collapsed=True, always_open=False)
                     ], width=12, className="mb-4")
                 ]),
                 
@@ -278,6 +333,32 @@ def update_saved_strings(data, selected_category):
     
     return string_elements, category_options
 
+# 更新配置文件选择器选项
+@app.callback(
+    Output("config-selector", "options"),
+    [Input("status-alert", "children"),
+     Input("main-tabs", "active_tab")],
+    [State("status-alert", "children")],
+    prevent_initial_call=False
+)
+def update_config_selector(status_children, active_tab, current_status):
+    ctx = callback_context
+    
+    # 只有在状态提示显示保存或删除成功时才触发更新
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        if trigger_id == "status-alert" and current_status:
+            # 检查状态消息是否包含保存或删除成功的信息
+            if "成功保存" in current_status or "成功删除" in current_status:
+                config_files = get_config_files()
+                options = [{"label": config, "value": config} for config in config_files]
+                return options
+    
+    # 默认情况下也返回当前配置列表
+    config_files = get_config_files()
+    options = [{"label": config, "value": config} for config in config_files]
+    return options
+
 # 选择字符串和加载字符串回调
 @app.callback(
     Output("selected-strings", "data"),
@@ -285,9 +366,10 @@ def update_saved_strings(data, selected_category):
      Input("clear-selection-btn", "n_clicks"),
      Input("load-strings-btn", "n_clicks")],
     [State("selected-strings", "data"),
-     State("data-store", "data")]
+     State("data-store", "data"),
+     State("config-selector", "value")]
 )
-def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data):
+def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config):
     ctx = callback_context
     
     # 清除选择
@@ -295,11 +377,11 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
         return []
     
     # 加载字符串
-    if load_clicks:
-        SAVED_SELECTIONS_FILE = 'selected_strings.json'
-        if os.path.exists(SAVED_SELECTIONS_FILE):
+    if load_clicks and selected_config:
+        config_path = get_config_path(selected_config)
+        if os.path.exists(config_path):
             try:
-                with open(SAVED_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     saved_selections = json.load(f)
                 
                 # 从保存的选择中提取所有字符串
@@ -353,13 +435,16 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
      Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
      Input("clear-selection-btn", "n_clicks"),
      Input("save-selected-btn", "n_clicks"),
-     Input("load-strings-btn", "n_clicks")],
+     Input("load-strings-btn", "n_clicks"),
+     Input("delete-config-btn", "n_clicks")],
     [State("input-string", "value"),
      State("input-category", "value"),
      State("data-store", "data"),
-     State("selected-strings", "data")]
+     State("selected-strings", "data"),
+     State("config-name-input", "value"),
+     State("config-selector", "value")]
 )
-def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_clicks, input_string, input_category, data, selected_strings):
+def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_clicks, delete_clicks, input_string, input_category, data, selected_strings, config_name, selected_config):
     ctx = callback_context
     
     if not ctx.triggered:
@@ -397,6 +482,9 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
     # 保存选中字符串状态
     if "save-selected-btn" in trigger_id and save_clicks:
         if selected_strings:
+            if not config_name:
+                return "请输入配置文件名", True, "warning"
+            
             # 按分类组织选中的字符串
             categorized_strings = {}
             for category, strings in data["categories"].items():
@@ -406,21 +494,24 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
                             categorized_strings[category] = []
                         categorized_strings[category].append(string)
             
-            # 保存选中的字符串到文件
-            SAVED_SELECTIONS_FILE = 'selected_strings.json'
-            with open(SAVED_SELECTIONS_FILE, 'w', encoding='utf-8') as f:
+            # 保存选中的字符串到配置文件
+            config_path = get_config_path(config_name)
+            with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
             
-            return f"成功保存 {len(selected_strings)} 个选中的字符串到 {SAVED_SELECTIONS_FILE}", True, "success"
+            return f"成功保存 {len(selected_strings)} 个选中的字符串到配置文件 '{config_name}'", True, "success"
         else:
             return "没有选中的字符串可供保存", True, "warning"
     
     # 加载字符串状态
     if "load-strings-btn" in trigger_id and load_clicks:
-        SAVED_SELECTIONS_FILE = 'selected_strings.json'
-        if os.path.exists(SAVED_SELECTIONS_FILE):
+        if not selected_config:
+            return "请选择要加载的配置文件", True, "warning"
+        
+        config_path = get_config_path(selected_config)
+        if os.path.exists(config_path):
             try:
-                with open(SAVED_SELECTIONS_FILE, 'r', encoding='utf-8') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     saved_selections = json.load(f)
                 
                 # 从保存的选择中提取所有字符串
@@ -430,9 +521,24 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
                 
                 return f"成功加载 {len(all_strings)} 个字符串", True, "success"
             except Exception:
-                return "加载字符串失败", True, "danger"
+                return "加载配置文件失败", True, "danger"
         else:
-            return "没有保存的字符串文件", True, "warning"
+            return "配置文件不存在", True, "warning"
+    
+    # 删除配置状态
+    if "delete-config-btn" in trigger_id and delete_clicks:
+        if not selected_config:
+            return "请选择要删除的配置文件", True, "warning"
+        
+        config_path = get_config_path(selected_config)
+        if os.path.exists(config_path):
+            try:
+                os.remove(config_path)
+                return f"成功删除配置文件 '{selected_config}'", True, "success"
+            except Exception:
+                return "删除配置文件失败", True, "danger"
+        else:
+            return "配置文件不存在", True, "warning"
     
     return "", False, "success"
 
