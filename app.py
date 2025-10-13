@@ -145,9 +145,6 @@ app.layout = html.Div([
                     ], width=12, className="mb-3"),
                     dbc.Col([
                         html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
-                    ], width=12, className="mb-3"),
-                    dbc.Col([
-                        dbc.Button("删除选中字符串", id="delete-strings-btn", color="danger", className="w-100")
                     ], width=12)
                 ], className="mb-4 p-3 border rounded")
             ],
@@ -158,10 +155,19 @@ app.layout = html.Div([
         ),
         
         # 存储组件
-        dcc.Store(id="data-store", data=data),
+        dcc.Store(id="data-store"),
         dcc.Store(id="selected-strings", data=[]),
     ], fluid=True)
 ])
+
+# 初始化数据存储
+@app.callback(
+    Output("data-store", "data", allow_duplicate=True),
+    [Input("main-tabs", "active_tab")],
+    prevent_initial_call="initial_duplicate"
+)
+def initialize_data_store(active_tab):
+    return load_data()
 
 # 控制抽屉显示隐藏的回调
 @app.callback(
@@ -211,6 +217,9 @@ def add_string(n_clicks, input_string, input_category, data):
         
         # 保存数据
         save_data(data)
+        
+        # 更新全局data变量
+        globals()['data'] = load_data()
         
         return (
             data,
@@ -459,86 +468,129 @@ def update_drawer_strings(data, selected_category):
     if not strings:
         return html.P("该分类中没有字符串", className="text-muted text-center")
     
-    # 创建字符串选择列表
+    # 创建字符串按钮列表
     string_elements = []
+    string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
+    
+    # 使用flex布局创建紧凑的按钮显示
+    string_buttons = []
     for i, string in enumerate(strings):
-        string_elements.append(
-            dbc.Checklist(
-                options=[{"label": string, "value": f"{selected_category}-{i}"}],
-                value=[],
-                id={"type": "drawer-string-checkbox", "index": f"{selected_category}-{i}"},
-                switch=True,
-                className="mb-2"
+        string_buttons.append(
+            dbc.Button(
+                string, 
+                id={"type": "drawer-string-btn", "index": f"{selected_category}-{i}"},
+                color="danger", 
+                outline=True,
+                size="sm",
+                className="m-1",
+                style={"whiteSpace": "nowrap", "flexShrink": 0}
             )
         )
     
+    # 使用d-flex和flex-wrap实现多列布局
+    string_elements.append(
+        html.Div(
+            string_buttons,
+            className="d-flex flex-wrap gap-2",
+            style={"minHeight": "50px"}
+        )
+    )
+    
     return string_elements
 
-# 删除选中字符串的回调
+# 抽屉中点击字符串删除的回调
 @app.callback(
     [Output("data-store", "data", allow_duplicate=True),
      Output("drawer-strings-container", "children", allow_duplicate=True),
      Output("drawer-category-filter", "options", allow_duplicate=True),
      Output("saved-strings-container", "children", allow_duplicate=True),
      Output("category-filter", "options", allow_duplicate=True)],
-    [Input("delete-strings-btn", "n_clicks")],
-    [State("drawer-category-filter", "value"),
-     State({"type": "drawer-string-checkbox", "index": dash.ALL}, "value"),
+    [Input({"type": "drawer-string-btn", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "drawer-string-btn", "index": dash.ALL}, "id"),
+     State("drawer-category-filter", "value"),
      State("data-store", "data")],
     prevent_initial_call=True
 )
-def delete_selected_strings(n_clicks, selected_category, checkbox_values, data):
-    if not n_clicks or not selected_category or not checkbox_values:
-        return data, dash.no_update, dash.no_update
+def delete_drawer_string(n_clicks, button_ids, selected_category, data):
+    # 检查是否有按钮被点击
+    if not any(n_clicks):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
-    # 获取所有被选中的字符串索引
-    selected_indices = []
-    for checkbox_value in checkbox_values:
-        if checkbox_value:  # 如果复选框被选中
-            for value in checkbox_value:
-                # 解析字符串索引："分类名-索引"
-                category_index = value.split("-")
-                if len(category_index) == 2 and category_index[0] == selected_category:
-                    try:
-                        index = int(category_index[1])
-                        selected_indices.append(index)
-                    except ValueError:
-                        continue
+    # 找出被点击的按钮
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
-    # 按索引从大到小排序，以便从后往前删除（避免索引变化问题）
-    selected_indices.sort(reverse=True)
+    # 找出被点击的按钮索引
+    clicked_index = None
+    for i, clicks in enumerate(n_clicks):
+        if clicks is not None and clicks > 0:
+            clicked_index = i
+            break
     
-    # 删除选中的字符串
-    deleted_count = 0
-    if selected_category in data["categories"]:
-        for index in selected_indices:
-            if 0 <= index < len(data["categories"][selected_category]):
-                data["categories"][selected_category].pop(index)
-                deleted_count += 1
+    if clicked_index is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 获取被点击按钮的ID
+    button_id = button_ids[clicked_index]
+    if "index" not in button_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 解析按钮ID获取分类和索引
+    try:
+        category_index = button_id["index"].split("-")
+        if len(category_index) != 2:
+            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
         
-        # 如果分类为空，删除该分类
-        if not data["categories"][selected_category]:
-            del data["categories"][selected_category]
+        category = category_index[0]
+        index = int(category_index[1])
         
-        # 保存数据
-        save_data(data)
-    
-    # 更新显示
-    if deleted_count > 0:
-        # 重新获取当前分类的字符串
-        if selected_category in data["categories"] and data["categories"][selected_category]:
-            strings = data["categories"][selected_category]
-            string_elements = []
-            for i, string in enumerate(strings):
+        # 删除字符串
+        if category in data["categories"] and 0 <= index < len(data["categories"][category]):
+            data["categories"][category].pop(index)
+            
+            # 如果分类为空，删除该分类
+            if not data["categories"][category]:
+                del data["categories"][category]
+            
+            # 保存数据
+            save_data(data)
+            
+            # 更新全局data变量
+            globals()['data'] = load_data()
+            
+            # 更新抽屉中的字符串显示
+            if selected_category in data["categories"] and data["categories"][selected_category]:
+                strings = data["categories"][selected_category]
+                string_elements = []
+                string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
+                
+                # 使用flex布局创建紧凑的按钮显示
+                string_buttons = []
+                for i, string in enumerate(strings):
+                    string_buttons.append(
+                        dbc.Button(
+                            string, 
+                            id={"type": "drawer-string-btn", "index": f"{selected_category}-{i}"},
+                            color="danger", 
+                            outline=True,
+                            size="sm",
+                            className="m-1",
+                            style={"whiteSpace": "nowrap", "flexShrink": 0}
+                        )
+                    )
+                
+                # 使用d-flex和flex-wrap实现多列布局
                 string_elements.append(
-                    dbc.Checklist(
-                        options=[{"label": string, "value": f"{selected_category}-{i}"}],
-                        value=[],
-                        id={"type": "drawer-string-checkbox", "index": f"{selected_category}-{i}"},
-                        switch=True,
-                        className="mb-2"
+                    html.Div(
+                        string_buttons,
+                        className="d-flex flex-wrap gap-2",
+                        style={"minHeight": "50px"}
                     )
                 )
+            else:
+                # 如果分类被删除或为空，显示提示信息
+                string_elements = html.P("该分类中没有字符串", className="text-muted text-center")
             
             # 更新分类选项
             category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
@@ -574,14 +626,11 @@ def delete_selected_strings(n_clicks, selected_category, checkbox_values, data):
                                    [{"label": cat, "value": cat} for cat in data["categories"].keys()]
             
             return data, string_elements, category_options, main_string_elements, main_category_options
-        else:
-            # 如果分类被删除或为空，清空显示
-            main_category_options = [{"label": "所有分类", "value": "all"}] + \
-                                   [{"label": cat, "value": cat} for cat in data["categories"].keys()]
-            
-            return data, html.P("该分类中没有字符串", className="text-muted text-center"), [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]], [html.P("没有找到字符串", className="text-muted")], main_category_options
+        
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
-    return data, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    except (ValueError, IndexError, AttributeError):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
 # 更新选中字符串显示
 @app.callback(
