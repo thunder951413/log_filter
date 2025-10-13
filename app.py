@@ -126,6 +126,18 @@ app.layout = html.Div([
                                     value="all",
                                     clearable=False
                                 ),
+                                html.Div(className="mt-2 mb-2", children=[
+                                    dbc.Label("字符串类型:", className="me-2"),
+                                    dbc.RadioItems(
+                                        id="string-type-radio",
+                                        options=[
+                                            {"label": "保留字符串", "value": "keep"},
+                                            {"label": "过滤字符串", "value": "filter"}
+                                        ],
+                                        value="keep",
+                                        inline=True
+                                    )
+                                ]),
                                 html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
                             ])
                         ])
@@ -144,7 +156,26 @@ app.layout = html.Div([
             dbc.Tab([
                 html.Div([
                     html.H3("数据分析", className="text-center mb-4"),
-                    html.P("这是第二个标签页，用于数据分析功能。", className="text-muted text-center")
+                    
+                    # 日志过滤预览区域
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Card([
+                                dbc.CardBody([
+                                    html.H4("日志过滤预览", className="card-title"),
+                                    html.P("这里将显示基于您选择的保留和过滤字符串的日志过滤结果", className="text-muted mb-3"),
+                                    html.Div(id="log-preview-container", style={"maxHeight": "300px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px"})
+                                ])
+                            ])
+                        ], width=12)
+                    ], className="mb-4"),
+                    
+                    # 其他数据分析功能
+                    dbc.Row([
+                        dbc.Col([
+                            html.P("这是第二个标签页，用于数据分析功能。", className="text-muted text-center")
+                        ], width=12)
+                    ])
                 ], className="p-4")
             ], label="数据分析", tab_id="tab-2"),
             
@@ -289,9 +320,10 @@ def add_string(n_clicks, input_string, input_category, data):
     [Output("saved-strings-container", "children"),
      Output("category-filter", "options")],
     [Input("data-store", "data"),
-     Input("category-filter", "value")]
+     Input("category-filter", "value"),
+     Input("string-type-radio", "value")]
 )
-def update_saved_strings(data, selected_category):
+def update_saved_strings(data, selected_category, string_type):
     if not data or "categories" not in data:
         return [], [{"label": "所有分类", "value": "all"}]
     
@@ -318,7 +350,7 @@ def update_saved_strings(data, selected_category):
                     dbc.Button(
                         string,
                         id={"type": "select-string-btn", "index": f"{category}-{i}"},
-                        color="primary",
+                        color="success" if string_type == "keep" else "danger",
                         outline=True,
                         size="sm",
                         style={"whiteSpace": "nowrap", "flexShrink": 0}
@@ -367,9 +399,10 @@ def update_config_selector(status_children, active_tab, current_status):
      Input("load-strings-btn", "n_clicks")],
     [State("selected-strings", "data"),
      State("data-store", "data"),
-     State("config-selector", "value")]
+     State("config-selector", "value"),
+     State("string-type-radio", "value")]
 )
-def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config):
+def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config, string_type):
     ctx = callback_context
     
     # 清除选择
@@ -385,17 +418,51 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                     saved_selections = json.load(f)
                 
                 # 从保存的选择中提取所有字符串
-                all_strings = []
-                for category, strings in saved_selections.items():
-                    all_strings.extend(strings)
+                loaded_strings = []
+                
+                # 检查是否是新格式的配置文件（带类型信息）
+                is_new_format = False
+                for category, content in saved_selections.items():
+                    if isinstance(content, dict) and ("keep" in content or "filter" in content):
+                        is_new_format = True
+                        break
+                
+                if is_new_format:
+                    # 处理新格式的配置文件
+                    for category, content in saved_selections.items():
+                        if isinstance(content, dict):
+                            # 处理保留字符串
+                            if "keep" in content:
+                                for string in content["keep"]:
+                                    loaded_strings.append({
+                                        "text": string,
+                                        "type": "keep"
+                                    })
+                            
+                            # 处理过滤字符串
+                            if "filter" in content:
+                                for string in content["filter"]:
+                                    loaded_strings.append({
+                                        "text": string,
+                                        "type": "filter"
+                                    })
+                else:
+                    # 处理旧格式的配置文件
+                    for category, strings in saved_selections.items():
+                        for string in strings:
+                            loaded_strings.append({
+                                "text": string,
+                                "type": "keep"  # 默认为保留字符串
+                            })
                 
                 # 检查所有字符串是否都存在于当前数据中
                 valid_strings = []
                 
-                for string in all_strings:
+                for item in loaded_strings:
+                    string_text = item["text"]
                     for category, strings in data["categories"].items():
-                        if string in strings:
-                            valid_strings.append(string)
+                        if string_text in strings:
+                            valid_strings.append(item)
                             break
                 
                 return valid_strings
@@ -420,9 +487,28 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
             if category in data["categories"] and index < len(data["categories"][category]):
                 selected_string = data["categories"][category][index]
                 
+                # 为选中的字符串添加类型信息
+                string_with_type = {
+                    "text": selected_string,
+                    "type": string_type  # "keep" 或 "filter"
+                }
+                
                 # 检查是否已经选择
-                if selected_string not in selected_strings:
-                    selected_strings.append(selected_string)
+                string_exists = False
+                for i, s in enumerate(selected_strings):
+                    if isinstance(s, dict) and s["text"] == selected_string:
+                        # 更新已存在字符串的类型
+                        selected_strings[i] = string_with_type
+                        string_exists = True
+                        break
+                    elif s == selected_string:
+                        # 如果是旧格式的字符串，替换为新格式
+                        selected_strings[i] = string_with_type
+                        string_exists = True
+                        break
+                
+                if not string_exists:
+                    selected_strings.append(string_with_type)
     
     return selected_strings
 
@@ -485,14 +571,37 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
             if not config_name:
                 return "请输入配置文件名", True, "warning"
             
-            # 按分类组织选中的字符串
+            # 按分类和类型组织选中的字符串
             categorized_strings = {}
-            for category, strings in data["categories"].items():
-                for string in strings:
-                    if string in selected_strings:
-                        if category not in categorized_strings:
-                            categorized_strings[category] = []
-                        categorized_strings[category].append(string)
+            for item in selected_strings:
+                if isinstance(item, dict):
+                    string_text = item["text"]
+                    string_type = item["type"]
+                    
+                    # 查找字符串所属的分类
+                    for category, strings in data["categories"].items():
+                        if string_text in strings:
+                            # 创建分类（如果不存在）
+                            if category not in categorized_strings:
+                                categorized_strings[category] = {"keep": [], "filter": []}
+                            
+                            # 添加字符串到相应类型
+                            categorized_strings[category][string_type].append(string_text)
+                            break
+                else:
+                    # 处理旧格式的字符串（不带类型信息）
+                    string_text = item
+                    
+                    # 查找字符串所属的分类
+                    for category, strings in data["categories"].items():
+                        if string_text in strings:
+                            # 创建分类（如果不存在）
+                            if category not in categorized_strings:
+                                categorized_strings[category] = {"keep": [], "filter": []}
+                            
+                            # 默认为保留字符串
+                            categorized_strings[category]["keep"].append(string_text)
+                            break
             
             # 保存选中的字符串到配置文件
             config_path = get_config_path(config_name)
@@ -515,11 +624,42 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
                     saved_selections = json.load(f)
                 
                 # 从保存的选择中提取所有字符串
-                all_strings = []
-                for category, strings in saved_selections.items():
-                    all_strings.extend(strings)
+                loaded_strings = []
                 
-                return f"成功加载 {len(all_strings)} 个字符串", True, "success"
+                # 检查是否是新格式的配置文件（带类型信息）
+                is_new_format = False
+                for category, content in saved_selections.items():
+                    if isinstance(content, dict) and ("keep" in content or "filter" in content):
+                        is_new_format = True
+                        break
+                
+                if is_new_format:
+                    # 处理新格式的配置文件
+                    keep_count = 0
+                    filter_count = 0
+                    
+                    for category, content in saved_selections.items():
+                        if isinstance(content, dict):
+                            # 处理保留字符串
+                            if "keep" in content:
+                                keep_count += len(content["keep"])
+                            
+                            # 处理过滤字符串
+                            if "filter" in content:
+                                filter_count += len(content["filter"])
+                    
+                    if keep_count > 0 and filter_count > 0:
+                        return f"成功加载 {keep_count} 个保留字符串和 {filter_count} 个过滤字符串", True, "success"
+                    elif keep_count > 0:
+                        return f"成功加载 {keep_count} 个保留字符串", True, "success"
+                    else:
+                        return f"成功加载 {filter_count} 个过滤字符串", True, "success"
+                else:
+                    # 处理旧格式的配置文件
+                    for category, strings in saved_selections.items():
+                        loaded_strings.extend(strings)
+                    
+                    return f"成功加载 {len(loaded_strings)} 个字符串", True, "success"
             except Exception:
                 return "加载配置文件失败", True, "danger"
         else:
@@ -748,42 +888,190 @@ def update_selected_strings(selected_strings, data):
     if not selected_strings:
         return [html.P("没有选中的字符串", className="text-muted")]
     
-    # 按分类组织选中的字符串
-    categorized_strings = {}
-    for category, strings in data["categories"].items():
-        for string in strings:
-            if string in selected_strings:
-                if category not in categorized_strings:
-                    categorized_strings[category] = []
-                categorized_strings[category].append(string)
+    # 按类型和分类组织选中的字符串
+    keep_strings = []
+    filter_strings = []
+    
+    for item in selected_strings:
+        # 处理新格式的字符串（带类型信息）
+        if isinstance(item, dict):
+            string_text = item["text"]
+            string_type = item["type"]
+            
+            # 查找字符串所属的分类
+            for category, strings in data["categories"].items():
+                if string_text in strings:
+                    if string_type == "keep":
+                        keep_strings.append((category, string_text))
+                    else:
+                        filter_strings.append((category, string_text))
+                    break
+        # 处理旧格式的字符串（不带类型信息）
+        else:
+            string_text = item
+            # 查找字符串所属的分类
+            for category, strings in data["categories"].items():
+                if string_text in strings:
+                    # 默认为保留字符串
+                    keep_strings.append((category, string_text))
+                    break
     
     # 创建显示元素
     display_elements = []
-    for category, strings in categorized_strings.items():
-        display_elements.append(html.H6(category, className="mt-3 mb-2"))
-        # 使用flex布局创建紧凑的按钮显示
-        string_buttons = []
-        for string in strings:
-            string_buttons.append(
-                dbc.Button(
-                    string, 
-                    id={"type": "selected-string-btn", "index": string},
-                    color="primary", 
-                    size="sm",
-                    className="m-1",
-                    style={"whiteSpace": "nowrap", "flexShrink": 0}
+    
+    # 显示保留字符串
+    if keep_strings:
+        display_elements.append(html.H5("保留字符串", className="text-success mt-3 mb-2"))
+        categorized_keep = {}
+        for category, string_text in keep_strings:
+            if category not in categorized_keep:
+                categorized_keep[category] = []
+            categorized_keep[category].append(string_text)
+        
+        for category, strings in categorized_keep.items():
+            display_elements.append(html.H6(category, className="mt-2 mb-1"))
+            string_buttons = []
+            for string_text in strings:
+                string_buttons.append(
+                    dbc.Button(
+                        string_text, 
+                        id={"type": "selected-string-btn", "index": string_text},
+                        color="success", 
+                        size="sm",
+                        className="m-1",
+                        style={"whiteSpace": "nowrap", "flexShrink": 0}
+                    )
+                )
+            display_elements.append(
+                html.Div(
+                    string_buttons,
+                    className="d-flex flex-wrap gap-2",
+                    style={"minHeight": "50px"}
                 )
             )
-        # 使用d-flex和flex-wrap实现多列布局
-        display_elements.append(
-            html.Div(
-                string_buttons,
-                className="d-flex flex-wrap gap-2",
-                style={"minHeight": "50px"}
+    
+    # 显示过滤字符串
+    if filter_strings:
+        display_elements.append(html.H5("过滤字符串", className="text-danger mt-3 mb-2"))
+        categorized_filter = {}
+        for category, string_text in filter_strings:
+            if category not in categorized_filter:
+                categorized_filter[category] = []
+            categorized_filter[category].append(string_text)
+        
+        for category, strings in categorized_filter.items():
+            display_elements.append(html.H6(category, className="mt-2 mb-1"))
+            string_buttons = []
+            for string_text in strings:
+                string_buttons.append(
+                    dbc.Button(
+                        string_text, 
+                        id={"type": "selected-string-btn", "index": string_text},
+                        color="danger", 
+                        size="sm",
+                        className="m-1",
+                        style={"whiteSpace": "nowrap", "flexShrink": 0}
+                    )
+                )
+            display_elements.append(
+                html.Div(
+                    string_buttons,
+                    className="d-flex flex-wrap gap-2",
+                    style={"minHeight": "50px"}
+                )
             )
-        )
     
     return display_elements
+
+# 更新日志过滤预览
+@app.callback(
+    Output("log-preview-container", "children"),
+    [Input("selected-strings", "data")]
+)
+def update_log_preview(selected_strings):
+    if not selected_strings:
+        return [
+            html.P("请选择字符串以查看日志过滤预览", className="text-muted text-center"),
+            html.Pre("示例日志:\n"
+                    "2023-01-01 10:00:00 INFO [UserService] 用户登录成功\n"
+                    "2023-01-01 10:00:01 DEBUG [DatabaseService] 执行SQL查询\n"
+                    "2023-01-01 10:00:02 ERROR [PaymentService] 支付处理失败\n"
+                    "2023-01-01 10:00:03 INFO [UserService] 用户登出\n"
+                    "2023-01-01 10:00:04 WARN [CacheService] 缓存即将过期", 
+                    className="text-muted small")
+        ]
+    
+    # 提取保留字符串和过滤字符串
+    keep_strings = []
+    filter_strings = []
+    
+    for item in selected_strings:
+        if isinstance(item, dict):
+            if item["type"] == "keep":
+                keep_strings.append(item["text"])
+            else:
+                filter_strings.append(item["text"])
+        else:
+            # 旧格式字符串，默认为保留字符串
+            keep_strings.append(item)
+    
+    # 示例日志
+    sample_logs = [
+        "2023-01-01 10:00:00 INFO [UserService] 用户登录成功",
+        "2023-01-01 10:00:01 DEBUG [DatabaseService] 执行SQL查询",
+        "2023-01-01 10:00:02 ERROR [PaymentService] 支付处理失败",
+        "2023-01-01 10:00:03 INFO [UserService] 用户登出",
+        "2023-01-01 10:00:04 WARN [CacheService] 缓存即将过期",
+        "2023-01-01 10:00:05 INFO [OrderService] 创建订单成功",
+        "2023-01-01 10:00:06 ERROR [PaymentService] 支付超时",
+        "2023-01-01 10:00:07 DEBUG [UserService] 验证用户令牌",
+        "2023-01-01 10:00:08 INFO [NotificationService] 发送邮件通知",
+        "2023-01-01 10:00:09 WARN [DatabaseService] 连接池接近上限"
+    ]
+    
+    # 应用保留字符串过滤
+    filtered_logs = []
+    if keep_strings:
+        for log in sample_logs:
+            for keep_str in keep_strings:
+                if keep_str in log:
+                    filtered_logs.append(log)
+                    break
+    else:
+        filtered_logs = sample_logs
+    
+    # 应用过滤字符串
+    final_logs = []
+    if filter_strings:
+        for log in filtered_logs:
+            should_keep = True
+            for filter_str in filter_strings:
+                if filter_str in log:
+                    should_keep = False
+                    break
+            if should_keep:
+                final_logs.append(log)
+    else:
+        final_logs = filtered_logs
+    
+    # 创建预览内容
+    preview_elements = []
+    
+    # 添加过滤说明
+    if keep_strings and filter_strings:
+        preview_elements.append(html.P(f"保留包含 {', '.join(keep_strings)} 但不包含 {', '.join(filter_strings)} 的日志行", className="text-info small mb-2"))
+    elif keep_strings:
+        preview_elements.append(html.P(f"保留包含 {', '.join(keep_strings)} 的日志行", className="text-success small mb-2"))
+    elif filter_strings:
+        preview_elements.append(html.P(f"过滤掉包含 {', '.join(filter_strings)} 的日志行", className="text-danger small mb-2"))
+    
+    # 添加过滤结果
+    if final_logs:
+        preview_elements.append(html.Pre("\n".join(final_logs), className="small"))
+    else:
+        preview_elements.append(html.P("没有符合条件的日志行", className="text-warning"))
+    
+    return preview_elements
 
 # 点击已选择字符串取消选择的回调
 @app.callback(
@@ -812,9 +1100,18 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings):
                 clicked_string = button_id["index"]
                 
                 # 如果字符串在已选择列表中，则移除它
-                if clicked_string in selected_strings:
-                    selected_strings.remove(clicked_string)
-                    return selected_strings
+                # 处理新格式的字符串（带类型信息）
+                new_selected_strings = []
+                for item in selected_strings:
+                    if isinstance(item, dict):
+                        if item["text"] != clicked_string:
+                            new_selected_strings.append(item)
+                    else:
+                        # 处理旧格式的字符串（不带类型信息）
+                        if item != clicked_string:
+                            new_selected_strings.append(item)
+                
+                return new_selected_strings
     
     return selected_strings
 
