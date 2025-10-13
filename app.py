@@ -630,5 +630,38 @@ def update_selected_strings(selected_strings, data):
     
     return display_elements
 
+# 点击已选择字符串取消选择的回调
+@app.callback(
+    Output("selected-strings", "data", allow_duplicate=True),
+    [Input({"type": "selected-string-btn", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "selected-string-btn", "index": dash.ALL}, "id"),
+     State("selected-strings", "data")],
+    prevent_initial_call=True
+)
+def toggle_selected_string(n_clicks, button_ids, selected_strings):
+    ctx = callback_context
+    
+    if not ctx.triggered:
+        return selected_strings
+    
+    # 获取触发回调的按钮ID
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    # 检查是否是selected-string-btn触发的
+    if "selected-string-btn" in triggered_id:
+        # 找出哪个按钮被点击了
+        for i, clicks in enumerate(n_clicks):
+            if clicks:
+                # 获取被点击按钮的ID
+                button_id = button_ids[i]
+                clicked_string = button_id["index"]
+                
+                # 如果字符串在已选择列表中，则移除它
+                if clicked_string in selected_strings:
+                    selected_strings.remove(clicked_string)
+                    return selected_strings
+    
+    return selected_strings
+
 if __name__ == "__main__":
     app.run_server(debug=True)
