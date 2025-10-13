@@ -34,77 +34,130 @@ app.layout = html.Div([
                style={"position": "fixed",  "right": "20px", "zIndex": "1000"}),
     
     dbc.Container([
-        # 顶部行：包含保存/加载按钮
-        dbc.Row([
-            dbc.Col([
-                dbc.Button("保存选中字符串", id="save-selected-btn", color="success", className="mr-2"),
-                dbc.Button("加载字符串", id="load-strings-btn", color="secondary"),
-            ], width=12, className="mb-4")
-        ]),
-    
-    # 主内容区域 - 左右两栏
-    dbc.Row([
-        # 左侧：选中的字符串
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H4("选中的字符串", className="card-title"),
-                    dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
-                    html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
-                ])
-            ])
-        ], width=6),
+        # Tab导航
+        dbc.Tabs([
+            # 第一个Tab：字符串管理
+            dbc.Tab([
+                # 顶部行：包含保存/加载按钮
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Button("保存选中字符串", id="save-selected-btn", color="success", className="mr-2"),
+                        dbc.Button("加载字符串", id="load-strings-btn", color="secondary"),
+                    ], width=12, className="mb-4")
+                ]),
+                
+                # 主内容区域 - 左右两栏
+                dbc.Row([
+                    # 左侧：选中的字符串
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardBody([
+                                html.H4("选中的字符串", className="card-title"),
+                                dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
+                                html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
+                            ])
+                        ])
+                    ], width=6),
+                    
+                    # 右侧：已保存的字符串区域
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardBody([
+                                html.H4("已保存的字符串", className="card-title"),
+                                dcc.Dropdown(
+                                    id="category-filter",
+                                    options=[{"label": "所有分类", "value": "all"}] + 
+                                            [{"label": cat, "value": cat} for cat in data["categories"].keys()],
+                                    value="all",
+                                    clearable=False
+                                ),
+                                html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
+                            ])
+                        ])
+                    ], width=6)
+                ], className="mb-4"),
+                
+                # 状态提示
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000)
+                    ], width=12)
+                ]),
+            ], label="字符串管理", tab_id="tab-1"),
+            
+            # 第二个Tab：数据分析
+            dbc.Tab([
+                html.Div([
+                    html.H3("数据分析", className="text-center mb-4"),
+                    html.P("这是第二个标签页，用于数据分析功能。", className="text-muted text-center")
+                ], className="p-4")
+            ], label="数据分析", tab_id="tab-2"),
+            
+            # 第三个Tab：设置
+            dbc.Tab([
+                html.Div([
+                    html.H3("设置", className="text-center mb-4"),
+                    html.P("这是第三个标签页，用于系统设置。", className="text-muted text-center")
+                ], className="p-4")
+            ], label="设置", tab_id="tab-3")
+        ], id="main-tabs", active_tab="tab-1"),
         
-        # 右侧：已保存的字符串区域
-        dbc.Col([
-            dbc.Card([
-                dbc.CardBody([
-                    html.H4("已保存的字符串", className="card-title"),
-                    dcc.Dropdown(
-                        id="category-filter",
-                        options=[{"label": "所有分类", "value": "all"}] + 
-                                [{"label": cat, "value": cat} for cat in data["categories"].keys()],
-                        value="all",
-                        clearable=False
-                    ),
-                    html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
-                ])
-            ])
-        ], width=6)
-    ], className="mb-4"),
-    
-    # 状态提示
-    dbc.Row([
-        dbc.Col([
-            dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000)
-        ], width=12)
-    ]),
-    
-    # 抽屉组件
-    dbc.Offcanvas(
-        [
-            html.H4("添加字符串", className="mt-3 mb-4"),
-            dbc.Row([
-                dbc.Col([
-                    dbc.Label("字符串内容:"),
-                    dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "150px"})
-                ], width=12, className="mb-3"),
-                dbc.Col([
-                    dbc.Label("分类:"),
-                    dbc.Input(id="input-category", placeholder="输入分类名称...", type="text")
-                ], width=12, className="mb-3"),
-                dbc.Col([
-                    dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
-                ], width=12)
-            ])
-        ],
-        id="keyword-drawer",
-        placement="end",
-        is_open=False,
-        style={"width": "66.67%"}
-    ),
-    
-    # 存储组件
+        # 抽屉组件
+        dbc.Offcanvas(
+            [
+                html.H4("字符串管理", className="mt-3 mb-4"),
+                
+                # 添加字符串部分
+                html.H5("添加新字符串", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("字符串内容:"),
+                        dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        dbc.Label("分类:"),
+                        dbc.Input(
+                            id="input-category",
+                            placeholder="输入分类名称...",
+                            type="text",
+                            list="category-suggestions"
+                        ),
+                        html.Datalist(
+                            id="category-suggestions",
+                            children=[]
+                        )
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
+                    ], width=12)
+                ], className="mb-4 p-3 border rounded"),
+                
+                # 管理现有字符串部分
+                html.H5("管理现有字符串", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("选择分类:"),
+                        dcc.Dropdown(
+                            id="drawer-category-filter",
+                            placeholder="选择分类查看字符串...",
+                            clearable=True
+                        )
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        dbc.Button("删除选中字符串", id="delete-strings-btn", color="danger", className="w-100")
+                    ], width=12)
+                ], className="mb-4 p-3 border rounded")
+            ],
+            id="keyword-drawer",
+            placement="end",
+            is_open=False,
+            style={"width": "66.67%"}
+        ),
+        
+        # 存储组件
         dcc.Store(id="data-store", data=data),
         dcc.Store(id="selected-strings", data=[]),
     ], fluid=True)
@@ -120,6 +173,19 @@ def toggle_drawer(n_clicks, is_open):
     if n_clicks:
         return not is_open
     return is_open
+
+# 更新抽屉分类建议列表
+@app.callback(
+    Output("category-suggestions", "children"),
+    [Input("data-store", "data"),
+     Input("keyword-drawer", "is_open")]
+)
+def update_drawer_category_options(data, is_open):
+    if not data or "categories" not in data:
+        return []
+    
+    # 返回所有分类作为建议选项
+    return [html.Option(value=cat) for cat in data["categories"].keys()]
 
 # 添加字符串回调
 @app.callback(
@@ -353,27 +419,169 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
                 for category, strings in saved_selections.items():
                     all_strings.extend(strings)
                 
-                # 检查所有字符串是否都存在于当前数据中
-                missing_strings = []
-                for string in all_strings:
-                    found = False
-                    for category, strings in data["categories"].items():
-                        if string in strings:
-                            found = True
-                            break
-                    if not found:
-                        missing_strings.append(string)
-                
-                if missing_strings:
-                    return f"加载完成，但有 {len(missing_strings)} 个字符串在当前数据中找不到", True, "warning"
-                
                 return f"成功加载 {len(all_strings)} 个字符串", True, "success"
-            except Exception as e:
-                return f"加载失败: {str(e)}", True, "danger"
+            except Exception:
+                return "加载字符串失败", True, "danger"
         else:
-            return "没有找到保存的字符串文件", True, "danger"
+            return "没有保存的字符串文件", True, "warning"
     
     return "", False, "success"
+
+# 抽屉中更新分类选项的回调
+@app.callback(
+    Output("drawer-category-filter", "options"),
+    [Input("data-store", "data")]
+)
+def update_drawer_category_options(data):
+    if not data or "categories" not in data:
+        return []
+    
+    # 创建分类选项，只显示有字符串的分类
+    category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
+    
+    return category_options
+
+# 抽屉中显示分类字符串的回调
+@app.callback(
+    Output("drawer-strings-container", "children"),
+    [Input("data-store", "data"),
+     Input("drawer-category-filter", "value")]
+)
+def update_drawer_strings(data, selected_category):
+    if not data or "categories" not in data or not selected_category:
+        return html.P("请选择分类查看字符串", className="text-muted text-center")
+    
+    if selected_category not in data["categories"]:
+        return html.P("该分类不存在", className="text-muted text-center")
+    
+    strings = data["categories"][selected_category]
+    
+    if not strings:
+        return html.P("该分类中没有字符串", className="text-muted text-center")
+    
+    # 创建字符串选择列表
+    string_elements = []
+    for i, string in enumerate(strings):
+        string_elements.append(
+            dbc.Checklist(
+                options=[{"label": string, "value": f"{selected_category}-{i}"}],
+                value=[],
+                id={"type": "drawer-string-checkbox", "index": f"{selected_category}-{i}"},
+                switch=True,
+                className="mb-2"
+            )
+        )
+    
+    return string_elements
+
+# 删除选中字符串的回调
+@app.callback(
+    [Output("data-store", "data", allow_duplicate=True),
+     Output("drawer-strings-container", "children", allow_duplicate=True),
+     Output("drawer-category-filter", "options", allow_duplicate=True),
+     Output("saved-strings-container", "children", allow_duplicate=True),
+     Output("category-filter", "options", allow_duplicate=True)],
+    [Input("delete-strings-btn", "n_clicks")],
+    [State("drawer-category-filter", "value"),
+     State({"type": "drawer-string-checkbox", "index": dash.ALL}, "value"),
+     State("data-store", "data")],
+    prevent_initial_call=True
+)
+def delete_selected_strings(n_clicks, selected_category, checkbox_values, data):
+    if not n_clicks or not selected_category or not checkbox_values:
+        return data, dash.no_update, dash.no_update
+    
+    # 获取所有被选中的字符串索引
+    selected_indices = []
+    for checkbox_value in checkbox_values:
+        if checkbox_value:  # 如果复选框被选中
+            for value in checkbox_value:
+                # 解析字符串索引："分类名-索引"
+                category_index = value.split("-")
+                if len(category_index) == 2 and category_index[0] == selected_category:
+                    try:
+                        index = int(category_index[1])
+                        selected_indices.append(index)
+                    except ValueError:
+                        continue
+    
+    # 按索引从大到小排序，以便从后往前删除（避免索引变化问题）
+    selected_indices.sort(reverse=True)
+    
+    # 删除选中的字符串
+    deleted_count = 0
+    if selected_category in data["categories"]:
+        for index in selected_indices:
+            if 0 <= index < len(data["categories"][selected_category]):
+                data["categories"][selected_category].pop(index)
+                deleted_count += 1
+        
+        # 如果分类为空，删除该分类
+        if not data["categories"][selected_category]:
+            del data["categories"][selected_category]
+        
+        # 保存数据
+        save_data(data)
+    
+    # 更新显示
+    if deleted_count > 0:
+        # 重新获取当前分类的字符串
+        if selected_category in data["categories"] and data["categories"][selected_category]:
+            strings = data["categories"][selected_category]
+            string_elements = []
+            for i, string in enumerate(strings):
+                string_elements.append(
+                    dbc.Checklist(
+                        options=[{"label": string, "value": f"{selected_category}-{i}"}],
+                        value=[],
+                        id={"type": "drawer-string-checkbox", "index": f"{selected_category}-{i}"},
+                        switch=True,
+                        className="mb-2"
+                    )
+                )
+            
+            # 更新分类选项
+            category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
+            
+            # 更新主页面中的已保存字符串显示
+            main_string_elements = []
+            for category, strings in data["categories"].items():
+                if strings:  # 只显示非空分类
+                    main_string_elements.append(html.H6(category, className="mt-3 mb-2"))
+                    
+                    # 创建一个包含所有按钮的容器，使用d-flex和flex-wrap确保多列显示
+                    button_container = html.Div(
+                        className="d-flex flex-wrap gap-2",
+                        children=[
+                            dbc.Button(
+                                string,
+                                id={"type": "select-string-btn", "index": f"{category}-{i}"},
+                                color="primary",
+                                outline=True,
+                                size="sm",
+                                style={"whiteSpace": "nowrap", "flexShrink": 0}
+                            ) for i, string in enumerate(strings)
+                        ]
+                    )
+                    
+                    main_string_elements.append(button_container)
+            
+            if not main_string_elements:
+                main_string_elements = [html.P("没有找到字符串", className="text-muted")]
+            
+            # 更新主页面分类选项
+            main_category_options = [{"label": "所有分类", "value": "all"}] + \
+                                   [{"label": cat, "value": cat} for cat in data["categories"].keys()]
+            
+            return data, string_elements, category_options, main_string_elements, main_category_options
+        else:
+            # 如果分类被删除或为空，清空显示
+            main_category_options = [{"label": "所有分类", "value": "all"}] + \
+                                   [{"label": cat, "value": cat} for cat in data["categories"].keys()]
+            
+            return data, html.P("该分类中没有字符串", className="text-muted text-center"), [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]], [html.P("没有找到字符串", className="text-muted")], main_category_options
+    
+    return data, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
 # 更新选中字符串显示
 @app.callback(
