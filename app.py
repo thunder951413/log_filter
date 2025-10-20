@@ -5,6 +5,8 @@ import plotly.express as px
 import pandas as pd
 import json
 import os
+import subprocess
+import re
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -60,64 +62,53 @@ app.layout = html.Div([
                style={"position": "fixed",  "right": "20px", "zIndex": "1000"}),
     
     dbc.Container([
-        # Tab导航
-        dbc.Tabs([
-            # 第一个Tab：字符串管理
-            dbc.Tab([
-                # 可折叠的配置文件管理菜单
-                dbc.Row([
-                    dbc.Col([
-                        dbc.Accordion([
-                            dbc.AccordionItem([
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Input(
-                                            id="config-name-input",
-                                            placeholder="输入配置文件名...",
-                                            type="text",
-                                            style={"width": "200px"}
-                                        )
-                                    ], width=4),
-                                    dbc.Col([
-                                        dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
-                                    ], width=8)
-                                ], className="mb-2"),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(
-                                            id="config-selector",
-                                            placeholder="选择配置文件...",
-                                            style={"width": "200px"}
-                                        )
-                                    ], width=4),
-                                    dbc.Col([
-                                        dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
-                                        html.Span(" "),
-                                        dbc.Button("删除配置", id="delete-config-btn", color="danger"),
-                                    ], width=8)
-                                ])
-                            ], title="配置文件管理", item_id="config-management")
-                        ], flush=True, start_collapsed=True, always_open=False)
-                    ], width=12, className="mb-4")
-                ]),
-                
-                # 主内容区域 - 左右两栏
-                dbc.Row([
-                    # 左侧：选中的字符串
-                    dbc.Col([
-                        dbc.Card([
-                            dbc.CardBody([
+        # 原字符串管理标签页的内容
+        # 可折叠的配置文件管理菜单
+        dbc.Row([
+            dbc.Col([
+                dbc.Accordion([
+                    dbc.AccordionItem([
+                        # 原有的配置文件管理内容
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Input(
+                                    id="config-name-input",
+                                    placeholder="输入配置文件名...",
+                                    type="text",
+                                    style={"width": "200px"}
+                                )
+                            ], width=4),
+                            dbc.Col([
+                                dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
+                            ], width=8)
+                        ], className="mb-2"),
+                        dbc.Row([
+                            dbc.Col([
+                                dcc.Dropdown(
+                                    id="config-selector",
+                                    placeholder="选择配置文件...",
+                                    style={"width": "200px"}
+                                )
+                            ], width=4),
+                            dbc.Col([
+                                dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
+                                html.Span(" "),
+                                dbc.Button("删除配置", id="delete-config-btn", color="danger"),
+                            ], width=8)
+                        ], className="mb-4"),
+                        
+                        # 选中的字符串和已保存的字符串区域（并排布局）
+                        html.Hr(),
+                        dbc.Row([
+                            # 左侧：选中的字符串
+                            dbc.Col([
                                 html.H4("选中的字符串", className="card-title"),
                                 dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
                                 html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
-                            ])
-                        ])
-                    ], width=6),
-                    
-                    # 右侧：已保存的字符串区域
-                    dbc.Col([
-                        dbc.Card([
-                            dbc.CardBody([
+                            ], width=6),
+                            
+                            # 右侧：已保存的字符串
+                            dbc.Col([
                                 html.H4("已保存的字符串", className="card-title"),
                                 dcc.Dropdown(
                                     id="category-filter",
@@ -139,54 +130,133 @@ app.layout = html.Div([
                                     )
                                 ]),
                                 html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
-                            ])
+                            ], width=6)
                         ])
-                    ], width=6)
-                ], className="mb-4"),
-                
-                # 状态提示
-                dbc.Row([
-                    dbc.Col([
-                        dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000)
-                    ], width=12)
-                ]),
-            ], label="字符串管理", tab_id="tab-1"),
-            
-            # 第二个Tab：数据分析
-            dbc.Tab([
-                html.Div([
-                    html.H3("数据分析", className="text-center mb-4"),
-                    
-                    # 日志过滤预览区域
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Card([
-                                dbc.CardBody([
-                                    html.H4("日志过滤预览", className="card-title"),
-                                    html.P("这里将显示基于您选择的保留和过滤字符串的日志过滤结果", className="text-muted mb-3"),
-                                    html.Div(id="log-preview-container", style={"maxHeight": "300px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px"})
+                    ], title="配置文件管理", item_id="config-management")
+                ], flush=True, start_collapsed=True, always_open=False)
+            ], width=12, className="mb-4")
+        ]),
+        
+        # 状态提示
+        dbc.Row([
+            dbc.Col([
+                dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000)
+            ], width=12)
+        ]),
+        
+        # 日志过滤选项
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.Button(
+                            [html.I(className="bi bi-chevron-down me-2"), "日志过滤选项"],
+                            id="filter-options-toggle",
+                            className="btn btn-link text-decoration-none w-100 text-start"
+                        )
+                    ]),
+                    dbc.Collapse(
+                        dbc.CardBody([
+                            # 过滤方式选择
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("过滤方式:"),
+                                    dbc.RadioItems(
+                                        id="filter-method",
+                                        options=[
+                                            {"label": "本地文件", "value": "local"},
+                                            {"label": "远程SSH", "value": "ssh"}
+                                        ],
+                                        value="local",
+                                        inline=True
+                                    )
+                                ], width=12, className="mb-3")
+                            ]),
+                            
+                            # 本地文件选项
+                            html.Div(id="local-file-options", children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("日志文件路径:"),
+                                        dbc.Input(
+                                            id="log-file-path",
+                                            placeholder="/var/log/app.log",
+                                            type="text"
+                                        )
+                                    ], width=12, className="mb-3")
                                 ])
+                            ]),
+                            
+                            # SSH选项
+                            html.Div(id="ssh-options", children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("服务器地址:"),
+                                        dbc.Input(
+                                            id="ssh-server",
+                                            placeholder="user@server.com",
+                                            type="text"
+                                        )
+                                    ], width=6, className="mb-3"),
+                                    dbc.Col([
+                                        dbc.Label("日志文件路径:"),
+                                        dbc.Input(
+                                            id="ssh-log-path",
+                                            placeholder="/var/log/app.log",
+                                            type="text"
+                                        )
+                                    ], width=6, className="mb-3")
+                                ]),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("SSH密钥路径 (可选):"),
+                                        dbc.Input(
+                                            id="ssh-key-path",
+                                            placeholder="~/.ssh/id_rsa",
+                                            type="text"
+                                        )
+                                    ], width=12, className="mb-3")
+                                ])
+                            ], style={"display": "none"}),
+                            
+                            # 执行按钮
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100")
+                                ], width=12)
+                            ]),
+                            
+                            # 生成的命令
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("生成的命令:", className="mt-3"),
+                                    dbc.Textarea(
+                                        id="generated-command",
+                                        placeholder="这里将显示生成的grep命令...",
+                                        style={"height": "100px", "fontFamily": "monospace"}
+                                    ),
+                                    dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
+                                ], width=12)
                             ])
-                        ], width=12)
-                    ], className="mb-4"),
-                    
-                    # 其他数据分析功能
-                    dbc.Row([
-                        dbc.Col([
-                            html.P("这是第二个标签页，用于数据分析功能。", className="text-muted text-center")
-                        ], width=12)
+                        ]),
+                        id="filter-options-collapse",
+                        is_open=True
+                    )
+                ])
+            ], width=12)
+        ], className="mb-4"),
+        
+        # 日志过滤结果
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H4("日志过滤结果", className="card-title"),
+                        html.Div(id="log-filter-results", style={"maxHeight": "600px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                     ])
-                ], className="p-4")
-            ], label="数据分析", tab_id="tab-2"),
-            
-            # 第三个Tab：设置
-            dbc.Tab([
-                html.Div([
-                    html.H3("设置", className="text-center mb-4"),
-                    html.P("这是第三个标签页，用于系统设置。", className="text-muted text-center")
-                ], className="p-4")
-            ], label="设置", tab_id="tab-3")
-        ], id="main-tabs", active_tab="tab-1"),
+                ])
+            ], width=12)
+        ], className="mb-4"),
         
         # 抽屉组件
         dbc.Offcanvas(
@@ -249,10 +319,10 @@ app.layout = html.Div([
 # 初始化数据存储
 @app.callback(
     Output("data-store", "data", allow_duplicate=True),
-    [Input("main-tabs", "active_tab")],
+    [Input("status-alert", "children")],
     prevent_initial_call="initial_duplicate"
 )
-def initialize_data_store(active_tab):
+def initialize_data_store(status_children):
     return load_data()
 
 # 控制抽屉显示隐藏的回调
@@ -368,12 +438,11 @@ def update_saved_strings(data, selected_category, string_type):
 # 更新配置文件选择器选项
 @app.callback(
     Output("config-selector", "options"),
-    [Input("status-alert", "children"),
-     Input("main-tabs", "active_tab")],
+    [Input("status-alert", "children")],
     [State("status-alert", "children")],
     prevent_initial_call=False
 )
-def update_config_selector(status_children, active_tab, current_status):
+def update_config_selector(status_children, current_status):
     ctx = callback_context
     
     # 只有在状态提示显示保存或删除成功时才触发更新
@@ -983,96 +1052,6 @@ def update_selected_strings(selected_strings, data):
     
     return display_elements
 
-# 更新日志过滤预览
-@app.callback(
-    Output("log-preview-container", "children"),
-    [Input("selected-strings", "data")]
-)
-def update_log_preview(selected_strings):
-    if not selected_strings:
-        return [
-            html.P("请选择字符串以查看日志过滤预览", className="text-muted text-center"),
-            html.Pre("示例日志:\n"
-                    "2023-01-01 10:00:00 INFO [UserService] 用户登录成功\n"
-                    "2023-01-01 10:00:01 DEBUG [DatabaseService] 执行SQL查询\n"
-                    "2023-01-01 10:00:02 ERROR [PaymentService] 支付处理失败\n"
-                    "2023-01-01 10:00:03 INFO [UserService] 用户登出\n"
-                    "2023-01-01 10:00:04 WARN [CacheService] 缓存即将过期", 
-                    className="text-muted small")
-        ]
-    
-    # 提取保留字符串和过滤字符串
-    keep_strings = []
-    filter_strings = []
-    
-    for item in selected_strings:
-        if isinstance(item, dict):
-            if item["type"] == "keep":
-                keep_strings.append(item["text"])
-            else:
-                filter_strings.append(item["text"])
-        else:
-            # 旧格式字符串，默认为保留字符串
-            keep_strings.append(item)
-    
-    # 示例日志
-    sample_logs = [
-        "2023-01-01 10:00:00 INFO [UserService] 用户登录成功",
-        "2023-01-01 10:00:01 DEBUG [DatabaseService] 执行SQL查询",
-        "2023-01-01 10:00:02 ERROR [PaymentService] 支付处理失败",
-        "2023-01-01 10:00:03 INFO [UserService] 用户登出",
-        "2023-01-01 10:00:04 WARN [CacheService] 缓存即将过期",
-        "2023-01-01 10:00:05 INFO [OrderService] 创建订单成功",
-        "2023-01-01 10:00:06 ERROR [PaymentService] 支付超时",
-        "2023-01-01 10:00:07 DEBUG [UserService] 验证用户令牌",
-        "2023-01-01 10:00:08 INFO [NotificationService] 发送邮件通知",
-        "2023-01-01 10:00:09 WARN [DatabaseService] 连接池接近上限"
-    ]
-    
-    # 应用保留字符串过滤
-    filtered_logs = []
-    if keep_strings:
-        for log in sample_logs:
-            for keep_str in keep_strings:
-                if keep_str in log:
-                    filtered_logs.append(log)
-                    break
-    else:
-        filtered_logs = sample_logs
-    
-    # 应用过滤字符串
-    final_logs = []
-    if filter_strings:
-        for log in filtered_logs:
-            should_keep = True
-            for filter_str in filter_strings:
-                if filter_str in log:
-                    should_keep = False
-                    break
-            if should_keep:
-                final_logs.append(log)
-    else:
-        final_logs = filtered_logs
-    
-    # 创建预览内容
-    preview_elements = []
-    
-    # 添加过滤说明
-    if keep_strings and filter_strings:
-        preview_elements.append(html.P(f"保留包含 {', '.join(keep_strings)} 但不包含 {', '.join(filter_strings)} 的日志行", className="text-info small mb-2"))
-    elif keep_strings:
-        preview_elements.append(html.P(f"保留包含 {', '.join(keep_strings)} 的日志行", className="text-success small mb-2"))
-    elif filter_strings:
-        preview_elements.append(html.P(f"过滤掉包含 {', '.join(filter_strings)} 的日志行", className="text-danger small mb-2"))
-    
-    # 添加过滤结果
-    if final_logs:
-        preview_elements.append(html.Pre("\n".join(final_logs), className="small"))
-    else:
-        preview_elements.append(html.P("没有符合条件的日志行", className="text-warning"))
-    
-    return preview_elements
-
 # 点击已选择字符串取消选择的回调
 @app.callback(
     Output("selected-strings", "data", allow_duplicate=True),
@@ -1114,6 +1093,187 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings):
                 return new_selected_strings
     
     return selected_strings
+
+# 显示/隐藏过滤选项的回调
+@app.callback(
+    [Output("local-file-options", "style"),
+     Output("ssh-options", "style")],
+    [Input("filter-method", "value")]
+)
+def toggle_filter_options(filter_method):
+    if filter_method == "local":
+        return {}, {"display": "none"}
+    else:
+        return {"display": "none"}, {}
+
+# 生成并执行过滤命令的回调
+@app.callback(
+    [Output("generated-command", "value"),
+     Output("log-filter-results", "children")],
+    [Input("execute-filter-btn", "n_clicks")],
+    [State("selected-strings", "data"),
+     State("filter-method", "value"),
+     State("log-file-path", "value"),
+     State("ssh-server", "value"),
+     State("ssh-log-path", "value"),
+     State("ssh-key-path", "value")],
+    prevent_initial_call=True
+)
+def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_path, 
+                         ssh_server, ssh_log_path, ssh_key_path):
+    if not n_clicks:
+        return "", ""
+    
+    # 提取保留字符串和过滤字符串
+    keep_strings = []
+    filter_strings = []
+    
+    for item in selected_strings:
+        if isinstance(item, dict):
+            if item["type"] == "keep":
+                keep_strings.append(item["text"])
+            else:
+                filter_strings.append(item["text"])
+        else:
+            # 旧格式字符串，默认为保留字符串
+            keep_strings.append(item)
+    
+    # 生成grep命令
+    command_parts = []
+    
+    # 如果是SSH方式，添加SSH前缀
+    if filter_method == "ssh":
+        if not ssh_server or not ssh_log_path:
+            return "", html.P("请填写服务器地址和日志文件路径", className="text-danger text-center")
+        
+        # 添加SSH命令
+        if ssh_key_path:
+            command_parts.append(f"ssh -i {ssh_key_path} {ssh_server}")
+        else:
+            command_parts.append(f"ssh {ssh_server}")
+        
+        # 添加远程命令
+        command_parts.append("'")
+        log_path = ssh_log_path
+    else:
+        # 本地方式
+        if not log_file_path:
+            return "", html.P("请填写日志文件路径", className="text-danger text-center")
+        log_path = log_file_path
+    
+    # 构建grep命令
+    grep_parts = []
+    
+    if keep_strings:
+        # 保留字符串的grep模式
+        keep_patterns = []
+        for s in keep_strings:
+            # 转义特殊字符
+            escaped_s = re.escape(s)
+            keep_patterns.append(escaped_s)
+        
+        if len(keep_patterns) == 1:
+            grep_parts.append(f"grep -E '{keep_patterns[0]}' {log_path}")
+        else:
+            grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' {log_path}")
+    
+    if filter_strings:
+        # 过滤字符串的grep模式
+        filter_patterns = []
+        for s in filter_strings:
+            # 转义特殊字符
+            escaped_s = re.escape(s)
+            filter_patterns.append(escaped_s)
+        
+        if len(filter_patterns) == 1:
+            filter_pattern = filter_patterns[0]
+        else:
+            filter_pattern = f"({'|'.join(filter_patterns)})"
+        
+        if grep_parts:
+            grep_parts.append(f"grep -v -E '{filter_pattern}'")
+        else:
+            grep_parts.append(f"grep -v -E '{filter_pattern}' {log_path}")
+    
+    # 如果没有选择任何字符串，直接显示文件内容
+    if not grep_parts:
+        command_parts.append(f"cat {log_path}")
+    else:
+        # 组合grep命令
+        grep_command = " | ".join(grep_parts)
+        command_parts.append(grep_command)
+    
+    # 如果是SSH方式，关闭引号
+    if filter_method == "ssh":
+        command_parts.append("'")
+    
+    # 组合完整命令
+    full_command = " ".join(command_parts)
+    
+    # 执行命令
+    try:
+        if filter_method == "ssh":
+            # SSH命令执行
+            result = subprocess.run(
+                full_command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+        else:
+            # 本地命令执行
+            result = subprocess.run(
+                full_command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+        
+        # 处理结果
+        if result.returncode == 0:
+            output = result.stdout
+            if not output.strip():
+                output = "没有找到符合条件的日志行"
+            
+            # 计算行数
+            line_count = len(output.split('\n'))
+            
+            # 如果超过3000行，添加提示信息
+            if line_count > 3000:
+                result_display = html.Div([
+                    html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
+                    html.Pre(output, className="small")
+                ])
+            else:
+                result_display = html.Pre(output, className="small")
+        else:
+            error_output = result.stderr
+            result_display = html.Div([
+                html.P("命令执行出错:", className="text-danger"),
+                html.Pre(error_output, className="small text-danger")
+            ])
+    except subprocess.TimeoutExpired:
+        result_display = html.P("命令执行超时", className="text-warning")
+    except Exception as e:
+        result_display = html.Div([
+            html.P("执行命令时发生异常:", className="text-danger"),
+            html.P(str(e), className="text-danger small")
+        ])
+    
+    return full_command, result_display
+
+# 切换日志过滤选项折叠状态的回调
+@app.callback(
+    Output("filter-options-collapse", "is_open"),
+    [Input("filter-options-toggle", "n_clicks")],
+    [State("filter-options-collapse", "is_open")]
+)
+def toggle_filter_options(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
 
 if __name__ == "__main__":
     app.run_server(debug=True)
