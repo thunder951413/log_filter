@@ -1519,4 +1519,4 @@ def toggle_filter_options(n_clicks, is_open):
     return is_open
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8052)
+    app.run_server(debug=True, port=8052, host="0.0.0.0")
