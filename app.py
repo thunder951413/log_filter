@@ -82,84 +82,6 @@ ensure_config_dir()
 # 应用布局
 app.layout = html.Div([
     dbc.Container([
-        # 原字符串管理标签页的内容
-        # 可折叠的配置文件管理菜单
-        dbc.Row([
-            dbc.Col([
-                dbc.Accordion([
-                    dbc.AccordionItem([
-                        # 原有的配置文件管理内容
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Input(
-                                    id="config-name-input",
-                                    placeholder="输入配置文件名...",
-                                    type="text",
-                                    style={"width": "200px"}
-                                )
-                            ], width=4),
-                            dbc.Col([
-                                dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
-                            ], width=4),
-                            dbc.Col([
-                                dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
-                            ], width=4)
-                        ], className="mb-2"),
-                        dbc.Row([
-                            dbc.Col([
-                                dcc.Dropdown(
-                                    id="config-selector",
-                                    placeholder="选择配置文件...",
-                                    style={"width": "200px"}
-                                )
-                            ], width=4),
-                            dbc.Col([
-                                dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
-                                html.Span(" "),
-                                dbc.Button("删除配置", id="delete-config-btn", color="danger"),
-                            ], width=8)
-                        ], className="mb-4"),
-                        
-                        # 选中的字符串和已保存的字符串区域（并排布局）
-                        html.Hr(),
-                        dbc.Row([
-                            # 左侧：选中的字符串
-                            dbc.Col([
-                                html.H4("选中的字符串", className="card-title"),
-                                dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
-                                html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
-                            ], width=6),
-                            
-                            # 右侧：已保存的字符串
-                            dbc.Col([
-                                html.H4("已保存的字符串", className="card-title"),
-                                dcc.Dropdown(
-                                    id="category-filter",
-                                    options=[{"label": "所有分类", "value": "all"}] + 
-                                            [{"label": cat, "value": cat} for cat in data["categories"].keys()],
-                                    value="all",
-                                    clearable=False
-                                ),
-                                html.Div(className="mt-2 mb-2", children=[
-                                    dbc.Label("字符串类型:", className="me-2"),
-                                    dbc.RadioItems(
-                                        id="string-type-radio",
-                                        options=[
-                                            {"label": "保留字符串", "value": "keep"},
-                                            {"label": "过滤字符串", "value": "filter"}
-                                        ],
-                                        value="keep",
-                                        inline=True
-                                    )
-                                ]),
-                                html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
-                            ], width=6)
-                        ])
-                    ], title="配置文件管理", item_id="config-management")
-                ], flush=True, start_collapsed=True, always_open=False)
-            ], width=12, className="mb-4")
-        ]),
-        
         # 状态提示
         dbc.Row([
             dbc.Col([
@@ -198,13 +120,6 @@ app.layout = html.Div([
                                                 clearable=False
                                             )
                                         ], width=12, className="mb-3")
-                                    ]),
-                                    
-                                    # 执行按钮
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100")
-                                        ], width=12)
                                     ]),
                                     
                                     # 生成的命令
@@ -306,6 +221,109 @@ app.layout = html.Div([
             ], width=12)
         ], className="mb-4"),
         
+        # 配置文件管理选项
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.Button(
+                            [html.I(className="bi bi-chevron-down me-2"), "配置文件管理"],
+                            id="config-management-toggle",
+                            className="btn btn-link text-decoration-none w-100 text-start"
+                        )
+                    ]),
+                    dbc.Collapse(
+                        dbc.CardBody([
+                            # 原有的配置文件管理内容
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Input(
+                                        id="config-name-input",
+                                        placeholder="输入配置文件名...",
+                                        type="text",
+                                        style={"width": "200px"}
+                                    )
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
+                                ], width=4)
+                            ], className="mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dcc.Dropdown(
+                                        id="config-selector",
+                                        placeholder="选择配置文件...",
+                                        style={"width": "200px"}
+                                    )
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
+                                    html.Span(" "),
+                                    dbc.Button("删除配置", id="delete-config-btn", color="danger"),
+                                ], width=8)
+                            ], className="mb-4"),
+                            
+                            # 选中的字符串和已保存的字符串区域（并排布局）
+                            html.Hr(),
+                            dbc.Row([
+                                # 左侧：选中的字符串
+                                dbc.Col([
+                                    html.H4("选中的字符串", className="card-title"),
+                                    dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
+                                    html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
+                                ], width=6),
+                                
+                                # 右侧：已保存的字符串
+                                dbc.Col([
+                                    html.H4("已保存的字符串", className="card-title"),
+                                    dcc.Dropdown(
+                                        id="category-filter",
+                                        options=[{"label": "所有分类", "value": "all"}] + 
+                                                [{"label": cat, "value": cat} for cat in data["categories"].keys()],
+                                        value="all",
+                                        clearable=False
+                                    ),
+                                    html.Div(className="mt-2 mb-2", children=[
+                                        dbc.Label("字符串类型:", className="me-2"),
+                                        dbc.RadioItems(
+                                            id="string-type-radio",
+                                            options=[
+                                                {"label": "保留字符串", "value": "keep"},
+                                                {"label": "过滤字符串", "value": "filter"}
+                                            ],
+                                            value="keep",
+                                            inline=True
+                                        )
+                                    ]),
+                                    html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
+                                ], width=6)
+                            ])
+                        ]),
+                        id="config-management-collapse",
+                        is_open=True
+                    )
+                ])
+            ], width=12)
+        ], className="mb-4"),
+        
+        # 执行过滤命令按钮
+        dbc.Row([
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100", size="lg")
+                            ], width=12)
+                        ])
+                    ])
+                ])
+            ], width=12)
+        ], className="mb-3"),
+        
         # 日志过滤结果
         dbc.Row([
             dbc.Col([
@@ -399,6 +417,17 @@ app.layout = html.Div([
 )
 def initialize_data_store(status_children):
     return load_data()
+
+# 控制配置文件管理区域折叠/展开的回调
+@app.callback(
+    Output("config-management-collapse", "is_open"),
+    [Input("config-management-toggle", "n_clicks")],
+    [State("config-management-collapse", "is_open")]
+)
+def toggle_config_management(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
 
 # 控制抽屉显示隐藏的回调
 @app.callback(
