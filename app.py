@@ -1239,8 +1239,8 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
     # 执行过滤命令
     filtered_command, filtered_result = execute_filter_logic(selected_strings, selected_log_file)
     
-    # 执行源文件命令
-    source_command, source_result = execute_source_logic(selected_log_file)
+    # 执行源文件命令，传递选中的字符串用于高亮
+    source_command, source_result = execute_source_logic(selected_log_file, selected_strings)
     
     # 根据显示模式返回结果
     if display_mode == "source":
@@ -1310,12 +1310,13 @@ def execute_filter_logic(selected_strings, selected_log_file):
         # 组合grep命令
         full_command = " | ".join(grep_parts)
     
-    # 执行命令
-    result_display = execute_command(full_command)
+    # 执行命令，传递选中的字符串和数据用于高亮
+    data = load_data()  # 加载当前数据
+    result_display = execute_command(full_command, selected_strings, data)
     
     return full_command, result_display
 
-def execute_source_logic(selected_log_file):
+def execute_source_logic(selected_log_file, selected_strings=None):
     """执行源文件逻辑"""
     # 本地方式显示源文件
     if not selected_log_file:
@@ -1323,12 +1324,215 @@ def execute_source_logic(selected_log_file):
     log_path = get_log_path(selected_log_file)
     full_command = f"cat {log_path}"
     
-    # 执行命令
-    result_display = execute_command(full_command)
+    # 执行命令，如果提供了选中的字符串，则进行高亮
+    if selected_strings:
+        data = load_data()  # 加载当前数据
+        result_display = execute_command(full_command, selected_strings, data)
+    else:
+        result_display = execute_command(full_command)
     
     return full_command, result_display
 
-def execute_command(full_command):
+def get_category_colors(categories):
+    """为每个分类生成等间距的独特颜色"""
+    import colorsys
+    
+    category_colors = {}
+    num_categories = len(categories)
+    
+    if num_categories == 0:
+        return category_colors
+    
+    # 使用HSV颜色空间生成等间距的颜色
+    # 固定饱和度和亮度，只变化色相
+    saturation = 0.8  # 饱和度
+    value = 0.9       # 亮度
+    
+    for i, category in enumerate(categories):
+        # 计算等间距的色相值 (0-1之间)
+        hue = i / num_categories
+        
+        # 将HSV转换为RGB
+        rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+        
+        # 将RGB转换为十六进制颜色代码
+        hex_color = '#{:02x}{:02x}{:02x}'.format(
+            int(rgb[0] * 255),
+            int(rgb[1] * 255),
+            int(rgb[2] * 255)
+        )
+        
+        category_colors[category] = hex_color
+    
+    return category_colors
+
+def highlight_keywords(text, selected_strings, data):
+    """在文本中高亮显示不同分类的关键字"""
+    if not selected_strings or not data or "categories" not in data:
+        return text
+    
+    # 获取所有分类
+    categories = list(data["categories"].keys())
+    if not categories:
+        return text
+    
+    # 为每个分类分配颜色
+    category_colors = get_category_colors(categories)
+    
+    # 构建关键字到分类的映射
+    keyword_to_category = {}
+    for category, strings in data["categories"].items():
+        for string in strings:
+            keyword_to_category[string] = category
+    
+    # 从选中的字符串中提取需要高亮的关键字
+    keywords_to_highlight = []
+    for item in selected_strings:
+        if isinstance(item, dict):
+            string_text = item["text"]
+        else:
+            string_text = item
+        
+        if string_text in keyword_to_category:
+            keywords_to_highlight.append(string_text)
+    
+    if not keywords_to_highlight:
+        return text
+    
+    # 按长度降序排序，确保长关键字优先匹配
+    keywords_to_highlight.sort(key=len, reverse=True)
+    
+    # 对每个关键字进行高亮处理
+    highlighted_text = text
+    for keyword in keywords_to_highlight:
+        if keyword in keyword_to_category:
+            category = keyword_to_category[keyword]
+            color = category_colors[category]
+            
+            # 使用正则表达式进行不区分大小写的匹配
+            pattern = re.escape(keyword)
+            replacement = f'<span style="background-color: {color}; color: white; padding: 2px 4px; border-radius: 3px; font-weight: bold;">{keyword}</span>'
+            
+            highlighted_text = re.sub(
+                pattern, 
+                replacement, 
+                highlighted_text, 
+                flags=re.IGNORECASE
+            )
+    
+    return highlighted_text
+
+def highlight_keywords_dash(text, selected_strings, data):
+    """为Dash组件生成高亮显示的组件列表"""
+    if not selected_strings or not data or "categories" not in data:
+        return html.Pre(text, className="small")
+    
+    # 获取所有分类
+    categories = list(data["categories"].keys())
+    if not categories:
+        return html.Pre(text, className="small")
+    
+    # 为每个分类分配颜色
+    category_colors = get_category_colors(categories)
+    
+    # 构建关键字到分类的映射
+    keyword_to_category = {}
+    for category, strings in data["categories"].items():
+        for string in strings:
+            keyword_to_category[string] = category
+    
+    # 从选中的字符串中提取需要高亮的关键字
+    keywords_to_highlight = []
+    for item in selected_strings:
+        if isinstance(item, dict):
+            string_text = item["text"]
+        else:
+            string_text = item
+        
+        if string_text in keyword_to_category:
+            keywords_to_highlight.append(string_text)
+    
+    if not keywords_to_highlight:
+        return html.Pre(text, className="small")
+    
+    # 按长度降序排序，确保长关键字优先匹配
+    keywords_to_highlight.sort(key=len, reverse=True)
+    
+    # 按行处理文本，确保每行都能正确高亮
+    lines = text.split('\n')
+    highlighted_lines = []
+    
+    for line in lines:
+        if not line.strip():
+            # 空行直接添加
+            highlighted_lines.append(html.Div('\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+            continue
+            
+        components = []
+        remaining_text = line
+        
+        # 查找该行中所有需要高亮的关键字位置
+        keyword_positions = []
+        for keyword in keywords_to_highlight:
+            if keyword in keyword_to_category:
+                pattern = re.escape(keyword)
+                matches = re.finditer(pattern, remaining_text, re.IGNORECASE)
+                for match in matches:
+                    keyword_positions.append({
+                        'keyword': keyword,
+                        'start': match.start(),
+                        'end': match.end(),
+                        'category': keyword_to_category[keyword],
+                        'color': category_colors[keyword_to_category[keyword]]
+                    })
+        
+        # 按起始位置排序
+        keyword_positions.sort(key=lambda x: x['start'])
+        
+        if not keyword_positions:
+            # 该行没有关键字，直接添加
+            highlighted_lines.append(html.Div(line + '\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+            continue
+        
+        # 构建该行的组件
+        current_pos = 0
+        for pos in keyword_positions:
+            # 添加关键字前的文本
+            if pos['start'] > current_pos:
+                before_text = line[current_pos:pos['start']]
+                components.append(before_text)
+            
+            # 添加高亮的关键字
+            components.append(
+                html.Span(
+                    line[pos['start']:pos['end']],
+                    style={
+                        'backgroundColor': pos['color'],
+                        'color': 'white',
+                        'padding': '2px 4px',
+                        'borderRadius': '3px',
+                        'fontWeight': 'bold',
+                        'display': 'inline'
+                    }
+                )
+            )
+            
+            current_pos = pos['end']
+        
+        # 添加剩余文本
+        if current_pos < len(line):
+            components.append(line[current_pos:])
+        
+        # 添加换行符
+        components.append('\n')
+        
+        # 创建该行的Div组件
+        highlighted_lines.append(html.Div(components, style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+    
+    # 返回包含所有行的Div
+    return html.Div(highlighted_lines)
+
+def execute_command(full_command, selected_strings=None, data=None):
     """执行命令并返回结果显示"""
     try:
         # 本地命令执行 - 使用二进制模式读取，然后尝试多种编码
@@ -1368,14 +1572,32 @@ def execute_command(full_command):
             # 计算行数
             line_count = len(output.split('\n'))
             
-            # 如果超过3000行，添加提示信息
-            if line_count > 3000:
-                result_display = html.Div([
-                    html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
-                    html.Pre(output, className="small")
-                ])
+            # 如果提供了选中的字符串和数据，进行关键字高亮
+            if selected_strings and data:
+                # 使用新的Dash组件高亮函数
+                highlighted_display = highlight_keywords_dash(output, selected_strings, data)
+                
+                # 如果超过3000行，添加提示信息
+                if line_count > 3000:
+                    result_display = html.Div([
+                        html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
+                        html.Div([
+                            highlighted_display
+                        ])
+                    ])
+                else:
+                    result_display = html.Div([
+                        highlighted_display
+                    ])
             else:
-                result_display = html.Pre(output, className="small")
+                # 如果超过3000行，添加提示信息
+                if line_count > 3000:
+                    result_display = html.Div([
+                        html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
+                        html.Pre(output, className="small")
+                    ])
+                else:
+                    result_display = html.Pre(output, className="small")
         else:
             error_output = result.stderr
             # 错误信息也需要解码
