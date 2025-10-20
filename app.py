@@ -17,10 +17,18 @@ DATA_FILE = 'string_data.json'
 # 获取所有配置文件
 CONFIG_DIR = 'configs'
 
+# 日志文件目录
+LOG_DIR = 'logs'
+
 def ensure_config_dir():
     """确保配置目录存在"""
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
+
+def ensure_log_dir():
+    """确保日志目录存在"""
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
 
 def get_config_files():
     """获取所有配置文件列表"""
@@ -32,10 +40,25 @@ def get_config_files():
                 config_files.append(file[:-5])  # 去掉.json后缀
     return config_files
 
+def get_log_files():
+    """获取logs目录中的所有文本文件列表"""
+    ensure_log_dir()
+    log_files = []
+    if os.path.exists(LOG_DIR):
+        for file in os.listdir(LOG_DIR):
+            if file.endswith(('.txt', '.log', '.text')):
+                log_files.append(file)
+    return log_files
+
 def get_config_path(config_name):
     """获取配置文件的完整路径"""
     ensure_config_dir()
     return os.path.join(CONFIG_DIR, f"{config_name}.json")
+
+def get_log_path(log_filename):
+    """获取日志文件的完整路径"""
+    ensure_log_dir()
+    return os.path.join(LOG_DIR, log_filename)
 
 # 加载已保存的数据
 def load_data():
@@ -144,6 +167,10 @@ app.layout = html.Div([
             ], width=12)
         ]),
         
+        # 存储组件
+        dcc.Store(id='filtered-result-store', data=''),
+        dcc.Store(id='source-result-store', data=''),
+        
         # 日志过滤选项
         dbc.Row([
             dbc.Col([
@@ -157,67 +184,18 @@ app.layout = html.Div([
                     ]),
                     dbc.Collapse(
                         dbc.CardBody([
-                            # 过滤方式选择
+                            # 文件选择
                             dbc.Row([
                                 dbc.Col([
-                                    dbc.Label("过滤方式:"),
-                                    dbc.RadioItems(
-                                        id="filter-method",
-                                        options=[
-                                            {"label": "本地文件", "value": "local"},
-                                            {"label": "远程SSH", "value": "ssh"}
-                                        ],
-                                        value="local",
-                                        inline=True
+                                    dbc.Label("选择日志文件:"),
+                                    dcc.Dropdown(
+                                        id="log-file-selector",
+                                        placeholder="从logs目录选择文件...",
+                                        options=[],
+                                        clearable=False
                                     )
                                 ], width=12, className="mb-3")
                             ]),
-                            
-                            # 本地文件选项
-                            html.Div(id="local-file-options", children=[
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("日志文件路径:"),
-                                        dbc.Input(
-                                            id="log-file-path",
-                                            placeholder="/var/log/app.log",
-                                            type="text"
-                                        )
-                                    ], width=12, className="mb-3")
-                                ])
-                            ]),
-                            
-                            # SSH选项
-                            html.Div(id="ssh-options", children=[
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("服务器地址:"),
-                                        dbc.Input(
-                                            id="ssh-server",
-                                            placeholder="user@server.com",
-                                            type="text"
-                                        )
-                                    ], width=6, className="mb-3"),
-                                    dbc.Col([
-                                        dbc.Label("日志文件路径:"),
-                                        dbc.Input(
-                                            id="ssh-log-path",
-                                            placeholder="/var/log/app.log",
-                                            type="text"
-                                        )
-                                    ], width=6, className="mb-3")
-                                ]),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("SSH密钥路径 (可选):"),
-                                        dbc.Input(
-                                            id="ssh-key-path",
-                                            placeholder="~/.ssh/id_rsa",
-                                            type="text"
-                                        )
-                                    ], width=12, className="mb-3")
-                                ])
-                            ], style={"display": "none"}),
                             
                             # 执行按钮
                             dbc.Row([
@@ -252,6 +230,21 @@ app.layout = html.Div([
                 dbc.Card([
                     dbc.CardBody([
                         html.H4("日志过滤结果", className="card-title"),
+                        # 显示模式切换开关
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("显示模式:"),
+                                dbc.RadioItems(
+                                    id="display-mode",
+                                    options=[
+                                        {"label": "过滤结果", "value": "filtered"},
+                                        {"label": "源文件", "value": "source"}
+                                    ],
+                                    value="filtered",
+                                    inline=True
+                                )
+                            ], width=12, className="mb-3")
+                        ]),
                         html.Div(id="log-filter-results", style={"maxHeight": "600px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                     ])
                 ])
@@ -434,6 +427,18 @@ def update_saved_strings(data, selected_category, string_type):
         string_elements = [html.P("没有找到字符串", className="text-muted")]
     
     return string_elements, category_options
+
+# 更新日志文件选择器选项
+@app.callback(
+    Output("log-file-selector", "options"),
+    [Input("status-alert", "children")],
+    prevent_initial_call=False
+)
+def update_log_file_selector(status_children):
+    # 始终显示日志文件选择器
+    log_files = get_log_files()
+    options = [{"label": file, "value": file} for file in log_files]
+    return options
 
 # 更新配置文件选择器选项
 @app.callback(
@@ -1094,36 +1099,46 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings):
     
     return selected_strings
 
-# 显示/隐藏过滤选项的回调
-@app.callback(
-    [Output("local-file-options", "style"),
-     Output("ssh-options", "style")],
-    [Input("filter-method", "value")]
-)
-def toggle_filter_options(filter_method):
-    if filter_method == "local":
-        return {}, {"display": "none"}
-    else:
-        return {"display": "none"}, {}
+
 
 # 生成并执行过滤命令的回调
 @app.callback(
     [Output("generated-command", "value"),
-     Output("log-filter-results", "children")],
-    [Input("execute-filter-btn", "n_clicks")],
+     Output("log-filter-results", "children"),
+     Output("filtered-result-store", "data"),
+     Output("source-result-store", "data")],
+    [Input("execute-filter-btn", "n_clicks"),
+     Input("display-mode", "value")],
     [State("selected-strings", "data"),
-     State("filter-method", "value"),
-     State("log-file-path", "value"),
-     State("ssh-server", "value"),
-     State("ssh-log-path", "value"),
-     State("ssh-key-path", "value")],
+     State("log-file-selector", "value")],
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_path, 
-                         ssh_server, ssh_log_path, ssh_key_path):
-    if not n_clicks:
-        return "", ""
+def execute_filter_command(n_clicks, display_mode, selected_strings, selected_log_file):
+    # 获取触发回调的组件ID
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return "", "", "", ""
     
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    # 如果是显示模式切换，但还没有执行过滤操作
+    if triggered_id == "display-mode" and n_clicks == 0:
+        return "", html.P("请先执行过滤操作", className="text-info text-center"), "", ""
+    
+    # 执行过滤命令
+    filtered_command, filtered_result = execute_filter_logic(selected_strings, selected_log_file)
+    
+    # 执行源文件命令
+    source_command, source_result = execute_source_logic(selected_log_file)
+    
+    # 根据显示模式返回结果
+    if display_mode == "source":
+        return source_command, source_result, filtered_result, source_result
+    else:
+        return filtered_command, filtered_result, filtered_result, source_result
+
+def execute_filter_logic(selected_strings, selected_log_file):
+    """执行过滤逻辑"""
     # 提取保留字符串和过滤字符串
     keep_strings = []
     filter_strings = []
@@ -1138,28 +1153,10 @@ def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_p
             # 旧格式字符串，默认为保留字符串
             keep_strings.append(item)
     
-    # 生成grep命令
-    command_parts = []
-    
-    # 如果是SSH方式，添加SSH前缀
-    if filter_method == "ssh":
-        if not ssh_server or not ssh_log_path:
-            return "", html.P("请填写服务器地址和日志文件路径", className="text-danger text-center")
-        
-        # 添加SSH命令
-        if ssh_key_path:
-            command_parts.append(f"ssh -i {ssh_key_path} {ssh_server}")
-        else:
-            command_parts.append(f"ssh {ssh_server}")
-        
-        # 添加远程命令
-        command_parts.append("'")
-        log_path = ssh_log_path
-    else:
-        # 本地方式
-        if not log_file_path:
-            return "", html.P("请填写日志文件路径", className="text-danger text-center")
-        log_path = log_file_path
+    # 本地方式
+    if not selected_log_file:
+        return "", html.P("请选择日志文件", className="text-danger text-center")
+    log_path = get_log_path(selected_log_file)
     
     # 构建grep命令
     grep_parts = []
@@ -1197,43 +1194,63 @@ def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_p
     
     # 如果没有选择任何字符串，直接显示文件内容
     if not grep_parts:
-        command_parts.append(f"cat {log_path}")
+        full_command = f"cat {log_path}"
     else:
         # 组合grep命令
-        grep_command = " | ".join(grep_parts)
-        command_parts.append(grep_command)
-    
-    # 如果是SSH方式，关闭引号
-    if filter_method == "ssh":
-        command_parts.append("'")
-    
-    # 组合完整命令
-    full_command = " ".join(command_parts)
+        full_command = " | ".join(grep_parts)
     
     # 执行命令
+    result_display = execute_command(full_command)
+    
+    return full_command, result_display
+
+def execute_source_logic(selected_log_file):
+    """执行源文件逻辑"""
+    # 本地方式显示源文件
+    if not selected_log_file:
+        return "", html.P("请选择日志文件", className="text-danger text-center")
+    log_path = get_log_path(selected_log_file)
+    full_command = f"cat {log_path}"
+    
+    # 执行命令
+    result_display = execute_command(full_command)
+    
+    return full_command, result_display
+
+def execute_command(full_command):
+    """执行命令并返回结果显示"""
     try:
-        if filter_method == "ssh":
-            # SSH命令执行
-            result = subprocess.run(
-                full_command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-        else:
-            # 本地命令执行
-            result = subprocess.run(
-                full_command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+        # 本地命令执行 - 使用二进制模式读取，然后尝试多种编码
+        result = subprocess.run(
+            full_command,
+            shell=True,
+            capture_output=True,
+            text=False,  # 不使用text模式，获取原始字节
+            timeout=30
+        )
         
         # 处理结果
         if result.returncode == 0:
-            output = result.stdout
+            # 本地结果需要解码
+            output_bytes = result.stdout
+            if not output_bytes:
+                output = "没有找到符合条件的日志行"
+            else:
+                # 尝试多种编码
+                encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+                output = None
+                
+                for encoding in encodings:
+                    try:
+                        output = output_bytes.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                
+                # 如果所有编码都失败，使用latin-1（不会失败）
+                if output is None:
+                    output = output_bytes.decode('latin-1', errors='replace')
+            
             if not output.strip():
                 output = "没有找到符合条件的日志行"
             
@@ -1250,6 +1267,18 @@ def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_p
                 result_display = html.Pre(output, className="small")
         else:
             error_output = result.stderr
+            # 错误信息也需要解码
+            if isinstance(error_output, bytes):
+                encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+                for encoding in encodings:
+                    try:
+                        error_output = error_output.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    error_output = error_output.decode('latin-1', errors='replace')
+            
             result_display = html.Div([
                 html.P("命令执行出错:", className="text-danger"),
                 html.Pre(error_output, className="small text-danger")
@@ -1262,7 +1291,9 @@ def execute_filter_command(n_clicks, selected_strings, filter_method, log_file_p
             html.P(str(e), className="text-danger small")
         ])
     
-    return full_command, result_display
+    return result_display
+
+
 
 # 切换日志过滤选项折叠状态的回调
 @app.callback(
@@ -1276,4 +1307,4 @@ def toggle_filter_options(n_clicks, is_open):
     return is_open
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run_server(debug=True, port=8051)
