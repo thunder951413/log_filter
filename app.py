@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import re
+import base64
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -80,10 +81,6 @@ ensure_config_dir()
 
 # 应用布局
 app.layout = html.Div([
-    # 右上角keyword按钮 - 使用绝对定位
-    dbc.Button("keyword", id="keyword-btn", color="primary", 
-               style={"position": "fixed",  "right": "20px", "zIndex": "1000"}),
-    
     dbc.Container([
         # 原字符串管理标签页的内容
         # 可折叠的配置文件管理菜单
@@ -103,7 +100,10 @@ app.layout = html.Div([
                             ], width=4),
                             dbc.Col([
                                 dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
-                            ], width=8)
+                            ], width=4),
+                            dbc.Col([
+                                dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
+                            ], width=4)
                         ], className="mb-2"),
                         dbc.Row([
                             dbc.Col([
@@ -184,37 +184,119 @@ app.layout = html.Div([
                     ]),
                     dbc.Collapse(
                         dbc.CardBody([
-                            # 文件选择
                             dbc.Row([
+                                # 左侧：当前控件
                                 dbc.Col([
-                                    dbc.Label("选择日志文件:"),
-                                    dcc.Dropdown(
-                                        id="log-file-selector",
-                                        placeholder="从logs目录选择文件...",
-                                        options=[],
-                                        clearable=False
-                                    )
-                                ], width=12, className="mb-3")
-                            ]),
-                            
-                            # 执行按钮
-                            dbc.Row([
+                                    # 文件选择
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("选择日志文件:"),
+                                            dcc.Dropdown(
+                                                id="log-file-selector",
+                                                placeholder="从logs目录选择文件...",
+                                                options=[],
+                                                clearable=False
+                                            )
+                                        ], width=12, className="mb-3")
+                                    ]),
+                                    
+                                    # 执行按钮
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100")
+                                        ], width=12)
+                                    ]),
+                                    
+                                    # 生成的命令
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("生成的命令:", className="mt-3"),
+                                            dbc.Textarea(
+                                                id="generated-command",
+                                                placeholder="这里将显示生成的grep命令...",
+                                                style={"height": "100px", "fontFamily": "monospace"}
+                                            ),
+                                            dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
+                                        ], width=12)
+                                    ])
+                                ], width=6),
+                                
+                                # 右侧：日志上传/删除功能
                                 dbc.Col([
-                                    dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100")
-                                ], width=12)
-                            ]),
-                            
-                            # 生成的命令
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("生成的命令:", className="mt-3"),
-                                    dbc.Textarea(
-                                        id="generated-command",
-                                        placeholder="这里将显示生成的grep命令...",
-                                        style={"height": "100px", "fontFamily": "monospace"}
-                                    ),
-                                    dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
-                                ], width=12)
+                                    # 标题
+                                    dbc.Label("日志管理:", className="text-center mb-3"),
+                                    
+                                    # 切换按钮
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.ButtonGroup([
+                                                dbc.Button("上传", id="upload-mode-btn", color="primary", active=True),
+                                                dbc.Button("删除", id="delete-mode-btn", color="secondary", active=False)
+                                            ], className="w-100")
+                                        ], width=12)
+                                    ], className="mb-3"),
+                                    
+                                    # 上传模式内容
+                                    html.Div(id="upload-mode-content", children=[
+                                        # 文件上传组件
+                                        dcc.Upload(
+                                            id='upload-log-file',
+                                            children=html.Div([
+                                                html.I(className="bi bi-cloud-upload me-2"),
+                                                '拖拽文件到这里或点击选择文件'
+                                            ]),
+                                            style={
+                                                'width': '100%',
+                                                'height': '100px',
+                                                'lineHeight': '100px',
+                                                'borderWidth': '2px',
+                                                'borderStyle': 'dashed',
+                                                'borderRadius': '5px',
+                                                'textAlign': 'center',
+                                                'margin': '10px 0',
+                                                'cursor': 'pointer',
+                                                'backgroundColor': '#f8f9fa'
+                                            },
+                                            multiple=False,
+                                            accept='.txt,.log,.text'
+                                        ),
+                                        
+                                        # 上传状态显示
+                                        html.Div(id='upload-status', className="mt-2")
+                                    ]),
+                                    
+                                    # 删除模式内容
+                                    html.Div(id="delete-mode-content", style={"display": "none"}, children=[
+                                        # 文件选择器
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.Label("选择要删除的文件:"),
+                                                dcc.Dropdown(
+                                                    id="delete-file-selector",
+                                                    placeholder="选择文件...",
+                                                    options=[],
+                                                    clearable=False
+                                                )
+                                            ], width=12, className="mb-3")
+                                        ]),
+                                        
+                                        # 删除按钮
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.Button(
+                                                    "删除选中文件", 
+                                                    id="delete-file-btn", 
+                                                    color="danger", 
+                                                    className="w-100"
+                                                )
+                                            ], width=12)
+                                        ]),
+                                        
+                                        # 删除状态显示
+                                        html.Div(id='delete-status', className="mt-2")
+                                    ]),
+                                    
+                                ], width=6)
                             ])
                         ]),
                         id="filter-options-collapse",
@@ -1295,6 +1377,136 @@ def execute_command(full_command):
 
 
 
+# 文件上传回调
+@app.callback(
+    [Output("upload-status", "children", allow_duplicate=True),
+     Output("log-file-selector", "options", allow_duplicate=True)],
+    [Input("upload-log-file", "contents")],
+    [State("upload-log-file", "filename"),
+     State("log-file-selector", "options")],
+    prevent_initial_call=True
+)
+def handle_upload(contents, filename, current_options):
+    if contents is None or filename is None:
+        return "", dash.no_update
+    
+    try:
+        # 确保logs目录存在
+        ensure_log_dir()
+        
+        # 获取目标文件路径
+        target_path = os.path.join(LOG_DIR, filename)
+        
+        # 检查文件是否已存在
+        if os.path.exists(target_path):
+            return (
+                dbc.Alert(f"文件 '{filename}' 已存在，请重命名或删除原文件", color="warning"),
+                dash.no_update
+            )
+        
+        # 解析base64内容并保存文件
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # 保存文件
+        with open(target_path, 'wb') as f:
+            f.write(decoded)
+        
+        # 更新文件选择器选项
+        log_files = get_log_files()
+        new_options = [{"label": file, "value": file} for file in log_files]
+        
+        return (
+            dbc.Alert(f"成功上传文件 '{filename}'", color="success"),
+            new_options
+        )
+        
+    except Exception as e:
+        return (
+            dbc.Alert(f"上传失败: {str(e)}", color="danger"),
+            dash.no_update
+        )
+
+# 切换上传/删除模式的回调
+@app.callback(
+    [Output("upload-mode-btn", "active"),
+     Output("delete-mode-btn", "active"),
+     Output("upload-mode-content", "style"),
+     Output("delete-mode-content", "style"),
+     Output("delete-file-selector", "options")],
+    [Input("upload-mode-btn", "n_clicks"),
+     Input("delete-mode-btn", "n_clicks")],
+    [State("upload-mode-btn", "active"),
+     State("delete-mode-btn", "active")]
+)
+def toggle_upload_delete_mode(upload_clicks, delete_clicks, upload_active, delete_active):
+    ctx = callback_context
+    if not ctx.triggered:
+        # 初始状态：上传模式激活
+        return True, False, {"display": "block"}, {"display": "none"}, []
+    
+    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    
+    if button_id == "upload-mode-btn":
+        # 切换到上传模式
+        return True, False, {"display": "block"}, {"display": "none"}, []
+    elif button_id == "delete-mode-btn":
+        # 切换到删除模式，更新文件选择器选项
+        log_files = get_log_files()
+        delete_options = [{"label": file, "value": file} for file in log_files]
+        return False, True, {"display": "none"}, {"display": "block"}, delete_options
+    
+    # 默认返回上传模式
+    return True, False, {"display": "block"}, {"display": "none"}, []
+
+# 文件删除回调
+@app.callback(
+    [Output("delete-status", "children"),
+     Output("log-file-selector", "options", allow_duplicate=True),
+     Output("delete-file-selector", "value")],
+    [Input("delete-file-btn", "n_clicks")],
+    [State("delete-file-selector", "value")],
+    prevent_initial_call=True
+)
+def handle_delete(n_clicks, selected_file):
+    if n_clicks is None or n_clicks == 0 or not selected_file:
+        return "", dash.no_update, dash.no_update
+    
+    try:
+        # 确保logs目录存在
+        ensure_log_dir()
+        
+        # 获取目标文件路径
+        target_path = os.path.join(LOG_DIR, selected_file)
+        
+        # 检查文件是否存在
+        if not os.path.exists(target_path):
+            return (
+                dbc.Alert(f"文件 '{selected_file}' 不存在", color="warning"),
+                dash.no_update,
+                ""
+            )
+        
+        # 删除文件
+        os.remove(target_path)
+        
+        # 更新文件选择器选项
+        log_files = get_log_files()
+        new_options = [{"label": file, "value": file} for file in log_files]
+        
+        return (
+            dbc.Alert(f"成功删除文件 '{selected_file}'", color="success"),
+            new_options,
+            ""  # 清空删除选择器
+        )
+        
+    except Exception as e:
+        return (
+            dbc.Alert(f"删除失败: {str(e)}", color="danger"),
+            dash.no_update,
+            dash.no_update
+        )
+
 # 切换日志过滤选项折叠状态的回调
 @app.callback(
     Output("filter-options-collapse", "is_open"),
@@ -1307,4 +1519,4 @@ def toggle_filter_options(n_clicks, is_open):
     return is_open
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8051)
+    app.run_server(debug=True, port=8052)
