@@ -57,6 +57,106 @@ def get_config_path(config_name):
     ensure_config_dir()
     return os.path.join(CONFIG_DIR, f"{config_name}.json")
 
+def get_default_config_path():
+    """获取默认配置文件的完整路径"""
+    ensure_config_dir()
+    return os.path.join(CONFIG_DIR, "default.json")
+
+def save_default_config(selected_strings):
+    """保存选中的字符串到默认配置文件"""
+    default_config_path = get_default_config_path()
+    
+    # 按分类和类型组织选中的字符串
+    categorized_strings = {}
+    
+    # 加载当前数据以获取分类信息
+    current_data = load_data()
+    
+    for item in selected_strings:
+        if isinstance(item, dict):
+            string_text = item["text"]
+            string_type = item["type"]
+            
+            # 查找字符串所属的分类
+            for category, strings in current_data["categories"].items():
+                if string_text in strings:
+                    # 创建分类（如果不存在）
+                    if category not in categorized_strings:
+                        categorized_strings[category] = {"keep": [], "filter": []}
+                    
+                    # 添加字符串到相应类型
+                    categorized_strings[category][string_type].append(string_text)
+                    break
+        else:
+            # 处理旧格式的字符串（不带类型信息）
+            string_text = item
+            
+            # 查找字符串所属的分类
+            for category, strings in current_data["categories"].items():
+                if string_text in strings:
+                    # 创建分类（如果不存在）
+                    if category not in categorized_strings:
+                        categorized_strings[category] = {"keep": [], "filter": []}
+                    
+                    # 默认为保留字符串
+                    categorized_strings[category]["keep"].append(string_text)
+                    break
+    
+    # 保存到默认配置文件
+    with open(default_config_path, 'w', encoding='utf-8') as f:
+        json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
+    
+    return len(selected_strings)
+
+def load_default_config():
+    """从默认配置文件加载选中的字符串"""
+    default_config_path = get_default_config_path()
+    
+    if not os.path.exists(default_config_path):
+        return []
+    
+    try:
+        with open(default_config_path, 'r', encoding='utf-8') as f:
+            saved_selections = json.load(f)
+        
+        # 从保存的选择中提取所有字符串
+        loaded_strings = []
+        
+        for category, content in saved_selections.items():
+            if isinstance(content, dict):
+                # 处理保留字符串
+                if "keep" in content:
+                    for string_text in content["keep"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "keep"
+                        })
+                
+                # 处理过滤字符串
+                if "filter" in content:
+                    for string_text in content["filter"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "filter"
+                        })
+            else:
+                # 处理旧格式的配置文件
+                for string_text in content:
+                    loaded_strings.append({
+                        "text": string_text,
+                        "type": "keep"  # 默认为保留字符串
+                    })
+        
+        return loaded_strings
+    except Exception as e:
+        print(f"加载默认配置文件时出错: {e}")
+        return []
+
+def has_default_config():
+    """检查是否存在默认配置文件"""
+    default_config_path = get_default_config_path()
+    return os.path.exists(default_config_path)
+
 def get_log_path(log_filename):
     """获取日志文件的完整路径"""
     ensure_log_dir()
@@ -297,7 +397,9 @@ app.layout = html.Div([
                                     html.Span(" "),
                                     dbc.Button("删除配置", id="delete-config-btn", color="danger"),
                                 ], width=8)
-                            ], className="mb-4"),
+                            ], className="mb-2"),
+                            
+
                             
                             # 选中的字符串和已保存的字符串区域（并排布局）
                             html.Hr(),
@@ -512,7 +614,15 @@ def restore_string_selections(selected_log_file):
                 if os.path.exists(log_path):
                     return selected_strings
     
-    # 如果没有保存的字符串数据或日志文件不匹配，返回空列表
+    # 如果没有保存的字符串数据或日志文件不匹配，尝试从默认配置文件加载
+    if has_default_config():
+        default_strings = load_default_config()
+        if default_strings:
+            # 保存到用户选择状态
+            save_user_selections(selected_log_file, default_strings)
+            return default_strings
+    
+    # 如果都没有，返回空列表
     return []
 
 # 控制配置文件管理区域折叠/展开的回调
@@ -731,6 +841,8 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
     # 清除选择
     if clear_clicks and is_user_interaction:
         save_user_selections(selected_log_file, [])
+        # 同时清除默认配置文件
+        save_default_config([])
         return []
     
     # 加载字符串
@@ -835,9 +947,12 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                 if not string_exists:
                     selected_strings.append(string_with_type)
     
-    # 只有在用户交互时才保存用户选择状态
+    # 只有在用户交互时才保存用户选择状态和默认配置文件
     if is_user_interaction:
         save_user_selections(selected_log_file, selected_strings)
+        # 自动更新默认配置文件
+        if selected_strings:
+            save_default_config(selected_strings)
     
     return selected_strings
 
@@ -864,7 +979,7 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
     
     if not ctx.triggered:
         return "", False, "success"
-    
+
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
     # 添加字符串状态
@@ -1351,8 +1466,10 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
                         if item != clicked_string:
                             new_selected_strings.append(item)
                 
-                # 保存用户选择状态
+                # 保存用户选择状态和默认配置文件
                 save_user_selections(selected_log_file, new_selected_strings)
+                # 自动更新默认配置文件
+                save_default_config(new_selected_strings)
                 
                 return new_selected_strings
     
@@ -1916,6 +2033,8 @@ def toggle_filter_options(n_clicks, is_open):
     if n_clicks:
         return not is_open
     return is_open
+
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=8052, host="0.0.0.0")
