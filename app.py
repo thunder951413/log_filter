@@ -8,6 +8,7 @@ import os
 import subprocess
 import re
 import base64
+from datetime import datetime
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -72,6 +73,38 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# 保存用户选择状态
+def save_user_selections(selected_log_file, selected_strings):
+    selections = {
+        "selected_log_file": selected_log_file,
+        "selected_strings": selected_strings,
+        "last_updated": datetime.now().isoformat()
+    }
+    selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
+    with open(selections_file, 'w', encoding='utf-8') as f:
+        json.dump(selections, f, ensure_ascii=False, indent=2)
+
+# 加载用户选择状态
+def load_user_selections():
+    selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
+    if os.path.exists(selections_file):
+        try:
+            with open(selections_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:  # 确保文件不为空
+                    return json.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"加载用户选择状态时出错: {e}")
+            # 如果文件损坏，删除并重新创建
+            os.remove(selections_file)
+    
+    # 返回默认值
+    return {
+        "selected_log_file": "",
+        "selected_strings": [],
+        "last_updated": ""
+    }
 
 # 初始数据
 data = load_data()
@@ -406,6 +439,7 @@ app.layout = html.Div([
         # 存储组件
         dcc.Store(id="data-store"),
         dcc.Store(id="selected-strings", data=[]),
+        dcc.Store(id="selected-log-file", data=""),
     ], fluid=True)
 ])
 
@@ -417,6 +451,69 @@ app.layout = html.Div([
 )
 def initialize_data_store(status_children):
     return load_data()
+
+# 页面加载时自动恢复之前的选择
+@app.callback(
+    Output("log-file-selector", "value"),
+    [Input("data-store", "data")],
+    [State("log-file-selector", "options")],
+    prevent_initial_call=False
+)
+def restore_previous_selections(data_store_data, log_file_options):
+    ctx = dash.callback_context
+    
+    # 检查是否是页面初始加载
+    # 在页面加载时，triggered可能包含初始触发信息，我们需要检查是否是真正的用户交互
+    is_initial_load = True
+    if ctx.triggered:
+        # 检查触发源，如果是data-store的初始加载，则认为是页面初始加载
+        trigger_id = ctx.triggered[0]["prop_id"]
+        if trigger_id != "data-store.data":
+            is_initial_load = False
+    
+    # 只在页面初始加载时执行恢复
+    if is_initial_load:
+        # 从文件加载用户选择状态
+        user_selections = load_user_selections()
+        selected_log_file = user_selections.get("selected_log_file", "")
+        
+        # 恢复日志文件选择
+        if selected_log_file and log_file_options:
+            # 检查之前选择的文件是否仍然存在
+            for option in log_file_options:
+                if option["value"] == selected_log_file:
+                    return selected_log_file
+        
+        # 如果没有找到匹配的日志文件，返回空字符串
+        return ""
+    
+    # 如果不是初始加载，保持当前状态不变
+    return dash.no_update
+
+# 页面加载时恢复字符串选择
+@app.callback(
+    Output("selected-strings", "data", allow_duplicate=True),
+    [Input("selected-log-file", "data")],
+    prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
+)
+def restore_string_selections(selected_log_file):
+    # 只有当有选中的日志文件时才恢复字符串
+    if selected_log_file:
+        # 从文件加载用户选择状态
+        user_selections = load_user_selections()
+        
+        # 检查是否有保存的字符串数据
+        selected_strings = user_selections.get("selected_strings", [])
+        if selected_strings:
+            # 检查对应的日志文件是否存在
+            saved_log_file = user_selections.get("selected_log_file", "")
+            if saved_log_file == selected_log_file:
+                log_path = get_log_path(saved_log_file)
+                if os.path.exists(log_path):
+                    return selected_strings
+    
+    # 如果没有保存的字符串数据或日志文件不匹配，返回空列表
+    return []
 
 # 控制配置文件管理区域折叠/展开的回调
 @app.callback(
@@ -495,9 +592,10 @@ def add_string(n_clicks, input_string, input_category, data):
      Output("category-filter", "options")],
     [Input("data-store", "data"),
      Input("category-filter", "value"),
-     Input("string-type-radio", "value")]
+     Input("string-type-radio", "value"),
+     Input("selected-strings", "data")]  # 添加selected-strings作为输入
 )
-def update_saved_strings(data, selected_category, string_type):
+def update_saved_strings(data, selected_category, string_type, selected_strings):
     if not data or "categories" not in data:
         return [], [{"label": "所有分类", "value": "all"}]
     
@@ -525,7 +623,8 @@ def update_saved_strings(data, selected_category, string_type):
                         string,
                         id={"type": "select-string-btn", "index": f"{category}-{i}"},
                         color="success" if string_type == "keep" else "danger",
-                        outline=True,
+                        # 根据字符串是否被选中来设置按钮样式
+                        outline=not any(s["text"] == string if isinstance(s, dict) else s == string for s in selected_strings) if selected_strings else True,
                         size="sm",
                         style={"whiteSpace": "nowrap", "flexShrink": 0}
                     ) for i, string in enumerate(strings)
@@ -550,6 +649,35 @@ def update_log_file_selector(status_children):
     log_files = get_log_files()
     options = [{"label": file, "value": file} for file in log_files]
     return options
+
+# 保存日志文件选择状态
+@app.callback(
+    Output("selected-log-file", "data"),
+    [Input("log-file-selector", "value")],
+    [State("selected-strings", "data")],
+    prevent_initial_call=True  # 防止页面加载时触发保存
+)
+def save_log_file_selection(selected_file, selected_strings):
+    ctx = dash.callback_context
+    
+    # 检查是否是页面初始加载时的触发
+    is_initial_trigger = False
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]["prop_id"]
+        # 如果是页面初始加载时的触发，并且值是None或空字符串，则认为是初始触发
+        if trigger_id == "log-file-selector.value" and (ctx.triggered[0]["value"] is None or ctx.triggered[0]["value"] == ""):
+            is_initial_trigger = True
+    
+    # 只有在用户真正选择文件时才保存，而不是在恢复过程中
+    if not is_initial_trigger and selected_file is not None and selected_file != "":
+        # 保存到文件
+        save_user_selections(selected_file, selected_strings)
+    
+    # 返回当前选择的文件，但如果是初始触发则返回dash.no_update
+    if is_initial_trigger:
+        return dash.no_update
+    
+    return selected_file if selected_file else ""
 
 # 更新配置文件选择器选项
 @app.callback(
@@ -585,17 +713,28 @@ def update_config_selector(status_children, current_status):
     [State("selected-strings", "data"),
      State("data-store", "data"),
      State("config-selector", "value"),
-     State("string-type-radio", "value")]
+     State("string-type-radio", "value"),
+     State("selected-log-file", "data")],
+    prevent_initial_call=True  # 防止页面加载时触发
 )
-def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config, string_type):
+def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config, string_type, selected_log_file):
     ctx = callback_context
     
+    # 检查是否是用户交互触发的
+    is_user_interaction = False
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]["prop_id"]
+        # 如果是按钮点击或用户操作，才认为是用户交互
+        if "n_clicks" in trigger_id and ctx.triggered[0]["value"]:
+            is_user_interaction = True
+    
     # 清除选择
-    if clear_clicks:
+    if clear_clicks and is_user_interaction:
+        save_user_selections(selected_log_file, [])
         return []
     
     # 加载字符串
-    if load_clicks and selected_config:
+    if load_clicks and selected_config and is_user_interaction:
         config_path = get_config_path(selected_config)
         if os.path.exists(config_path):
             try:
@@ -650,6 +789,7 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                             valid_strings.append(item)
                             break
                 
+                save_user_selections(selected_log_file, valid_strings)
                 return valid_strings
             except Exception:
                 # 如果加载失败，保持当前选择不变
@@ -659,7 +799,7 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
             return selected_strings
     
     # 选择字符串
-    if ctx.triggered and ctx.triggered[0]["value"]:
+    if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
         button_id = ctx.triggered[0]["prop_id"].split(".")[0]
         
         # 检查是否是选择字符串按钮触发的
@@ -694,6 +834,10 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                 
                 if not string_exists:
                     selected_strings.append(string_with_type)
+    
+    # 只有在用户交互时才保存用户选择状态
+    if is_user_interaction:
+        save_user_selections(selected_log_file, selected_strings)
     
     return selected_strings
 
@@ -1173,10 +1317,11 @@ def update_selected_strings(selected_strings, data):
     Output("selected-strings", "data", allow_duplicate=True),
     [Input({"type": "selected-string-btn", "index": dash.ALL}, "n_clicks")],
     [State({"type": "selected-string-btn", "index": dash.ALL}, "id"),
-     State("selected-strings", "data")],
+     State("selected-strings", "data"),
+     State("selected-log-file", "data")],
     prevent_initial_call=True
 )
-def toggle_selected_string(n_clicks, button_ids, selected_strings):
+def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_file):
     ctx = callback_context
     
     if not ctx.triggered:
@@ -1205,6 +1350,9 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings):
                         # 处理旧格式的字符串（不带类型信息）
                         if item != clicked_string:
                             new_selected_strings.append(item)
+                
+                # 保存用户选择状态
+                save_user_selections(selected_log_file, new_selected_strings)
                 
                 return new_selected_strings
     
