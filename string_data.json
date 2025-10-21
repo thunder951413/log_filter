@@ -1,9 +1,10 @@
 {
   "categories": {
     "PlayerInterface": [
-      "player.play",
       "PlayerInterface",
-      "player."
+      "\"Player.",
+      "Player.stop",
+      "Player.play"
     ],
     "demux": [
       "STB_DMXSetDemuxSource",
@@ -27,7 +28,8 @@
       "STB_PVRStartPlaying"
     ],
     "error": [
-      "backtrace"
+      "backtrace",
+      "AndroidRuntime"
     ],
     "tsplayer": [
       "tsplayer"
@@ -40,6 +42,13 @@
       "libdvr",
       "dvr_playback_resume",
       "dvr_playback_stop"
+    ],
+    "DTV_LOG": [
+      "DTV_LOG"
+    ],
+    "dtvkitserver": [
+      "IPC",
+      "IPC-->"
     ]
   }
 }
