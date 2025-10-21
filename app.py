@@ -152,6 +152,55 @@ def load_default_config():
         print(f"加载默认配置文件时出错: {e}")
         return []
 
+def load_highlight_config():
+    """从highlight配置文件加载选中的字符串"""
+    highlight_config_path = os.path.join(CONFIG_DIR, "highlight.json")
+    
+    if not os.path.exists(highlight_config_path):
+        return []
+    
+    try:
+        with open(highlight_config_path, 'r', encoding='utf-8') as f:
+            saved_selections = json.load(f)
+        
+        # 从保存的选择中提取所有字符串
+        loaded_strings = []
+        
+        for category, content in saved_selections.items():
+            if isinstance(content, dict):
+                # 处理保留字符串
+                if "keep" in content:
+                    for string_text in content["keep"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "keep"
+                        })
+                
+                # 处理过滤字符串
+                if "filter" in content:
+                    for string_text in content["filter"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "filter"
+                        })
+            else:
+                # 处理旧格式的配置文件
+                for string_text in content:
+                    loaded_strings.append({
+                        "text": string_text,
+                        "type": "keep"  # 默认为保留字符串
+                    })
+        
+        return loaded_strings
+    except Exception as e:
+        print(f"加载highlight配置文件时出错: {e}")
+        return []
+
+def has_highlight_config():
+    """检查是否存在highlight配置文件"""
+    highlight_config_path = os.path.join(CONFIG_DIR, "highlight.json")
+    return os.path.exists(highlight_config_path)
+
 def has_default_config():
     """检查是否存在默认配置文件"""
     default_config_path = get_default_config_path()
@@ -473,7 +522,8 @@ app.layout = html.Div([
                                     id="display-mode",
                                     options=[
                                         {"label": "过滤结果", "value": "filtered"},
-                                        {"label": "源文件", "value": "source"}
+                                        {"label": "源文件", "value": "source"},
+                                        {"label": "高亮显示", "value": "highlight"}
                                     ],
                                     value="filtered",
                                     inline=True
@@ -911,7 +961,7 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
             return selected_strings
     
     # 选择字符串
-    if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
+    if ctx.triggered and ctx.triggered[0]["value"]:
         button_id = ctx.triggered[0]["prop_id"].split(".")[0]
         
         # 检查是否是选择字符串按钮触发的
@@ -946,13 +996,12 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                 
                 if not string_exists:
                     selected_strings.append(string_with_type)
-    
-    # 只有在用户交互时才保存用户选择状态和默认配置文件
-    if is_user_interaction:
-        save_user_selections(selected_log_file, selected_strings)
-        # 自动更新默认配置文件
-        if selected_strings:
-            save_default_config(selected_strings)
+                
+                # 保存用户选择状态和默认配置文件
+                save_user_selections(selected_log_file, selected_strings)
+                # 自动更新默认配置文件
+                if selected_strings:
+                    save_default_config(selected_strings)
     
     return selected_strings
 
@@ -1510,6 +1559,15 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
     # 根据显示模式返回结果
     if display_mode == "source":
         return source_command, source_result, filtered_result, source_result
+    elif display_mode == "highlight":
+        # 高亮模式：使用highlight配置执行过滤命令
+        highlight_strings = load_highlight_config()
+        if highlight_strings:
+            highlight_command, highlight_result = execute_filter_logic(highlight_strings, selected_log_file)
+            return highlight_command, highlight_result, filtered_result, source_result
+        else:
+            # 如果没有highlight配置，显示提示信息
+            return "", html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result
     else:
         return filtered_command, filtered_result, filtered_result, source_result
 

@@ -1,0 +1,45 @@
+{
+  "categories": {
+    "PlayerInterface": [
+      "player.play",
+      "PlayerInterface",
+      "player."
+    ],
+    "demux": [
+      "STB_DMXSetDemuxSource",
+      "STBHWDMX",
+      "DMX_SET_HW_SOURCE",
+      "DMX_SET_INPUT",
+      "STB_DMXChangeDecodePIDs",
+      "ca_set_key"
+    ],
+    "pvr": [
+      "STB_PVRStartPlaying",
+      "start_playback",
+      "STBPVR",
+      "STB_PVRStartRecordPaused",
+      "STB_PVRSetRecordStartMode",
+      "STB_PVRRecordStart",
+      "STB_PVRRecordChangePids",
+      "STB_PVRGetRetentionlimitTimeStamp",
+      "STB_PVRPlaybackNotifyTime",
+      "StopPlaying",
+      "STB_PVRStartPlaying"
+    ],
+    "error": [
+      "backtrace"
+    ],
+    "tsplayer": [
+      "tsplayer"
+    ],
+    "av": [
+      "STBHWAV_AMLMP",
+      "AV_StartVideoDecode_l"
+    ],
+    "libdvr": [
+      "libdvr",
+      "dvr_playback_resume",
+      "dvr_playback_stop"
+    ]
+  }
+}
