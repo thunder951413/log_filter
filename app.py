@@ -961,7 +961,7 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
             return selected_strings
     
     # 选择字符串
-    if ctx.triggered and ctx.triggered[0]["value"]:
+    if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
         button_id = ctx.triggered[0]["prop_id"].split(".")[0]
         
         # 检查是否是选择字符串按钮触发的
@@ -996,12 +996,13 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
                 
                 if not string_exists:
                     selected_strings.append(string_with_type)
-                
-                # 保存用户选择状态和默认配置文件
-                save_user_selections(selected_log_file, selected_strings)
-                # 自动更新默认配置文件
-                if selected_strings:
-                    save_default_config(selected_strings)
+    
+    # 只有在用户交互时才保存用户选择状态和默认配置文件
+    if is_user_interaction:
+        save_user_selections(selected_log_file, selected_strings)
+        # 自动更新默认配置文件
+        if selected_strings:
+            save_default_config(selected_strings)
     
     return selected_strings
 
