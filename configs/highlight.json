@@ -1,0 +1,12 @@
+{
+  "error": {
+    "keep": [
+      "AndroidRuntime",
+      "backtrace:",
+      "System.err",
+      "Killing",
+      "ANR"
+    ],
+    "filter": []
+  }
+}

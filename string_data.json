@@ -1,10 +1,14 @@
 {
   "categories": {
     "PlayerInterface": [
-      "PlayerInterface",
       "\"Player.",
       "Player.stop",
-      "Player.play"
+      "Player.play",
+      "signal",
+      "PlayerStatusChanged",
+      "<PlayerInterface>",
+      "event enter code",
+      "eventHandler"
     ],
     "demux": [
       "STB_DMXSetDemuxSource",
@@ -25,11 +29,16 @@
       "STB_PVRGetRetentionlimitTimeStamp",
       "STB_PVRPlaybackNotifyTime",
       "StopPlaying",
-      "STB_PVRStartPlaying"
+      "STB_PVRStartPlaying",
+      "AM_DVR_PLAYER_EVENT_PROGRESS"
     ],
     "error": [
       "backtrace",
-      "AndroidRuntime"
+      "AndroidRuntime",
+      "Killing",
+      "ANR",
+      "System.err",
+      "backtrace:"
     ],
     "tsplayer": [
       "tsplayer"
@@ -49,6 +58,26 @@
     "dtvkitserver": [
       "IPC",
       "IPC-->"
+    ],
+    "STBHWDEMUX_USB": [
+      "STBHWDEMUX_USB"
+    ],
+    "CIPlus": [
+      "STB_EVENT_CI_TRICK_MODE_CONTROL",
+      "APP_EVENT_CIPLUS_CONTENT_PROTECTION",
+      "CIPlusEventTask",
+      "<DvbInterface>"
+    ],
+    "STBCICC": [
+      "STBCICC",
+      "STB_CiCcSendRecordStart",
+      "STB_CiCcSetRecordOperatingMode",
+      "UnpackUri",
+      "STB_CiCcSendRecordStop",
+      "STB_CiHandlePinEvent",
+      "STB_CINotifyRecordStartStatus",
+      "STB_CiCcNotifyModuleInsert",
+      "STB_CiCcNotifyModuleRemove"
     ]
   }
 }

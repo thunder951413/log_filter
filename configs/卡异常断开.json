@@ -1,0 +1,20 @@
+{
+  "error": {
+    "keep": [
+      "backtrace",
+      "AndroidRuntime",
+      "ANR",
+      "Killing",
+      "System.err",
+      "backtrace:"
+    ],
+    "filter": []
+  },
+  "STBCICC": {
+    "keep": [
+      "STB_CiCcNotifyModuleRemove",
+      "STB_CiCcNotifyModuleInsert"
+    ],
+    "filter": []
+  }
+}
