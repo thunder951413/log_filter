@@ -721,7 +721,8 @@ def show_config_status(select_clicks, clear_clicks, data, selected_strings, acti
             if selected_string in selected_strings:
                 return "该字符串已经被选择", True, "warning"
             else:
-                return "已选择字符串", True, "success"
+                # 不显示"已选择字符串"提示
+                return "", False, "success"
     
     # 清除选择状态
     if "clear-selection-btn" in trigger_id:
@@ -1524,135 +1525,7 @@ def execute_command(full_command, selected_strings=None, data=None):
 
 
 
-# 文件上传回调
-@app.callback(
-    [Output("upload-status", "children", allow_duplicate=True),
-     Output("log-file-selector", "options", allow_duplicate=True)],
-    [Input("upload-log-file", "contents")],
-    [State("upload-log-file", "filename"),
-     State("log-file-selector", "options")],
-    prevent_initial_call=True
-)
-def handle_upload(contents, filename, current_options):
-    if contents is None or filename is None:
-        return "", dash.no_update
-    
-    try:
-        # 确保logs目录存在
-        ensure_log_dir()
-        
-        # 获取目标文件路径
-        target_path = os.path.join(LOG_DIR, filename)
-        
-        # 检查文件是否已存在
-        if os.path.exists(target_path):
-            return (
-                dbc.Alert(f"文件 '{filename}' 已存在，请重命名或删除原文件", color="warning"),
-                dash.no_update
-            )
-        
-        # 解析base64内容并保存文件
-        content_type, content_string = contents.split(',')
-        decoded = base64.b64decode(content_string)
-        
-        # 保存文件
-        with open(target_path, 'wb') as f:
-            f.write(decoded)
-        
-        # 更新文件选择器选项
-        log_files = get_log_files()
-        new_options = [{"label": file, "value": file} for file in log_files]
-        
-        return (
-            dbc.Alert(f"成功上传文件 '{filename}'", color="success"),
-            new_options
-        )
-        
-    except Exception as e:
-        return (
-            dbc.Alert(f"上传失败: {str(e)}", color="danger"),
-            dash.no_update
-        )
 
-# 切换上传/删除模式的回调
-@app.callback(
-    [Output("upload-mode-btn", "active"),
-     Output("delete-mode-btn", "active"),
-     Output("upload-mode-content", "style"),
-     Output("delete-mode-content", "style"),
-     Output("delete-file-selector", "options")],
-    [Input("upload-mode-btn", "n_clicks"),
-     Input("delete-mode-btn", "n_clicks")],
-    [State("upload-mode-btn", "active"),
-     State("delete-mode-btn", "active")]
-)
-def toggle_upload_delete_mode(upload_clicks, delete_clicks, upload_active, delete_active):
-    ctx = callback_context
-    if not ctx.triggered:
-        # 初始状态：上传模式激活
-        return True, False, {"display": "block"}, {"display": "none"}, []
-    
-    button_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    if button_id == "upload-mode-btn":
-        # 切换到上传模式
-        return True, False, {"display": "block"}, {"display": "none"}, []
-    elif button_id == "delete-mode-btn":
-        # 切换到删除模式，更新文件选择器选项
-        log_files = get_log_files()
-        delete_options = [{"label": file, "value": file} for file in log_files]
-        return False, True, {"display": "none"}, {"display": "block"}, delete_options
-    
-    # 默认返回上传模式
-    return True, False, {"display": "block"}, {"display": "none"}, []
-
-# 文件删除回调
-@app.callback(
-    [Output("delete-status", "children"),
-     Output("log-file-selector", "options", allow_duplicate=True),
-     Output("delete-file-selector", "value")],
-    [Input("delete-file-btn", "n_clicks")],
-    [State("delete-file-selector", "value")],
-    prevent_initial_call=True
-)
-def handle_delete(n_clicks, selected_file):
-    if n_clicks is None or n_clicks == 0 or not selected_file:
-        return "", dash.no_update, dash.no_update
-    
-    try:
-        # 确保logs目录存在
-        ensure_log_dir()
-        
-        # 获取目标文件路径
-        target_path = os.path.join(LOG_DIR, selected_file)
-        
-        # 检查文件是否存在
-        if not os.path.exists(target_path):
-            return (
-                dbc.Alert(f"文件 '{selected_file}' 不存在", color="warning"),
-                dash.no_update,
-                ""
-            )
-        
-        # 删除文件
-        os.remove(target_path)
-        
-        # 更新文件选择器选项
-        log_files = get_log_files()
-        new_options = [{"label": file, "value": file} for file in log_files]
-        
-        return (
-            dbc.Alert(f"成功删除文件 '{selected_file}'", color="success"),
-            new_options,
-            ""  # 清空删除选择器
-        )
-        
-    except Exception as e:
-        return (
-            dbc.Alert(f"删除失败: {str(e)}", color="danger"),
-            dash.no_update,
-            dash.no_update
-        )
 
 # 切换日志过滤选项折叠状态的回调
 @app.callback(
@@ -1689,7 +1562,7 @@ def render_tab_content(active_tab):
                         dbc.Collapse(
                             dbc.CardBody([
                                 dbc.Row([
-                                    # 左侧：当前控件
+                                    # 文件选择和命令生成区域（全宽）
                                     dbc.Col([
                                         # 文件选择
                                         dbc.Row([
@@ -1716,84 +1589,7 @@ def render_tab_content(active_tab):
                                                 dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
                                             ], width=12)
                                         ])
-                                    ], width=6),
-                                    
-                                    # 右侧：日志上传/删除功能
-                                    dbc.Col([
-                                        # 标题
-                                        dbc.Label("日志管理:", className="text-center mb-3"),
-                                        
-                                        # 切换按钮
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.ButtonGroup([
-                                                    dbc.Button("上传", id="upload-mode-btn", color="primary", active=True),
-                                                    dbc.Button("删除", id="delete-mode-btn", color="secondary", active=False)
-                                                ], className="w-100")
-                                            ], width=12)
-                                        ], className="mb-3"),
-                                        
-                                        # 上传模式内容
-                                        html.Div(id="upload-mode-content", children=[
-                                            # 文件上传组件
-                                            dcc.Upload(
-                                                id='upload-log-file',
-                                                children=html.Div([
-                                                    html.I(className="bi bi-cloud-upload me-2"),
-                                                    '拖拽文件到这里或点击选择文件'
-                                                ]),
-                                                style={
-                                                    'width': '100%',
-                                                    'height': '100px',
-                                                    'lineHeight': '100px',
-                                                    'borderWidth': '2px',
-                                                    'borderStyle': 'dashed',
-                                                    'borderRadius': '5px',
-                                                    'textAlign': 'center',
-                                                    'margin': '10px 0',
-                                                    'cursor': 'pointer',
-                                                    'backgroundColor': '#f8f9fa'
-                                                },
-                                                multiple=False,
-                                                accept='.txt,.log,.text'
-                                            ),
-                                            
-                                            # 上传状态显示
-                                            html.Div(id='upload-status', className="mt-2")
-                                        ]),
-                                        
-                                        # 删除模式内容
-                                        html.Div(id="delete-mode-content", style={"display": "none"}, children=[
-                                            # 文件选择器
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Label("选择要删除的文件:"),
-                                                    dcc.Dropdown(
-                                                        id="delete-file-selector",
-                                                        placeholder="选择文件...",
-                                                        options=[],
-                                                        clearable=False
-                                                    )
-                                                ], width=12, className="mb-3")
-                                            ]),
-                                            
-                                            # 删除按钮
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Button(
-                                                        "删除选中文件", 
-                                                        id="delete-file-btn", 
-                                                        color="danger", 
-                                                        className="w-100"
-                                                    )
-                                                ], width=12)
-                                            ]),
-                                            
-                                            # 删除状态显示
-                                            html.Div(id='delete-status', className="mt-2")
-                                        ]),
-                                        
-                                    ], width=6)
+                                    ], width=12)
                                 ])
                             ]),
                             id="filter-options-collapse",
@@ -1973,120 +1769,311 @@ def render_tab_content(active_tab):
     
     elif active_tab == "tab-3":
         # Tab3: 日志管理页面
-        # 获取日志文件列表
-        log_files = get_log_files()
-        file_items = []
-        
-        if log_files:
-            for filename in sorted(log_files):
-                file_path = os.path.join(LOG_DIR, filename)
-                try:
-                    # 获取文件信息
-                    stat = os.stat(file_path)
-                    size = stat.st_size
-                    mod_time = datetime.fromtimestamp(stat.st_mtime)
-                    
-                    # 创建文件项
-                    file_item = dbc.Card([
-                        dbc.CardBody([
-                            dbc.Row([
-                                dbc.Col([
-                                    html.H6(filename, className="mb-0 text-primary")
-                                ], width=8),
-                                dbc.Col([
-                                    html.Small(f"{size // 1024} KB", className="text-muted"),
-                                    html.Br(),
-                                    html.Small(mod_time.strftime("%Y-%m-%d %H:%M"), className="text-muted")
-                                ], width=4, className="text-end")
-                            ], className="align-items-center")
-                        ])
-                    ], className="mb-2")
-                    
-                    file_items.append(file_item)
-                except Exception as e:
-                    print(f"获取文件信息失败 {filename}: {e}")
-        
         return html.Div([
-            # 日志管理功能
             dbc.Row([
                 dbc.Col([
+                    html.H4("日志管理", className="mb-4"),
+                    
+                    # 文件上传区域
                     dbc.Card([
                         dbc.CardHeader([
-                            html.H4("日志文件管理", className="mb-0")
+                            html.H5("日志文件上传", className="mb-0")
                         ]),
                         dbc.CardBody([
-                            # 日志文件列表和操作
-                            dbc.Row([
-                                dbc.Col([
-                                    html.H5("日志文件列表", className="mb-3"),
-                                    html.Div(file_items if file_items else html.P("暂无日志文件", className="text-muted"), style={"maxHeight": "400px", "overflowY": "auto"})
-                                ], width=8),
-                                
-                                dbc.Col([
-                                    html.H5("文件操作", className="mb-3"),
-                                    
-                                    # 上传新日志文件
-                                    dbc.Card([
-                                        dbc.CardBody([
-                                            html.H6("上传日志文件", className="mb-2"),
-                                            dcc.Upload(
-                                                id='upload-log-file-management',
-                                                children=html.Div([
-                                                    html.I(className="bi bi-cloud-upload me-2"),
-                                                    '点击或拖拽文件'
-                                                ]),
-                                                style={
-                                                    'width': '100%',
-                                                    'height': '60px',
-                                                    'lineHeight': '60px',
-                                                    'borderWidth': '2px',
-                                                    'borderStyle': 'dashed',
-                                                    'borderRadius': '5px',
-                                                    'textAlign': 'center',
-                                                    'cursor': 'pointer',
-                                                    'backgroundColor': '#f8f9fa'
-                                                },
-                                                multiple=False,
-                                                accept='.txt,.log,.text'
-                                            ),
-                                            html.Div(id='upload-management-status', className="mt-2")
-                                        ])
-                                    ], className="mb-3"),
-                                    
-                                    # 批量操作
-                                    dbc.Card([
-                                        dbc.CardBody([
-                                            html.H6("文件操作", className="mb-2"),
-                                            html.P("文件列表会自动更新", className="text-muted small")
-                                        ])
-                                    ])
-                                ], width=4)
-                            ]),
+                            html.P("上传日志文件到logs目录，支持.txt和.log格式的文件。", className="text-muted mb-3"),
                             
-                            # 日志文件信息统计
+                            # 文件上传组件
+                            dcc.Upload(
+                                id='upload-log-file',
+                                children=html.Div([
+                                    html.I(className="bi bi-cloud-upload me-2"),
+                                    '拖拽文件到此处或点击选择文件'
+                                ]),
+                                style={
+                                    'width': '100%',
+                                    'height': '100px',
+                                    'lineHeight': '100px',
+                                    'borderWidth': '2px',
+                                    'borderStyle': 'dashed',
+                                    'borderRadius': '5px',
+                                    'textAlign': 'center',
+                                    'cursor': 'pointer',
+                                    'borderColor': '#6c757d',
+                                    'color': '#6c757d'
+                                },
+                                multiple=False,
+                                accept='.txt,.log'
+                            ),
+                            
+                            # 上传状态显示
+                            html.Div(id='upload-status', className="mt-3"),
+                            
+                            # 已上传文件列表
                             html.Hr(),
+                            html.H6("已上传的文件", className="mt-3"),
+                            html.Div(id='uploaded-files-list', className="mt-2")
+                        ])
+                    ], className="mb-4"),
+                    
+                    # 文件管理区域
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.H5("日志文件管理", className="mb-0")
+                        ]),
+                        dbc.CardBody([
+                            html.P("管理已上传的日志文件。", className="text-muted mb-3"),
+                            
+                            # 文件列表和操作
                             dbc.Row([
                                 dbc.Col([
-                                    html.H5("日志统计信息", className="mb-3"),
-                                    html.P("文件列表会自动更新", className="text-muted")
-                                ], width=12)
-                            ])
+                                    dbc.Label("选择日志文件:"),
+                                    dcc.Dropdown(
+                                        id="log-file-manager-selector",
+                                        placeholder="选择要管理的文件...",
+                                        clearable=True
+                                    )
+                                ], width=8),
+                                dbc.Col([
+                                    dbc.Label("操作:", className="d-block"),
+                                    dbc.Button("删除文件", id="delete-log-file-btn", color="danger", className="w-100")
+                                ], width=4)
+                            ], className="mb-3"),
+                            
+                            # 文件信息显示
+                            html.Div(id='file-info-display', className="mt-3")
                         ])
                     ])
                 ], width=12)
-            ], className="mb-4"),
-            
-            # 存储组件
-            dcc.Store(id="log-files-data", data={})
+            ], className="mb-4")
         ])
     
     # 默认返回空内容
     return html.Div()
 
+# 日志管理tab的回调函数
 
+# 文件上传处理
+@app.callback(
+    [Output('upload-status', 'children'),
+     Output('uploaded-files-list', 'children'),
+     Output('log-file-manager-selector', 'options', allow_duplicate=True)],
+    [Input('upload-log-file', 'contents')],
+    [State('upload-log-file', 'filename'),
+     State('upload-log-file', 'last_modified')],
+    prevent_initial_call=True
+)
+def handle_file_upload(contents, filename, last_modified):
+    if contents is None:
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    try:
+        # 确保logs目录存在
+        ensure_log_dir()
+        
+        # 解析文件内容
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # 保存文件到logs目录
+        file_path = os.path.join(LOG_DIR, filename)
+        with open(file_path, 'wb') as f:
+            f.write(decoded)
+        
+        # 更新文件列表
+        log_files = get_log_files()
+        
+        # 创建文件列表显示
+        file_list = []
+        for file in log_files:
+            file_path = os.path.join(LOG_DIR, file)
+            file_size = os.path.getsize(file_path)
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            file_list.append(html.Div([
+                dbc.Row([
+                    dbc.Col([html.Strong(file)], width=6),
+                    dbc.Col([f"大小: {file_size} 字节"], width=3),
+                    dbc.Col([f"修改时间: {file_mtime}"], width=3)
+                ], className="border-bottom py-2")
+            ]))
+        
+        if not file_list:
+            file_list = [html.P("暂无上传的文件", className="text-muted")]
+        
+        # 更新文件管理器选择器选项
+        options = [{'label': file, 'value': file} for file in log_files]
+        
+        # 返回成功状态
+        status = dbc.Alert(f"文件 '{filename}' 已成功上传到logs目录！", color="success", dismissable=True)
+        return status, file_list, options
+        
+    except Exception as e:
+        error_status = dbc.Alert(f"文件上传失败: {str(e)}", color="danger", dismissable=True)
+        return error_status, dash.no_update, dash.no_update
 
+# 更新文件管理器选择器选项
+@app.callback(
+    Output('log-file-manager-selector', 'options', allow_duplicate=True),
+    [Input('main-tabs', 'active_tab')],
+    prevent_initial_call=True
+)
+def update_file_manager_options(active_tab):
+    if active_tab == "tab-3":
+        log_files = get_log_files()
+        options = [{'label': file, 'value': file} for file in log_files]
+        return options
+    return dash.no_update
 
+# 显示文件信息
+@app.callback(
+    Output('file-info-display', 'children'),
+    [Input('log-file-manager-selector', 'value')],
+    prevent_initial_call=True
+)
+def show_file_info(selected_file):
+    if selected_file is None:
+        return html.P("请选择一个文件查看详细信息", className="text-muted")
+    
+    try:
+        file_path = os.path.join(LOG_DIR, selected_file)
+        
+        if not os.path.exists(file_path):
+            return dbc.Alert("文件不存在", color="warning")
+        
+        # 获取文件信息
+        file_size = os.path.getsize(file_path)
+        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+        file_ctime = datetime.fromtimestamp(os.path.getctime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 读取文件行数（只读取前几行预览）
+        line_count = 0
+        preview_lines = []
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for i, line in enumerate(f):
+                    line_count += 1
+                    if i < 5:  # 只显示前5行作为预览
+                        preview_lines.append(line.strip())
+        except:
+            line_count = "无法读取"
+        
+        return dbc.Card([
+            dbc.CardHeader([html.H6("文件详细信息", className="mb-0")]),
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([html.Strong("文件名:")], width=3),
+                    dbc.Col([selected_file], width=9)
+                ], className="mb-2"),
+                dbc.Row([
+                    dbc.Col([html.Strong("文件大小:")], width=3),
+                    dbc.Col([f"{file_size} 字节"], width=9)
+                ], className="mb-2"),
+                dbc.Row([
+                    dbc.Col([html.Strong("修改时间:")], width=3),
+                    dbc.Col([file_mtime], width=9)
+                ], className="mb-2"),
+                dbc.Row([
+                    dbc.Col([html.Strong("创建时间:")], width=3),
+                    dbc.Col([file_ctime], width=9)
+                ], className="mb-2"),
+                dbc.Row([
+                    dbc.Col([html.Strong("行数:")], width=3),
+                    dbc.Col([str(line_count) if isinstance(line_count, int) else line_count], width=9)
+                ], className="mb-3"),
+                html.Hr(),
+                html.H6("文件内容预览:", className="mb-2"),
+                html.Div([
+                    html.Pre(line, className="mb-1 text-muted small") for line in preview_lines
+                ], style={"maxHeight": "150px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "borderRadius": "5px"})
+            ])
+        ])
+        
+    except Exception as e:
+        return dbc.Alert(f"获取文件信息失败: {str(e)}", color="danger")
 
+# 删除文件操作
+@app.callback(
+    [Output('log-file-manager-selector', 'value', allow_duplicate=True),
+     Output('uploaded-files-list', 'children', allow_duplicate=True),
+     Output('file-info-display', 'children', allow_duplicate=True),
+     Output('log-file-manager-selector', 'options', allow_duplicate=True)],
+    [Input('delete-log-file-btn', 'n_clicks')],
+    [State('log-file-manager-selector', 'value')],
+    prevent_initial_call=True
+)
+def delete_log_file(n_clicks, selected_file):
+    if n_clicks is None or selected_file is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    try:
+        file_path = os.path.join(LOG_DIR, selected_file)
+        
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            
+            # 更新文件列表
+            log_files = get_log_files()
+            
+            # 创建文件列表显示
+            file_list = []
+            for file in log_files:
+                file_path = os.path.join(LOG_DIR, file)
+                file_size = os.path.getsize(file_path)
+                file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+                
+                file_list.append(html.Div([
+                    dbc.Row([
+                        dbc.Col([html.Strong(file)], width=6),
+                        dbc.Col([f"大小: {file_size} 字节"], width=3),
+                        dbc.Col([f"修改时间: {file_mtime}"], width=3)
+                    ], className="border-bottom py-2")
+                ]))
+            
+            if not file_list:
+                file_list = [html.P("暂无上传的文件", className="text-muted")]
+            
+            # 更新文件管理器选择器选项
+            options = [{'label': file, 'value': file} for file in log_files]
+            
+            # 清空选择器和文件信息显示
+            return None, file_list, html.P("文件已从logs目录删除", className="text-success"), options
+        else:
+            return dash.no_update, dash.no_update, dbc.Alert("文件不存在", color="warning"), dash.no_update
+            
+    except Exception as e:
+        return dash.no_update, dash.no_update, dbc.Alert(f"删除文件失败: {str(e)}", color="danger"), dash.no_update
+
+# 页面加载时初始化文件列表
+@app.callback(
+    Output('uploaded-files-list', 'children', allow_duplicate=True),
+    [Input('main-tabs', 'active_tab')],
+    prevent_initial_call=True
+)
+def initialize_file_list(active_tab):
+    if active_tab == "tab-3":
+        log_files = get_log_files()
+        
+        # 创建文件列表显示
+        file_list = []
+        for file in log_files:
+            file_path = os.path.join(LOG_DIR, file)
+            file_size = os.path.getsize(file_path)
+            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            file_list.append(html.Div([
+                dbc.Row([
+                    dbc.Col([html.Strong(file)], width=6),
+                    dbc.Col([f"大小: {file_size} 字节"], width=3),
+                    dbc.Col([f"修改时间: {file_mtime}"], width=3)
+                ], className="border-bottom py-2")
+            ]))
+        
+        if not file_list:
+            file_list = [html.P("暂无上传的文件", className="text-muted")]
+        
+        return file_list
+    
+    return dash.no_update
 
 
 if __name__ == "__main__":
