@@ -422,36 +422,11 @@ app.layout = html.Div([
                     ]),
                     dbc.Collapse(
                         dbc.CardBody([
-                            # 原有的配置文件管理内容
+                            # 配置文件选择器已移除
                             dbc.Row([
-                                dbc.Col([
-                                    dbc.Input(
-                                        id="config-name-input",
-                                        placeholder="输入配置文件名...",
-                                        type="text",
-                                        style={"width": "200px"}
-                                    )
-                                ], width=4),
-                                dbc.Col([
-                                    dbc.Button("保存选中字符串", id="save-selected-btn", color="success"),
-                                ], width=4),
                                 dbc.Col([
                                     dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
-                                ], width=4)
-                            ], className="mb-2"),
-                            dbc.Row([
-                                dbc.Col([
-                                    dcc.Dropdown(
-                                        id="config-selector",
-                                        placeholder="选择配置文件...",
-                                        style={"width": "200px"}
-                                    )
-                                ], width=4),
-                                dbc.Col([
-                                    dbc.Button("加载字符串", id="load-strings-btn", color="secondary", className="mr-2"),
-                                    html.Span(" "),
-                                    dbc.Button("删除配置", id="delete-config-btn", color="danger"),
-                                ], width=8)
+                                ], width=12)
                             ], className="mb-2"),
                             
 
@@ -845,45 +820,18 @@ def save_log_file_selection(selected_file, selected_strings):
     
     return selected_file if selected_file else ""
 
-# 更新配置文件选择器选项
-@app.callback(
-    Output("config-selector", "options"),
-    [Input("status-alert", "children")],
-    [State("status-alert", "children")],
-    prevent_initial_call=False
-)
-def update_config_selector(status_children, current_status):
-    ctx = callback_context
-    
-    # 只有在状态提示显示保存或删除成功时才触发更新
-    if ctx.triggered:
-        trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-        if trigger_id == "status-alert" and current_status:
-            # 检查状态消息是否包含保存或删除成功的信息
-            if "成功保存" in current_status or "成功删除" in current_status:
-                config_files = get_config_files()
-                options = [{"label": config, "value": config} for config in config_files]
-                return options
-    
-    # 默认情况下也返回当前配置列表
-    config_files = get_config_files()
-    options = [{"label": config, "value": config} for config in config_files]
-    return options
-
-# 选择字符串和加载字符串回调
+# 选择字符串回调
 @app.callback(
     Output("selected-strings", "data"),
     [Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
-     Input("clear-selection-btn", "n_clicks"),
-     Input("load-strings-btn", "n_clicks")],
+     Input("clear-selection-btn", "n_clicks")],
     [State("selected-strings", "data"),
      State("data-store", "data"),
-     State("config-selector", "value"),
      State("string-type-radio", "value"),
      State("selected-log-file", "data")],
     prevent_initial_call=True  # 防止页面加载时触发
 )
-def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_strings, data, selected_config, string_type, selected_log_file):
+def select_string(select_clicks, clear_clicks, selected_strings, data, string_type, selected_log_file):
     ctx = callback_context
     
     # 检查是否是用户交互触发的
@@ -900,71 +848,6 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
         # 同时清除默认配置文件
         save_default_config([])
         return []
-    
-    # 加载字符串
-    if load_clicks and selected_config and is_user_interaction:
-        config_path = get_config_path(selected_config)
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    saved_selections = json.load(f)
-                
-                # 从保存的选择中提取所有字符串
-                loaded_strings = []
-                
-                # 检查是否是新格式的配置文件（带类型信息）
-                is_new_format = False
-                for category, content in saved_selections.items():
-                    if isinstance(content, dict) and ("keep" in content or "filter" in content):
-                        is_new_format = True
-                        break
-                
-                if is_new_format:
-                    # 处理新格式的配置文件
-                    for category, content in saved_selections.items():
-                        if isinstance(content, dict):
-                            # 处理保留字符串
-                            if "keep" in content:
-                                for string in content["keep"]:
-                                    loaded_strings.append({
-                                        "text": string,
-                                        "type": "keep"
-                                    })
-                            
-                            # 处理过滤字符串
-                            if "filter" in content:
-                                for string in content["filter"]:
-                                    loaded_strings.append({
-                                        "text": string,
-                                        "type": "filter"
-                                    })
-                else:
-                    # 处理旧格式的配置文件
-                    for category, strings in saved_selections.items():
-                        for string in strings:
-                            loaded_strings.append({
-                                "text": string,
-                                "type": "keep"  # 默认为保留字符串
-                            })
-                
-                # 检查所有字符串是否都存在于当前数据中
-                valid_strings = []
-                
-                for item in loaded_strings:
-                    string_text = item["text"]
-                    for category, strings in data["categories"].items():
-                        if string_text in strings:
-                            valid_strings.append(item)
-                            break
-                
-                save_user_selections(selected_log_file, valid_strings)
-                return valid_strings
-            except Exception:
-                # 如果加载失败，保持当前选择不变
-                return selected_strings
-        else:
-            # 如果文件不存在，保持当前选择不变
-            return selected_strings
     
     # 选择字符串
     if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
@@ -1019,18 +902,13 @@ def select_or_load_string(select_clicks, clear_clicks, load_clicks, selected_str
      Output("status-alert", "color")],
     [Input("add-string-btn", "n_clicks"),
      Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
-     Input("clear-selection-btn", "n_clicks"),
-     Input("save-selected-btn", "n_clicks"),
-     Input("load-strings-btn", "n_clicks"),
-     Input("delete-config-btn", "n_clicks")],
+     Input("clear-selection-btn", "n_clicks")],
     [State("input-string", "value"),
      State("input-category", "value"),
      State("data-store", "data"),
-     State("selected-strings", "data"),
-     State("config-name-input", "value"),
-     State("config-selector", "value")]
+     State("selected-strings", "data")]
 )
-def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_clicks, delete_clicks, input_string, input_category, data, selected_strings, config_name, selected_config):
+def show_status(add_clicks, select_clicks, clear_clicks, input_string, input_category, data, selected_strings):
     ctx = callback_context
     
     if not ctx.triggered:
@@ -1064,121 +942,6 @@ def show_status(add_clicks, select_clicks, clear_clicks, save_clicks, load_click
                 return "该字符串已经被选择", True, "warning"
             else:
                 return "已选择字符串", True, "success"
-    
-    # 保存选中字符串状态
-    if "save-selected-btn" in trigger_id and save_clicks:
-        if selected_strings:
-            if not config_name:
-                return "请输入配置文件名", True, "warning"
-            
-            # 按分类和类型组织选中的字符串
-            categorized_strings = {}
-            for item in selected_strings:
-                if isinstance(item, dict):
-                    string_text = item["text"]
-                    string_type = item["type"]
-                    
-                    # 查找字符串所属的分类
-                    for category, strings in data["categories"].items():
-                        if string_text in strings:
-                            # 创建分类（如果不存在）
-                            if category not in categorized_strings:
-                                categorized_strings[category] = {"keep": [], "filter": []}
-                            
-                            # 添加字符串到相应类型
-                            categorized_strings[category][string_type].append(string_text)
-                            break
-                else:
-                    # 处理旧格式的字符串（不带类型信息）
-                    string_text = item
-                    
-                    # 查找字符串所属的分类
-                    for category, strings in data["categories"].items():
-                        if string_text in strings:
-                            # 创建分类（如果不存在）
-                            if category not in categorized_strings:
-                                categorized_strings[category] = {"keep": [], "filter": []}
-                            
-                            # 默认为保留字符串
-                            categorized_strings[category]["keep"].append(string_text)
-                            break
-            
-            # 保存选中的字符串到配置文件
-            config_path = get_config_path(config_name)
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
-            
-            return f"成功保存 {len(selected_strings)} 个选中的字符串到配置文件 '{config_name}'", True, "success"
-        else:
-            return "没有选中的字符串可供保存", True, "warning"
-    
-    # 加载字符串状态
-    if "load-strings-btn" in trigger_id and load_clicks:
-        if not selected_config:
-            return "请选择要加载的配置文件", True, "warning"
-        
-        config_path = get_config_path(selected_config)
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    saved_selections = json.load(f)
-                
-                # 从保存的选择中提取所有字符串
-                loaded_strings = []
-                
-                # 检查是否是新格式的配置文件（带类型信息）
-                is_new_format = False
-                for category, content in saved_selections.items():
-                    if isinstance(content, dict) and ("keep" in content or "filter" in content):
-                        is_new_format = True
-                        break
-                
-                if is_new_format:
-                    # 处理新格式的配置文件
-                    keep_count = 0
-                    filter_count = 0
-                    
-                    for category, content in saved_selections.items():
-                        if isinstance(content, dict):
-                            # 处理保留字符串
-                            if "keep" in content:
-                                keep_count += len(content["keep"])
-                            
-                            # 处理过滤字符串
-                            if "filter" in content:
-                                filter_count += len(content["filter"])
-                    
-                    if keep_count > 0 and filter_count > 0:
-                        return f"成功加载 {keep_count} 个保留字符串和 {filter_count} 个过滤字符串", True, "success"
-                    elif keep_count > 0:
-                        return f"成功加载 {keep_count} 个保留字符串", True, "success"
-                    else:
-                        return f"成功加载 {filter_count} 个过滤字符串", True, "success"
-                else:
-                    # 处理旧格式的配置文件
-                    for category, strings in saved_selections.items():
-                        loaded_strings.extend(strings)
-                    
-                    return f"成功加载 {len(loaded_strings)} 个字符串", True, "success"
-            except Exception:
-                return "加载配置文件失败", True, "danger"
-        else:
-            return "配置文件不存在", True, "warning"
-    
-    # 删除配置状态
-    if "delete-config-btn" in trigger_id and delete_clicks:
-        if not selected_config:
-            return "请选择要删除的配置文件", True, "warning"
-        
-        config_path = get_config_path(selected_config)
-        if os.path.exists(config_path):
-            try:
-                os.remove(config_path)
-                return f"成功删除配置文件 '{selected_config}'", True, "success"
-            except Exception:
-                return "删除配置文件失败", True, "danger"
-        else:
-            return "配置文件不存在", True, "warning"
     
     return "", False, "success"
 
