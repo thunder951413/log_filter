@@ -11,7 +11,13 @@ import base64
 from datetime import datetime
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.BOOTSTRAP],
+    external_scripts=[
+        "/assets/fullscreen_log.js"
+    ]
+)
 
 # 数据存储文件路径
 DATA_FILE = 'string_data.json'
@@ -2096,4 +2102,12 @@ def toggle_filter_options(n_clicks, is_open):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8052, host="0.0.0.0")
+    import argparse
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Log Filter Application')
+    parser.add_argument('--port', type=int, default=8052, help='Port to run the application on')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the application to')
+    args = parser.parse_args()
+    
+    app.run(debug=True, port=args.port, host=args.host)
