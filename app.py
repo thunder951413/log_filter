@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
@@ -14,9 +15,6 @@ from datetime import datetime
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.BOOTSTRAP],
-    external_scripts=[
-        "/assets/fullscreen_log.js"
-    ],
     suppress_callback_exceptions=True
 )
 
@@ -283,7 +281,8 @@ app.layout = html.Div([
             dbc.Col([
                 dbc.Tabs([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
-                    dbc.Tab(label="配置管理", tab_id="tab-2")
+                    dbc.Tab(label="配置管理", tab_id="tab-2"),
+                    dbc.Tab(label="日志管理", tab_id="tab-3")
                 ], id="main-tabs", active_tab="tab-1")
             ], width=12)
         ], className="mb-4"),
@@ -291,9 +290,13 @@ app.layout = html.Div([
         # Tab内容容器
         html.Div(id="tab-content"),
         
-        # 存储组件
+        # 存储组件 - 移到主布局中，确保所有tab都能访问
+        dcc.Store(id='data-store', data=load_data()),
         dcc.Store(id='filtered-result-store', data=''),
         dcc.Store(id='source-result-store', data=''),
+        dcc.Store(id='selected-strings', data=[]),
+        dcc.Store(id='selected-log-file', data=''),
+        dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
         
     ], fluid=True)
 ])
@@ -307,6 +310,31 @@ app.layout = html.Div([
 def initialize_data_store(status_children):
     return load_data()
 
+# 单向同步：从string-type-radio更新到string-type-store
+@app.callback(
+    Output("string-type-store", "data"),
+    [Input("string-type-radio", "value")],
+    prevent_initial_call=True
+)
+def sync_string_type_to_store(radio_value):
+    # 当radio值改变时，更新store
+    if radio_value:
+        return radio_value
+    return dash.no_update
+
+# 当切换到tab-2时，从store恢复radio的值
+@app.callback(
+    Output("string-type-radio", "value"),
+    [Input("main-tabs", "active_tab")],
+    [State("string-type-store", "data")],
+    prevent_initial_call=True
+)
+def restore_string_type_from_store(active_tab, store_value):
+    # 只在切换到tab-2时，从store恢复radio的值
+    if active_tab == "tab-2" and store_value:
+        return store_value
+    return dash.no_update
+
 # 页面加载时自动恢复之前的选择
 @app.callback(
     Output("log-file-selector", "value"),
@@ -315,6 +343,10 @@ def initialize_data_store(status_children):
     prevent_initial_call=True  # 改为True，防止页面加载时立即触发
 )
 def restore_previous_selections(data_store_data, log_file_options):
+    # 只有在组件存在且有选项时才处理
+    if not log_file_options:
+        return dash.no_update
+        
     ctx = dash.callback_context
     
     # 检查是否是用户交互触发的
@@ -347,10 +379,15 @@ def restore_previous_selections(data_store_data, log_file_options):
 # 页面加载时恢复字符串选择
 @app.callback(
     Output("selected-strings", "data", allow_duplicate=True),
-    [Input("selected-log-file", "data")],
+    [Input("selected-log-file", "data"),
+     Input("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
 )
-def restore_string_selections(selected_log_file):
+def restore_string_selections(selected_log_file, active_tab):
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update
+    
     # 只有当有选中的日志文件时才恢复字符串
     if selected_log_file:
         # 从文件加载用户选择状态
@@ -457,10 +494,16 @@ def add_string(n_clicks, input_string, input_category, data):
      Output("category-filter", "options")],
     [Input("data-store", "data"),
      Input("category-filter", "value"),
-     Input("string-type-radio", "value"),
-     Input("selected-strings", "data")]  # 添加selected-strings作为输入
+     Input("string-type-store", "data"),  # 使用store代替radio
+     Input("selected-strings", "data")],  # 添加selected-strings作为输入
+    [State("main-tabs", "active_tab")],  # 将active_tab改为State，避免tab切换触发回调
+    prevent_initial_call=True
 )
-def update_saved_strings(data, selected_category, string_type, selected_strings):
+def update_saved_strings(data, selected_category, string_type, selected_strings, active_tab):
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update, dash.no_update
+    
     if not data or "categories" not in data:
         return [], [{"label": "所有分类", "value": "all"}]
     
@@ -505,12 +548,12 @@ def update_saved_strings(data, selected_category, string_type, selected_strings)
 
 # 更新日志文件选择器选项
 @app.callback(
-    Output("log-file-selector", "options"),
+    Output("log-file-selector", "options", allow_duplicate=True),
     [Input("status-alert", "children")],
     prevent_initial_call=True  # 改为True，防止页面加载时立即触发
 )
 def update_log_file_selector(status_children):
-    # 始终显示日志文件选择器
+    # 只有在组件存在时才更新选项
     log_files = get_log_files()
     options = [{"label": file, "value": file} for file in log_files]
     return options
@@ -519,39 +562,30 @@ def update_log_file_selector(status_children):
 @app.callback(
     Output("selected-log-file", "data"),
     [Input("log-file-selector", "value")],
-    [State("selected-strings", "data")],
+    [State("selected-strings", "data"),
+     State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True  # 防止页面加载时触发保存
 )
-def save_log_file_selection(selected_file, selected_strings):
-    ctx = dash.callback_context
-    
-    # 检查是否是页面初始加载时的触发
-    is_initial_trigger = False
-    if ctx.triggered:
-        trigger_id = ctx.triggered[0]["prop_id"]
-        # 如果是页面初始加载时的触发，并且值是None或空字符串，则认为是初始触发
-        if trigger_id == "log-file-selector.value" and (ctx.triggered[0]["value"] is None or ctx.triggered[0]["value"] == ""):
-            is_initial_trigger = True
+def save_log_file_selection(selected_file, selected_strings, active_tab):
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update
     
     # 只有在用户真正选择文件时才保存，而不是在恢复过程中
-    if not is_initial_trigger and selected_file is not None and selected_file != "":
+    if selected_file is not None and selected_file != "":
         # 保存到文件
         save_user_selections(selected_file, selected_strings)
-    
-    # 返回当前选择的文件，但如果是初始触发则返回dash.no_update
-    if is_initial_trigger:
-        return dash.no_update
     
     return selected_file if selected_file else ""
 
 # 选择字符串回调
 @app.callback(
-    Output("selected-strings", "data"),
+    Output("selected-strings", "data", allow_duplicate=True),
     [Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
      Input({"type": "clear-selection-btn", "index": dash.ALL}, "n_clicks")],
     [State("selected-strings", "data"),
      State("data-store", "data"),
-     State("string-type-radio", "value"),
+     State("string-type-store", "data"),  # 使用store代替radio
      State("selected-log-file", "data"),
      State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True  # 防止页面加载时触发
@@ -898,10 +932,15 @@ def delete_drawer_string(n_clicks, button_ids, selected_category, data):
 @app.callback(
     Output("selected-strings-container", "children"),
     [Input("selected-strings", "data"),
-     Input("data-store", "data")],
+     Input("data-store", "data"),
+     Input("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True  # 防止页面加载时立即触发
 )  
-def update_selected_strings(selected_strings, data):
+def update_selected_strings(selected_strings, data, active_tab):
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update
+    
     if not selected_strings:
         return [html.P("没有选中的字符串", className="text-muted")]
     
@@ -1006,10 +1045,15 @@ def update_selected_strings(selected_strings, data):
     [Input({"type": "selected-string-btn", "index": dash.ALL}, "n_clicks")],
     [State({"type": "selected-string-btn", "index": dash.ALL}, "id"),
      State("selected-strings", "data"),
-     State("selected-log-file", "data")],
+     State("selected-log-file", "data"),
+     State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True
 )
-def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_file):
+def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_file, active_tab):
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update
+    
     ctx = callback_context
     
     if not ctx.triggered:
@@ -1059,10 +1103,15 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
     [Input("execute-filter-btn", "n_clicks"),
      Input("display-mode", "value")],
     [State("selected-strings", "data"),
-     State("log-file-selector", "value")],
+     State("log-file-selector", "value"),
+     State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, display_mode, selected_strings, selected_log_file):
+def execute_filter_command(n_clicks, display_mode, selected_strings, selected_log_file, active_tab):
+    # 只有在日志过滤tab激活时才处理回调
+    if active_tab != "tab-1":
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
     # 获取触发回调的组件ID
     ctx = dash.callback_context
     if not ctx.triggered:
@@ -1851,10 +1900,7 @@ def render_tab_content(active_tab):
                 style={"width": "66.67%"}
             ),
             
-            # 存储组件
-            dcc.Store(id="data-store"),
-            dcc.Store(id="selected-strings", data=[]),
-            dcc.Store(id="selected-log-file", data=""),
+            # 存储组件 - data-store已移到主布局中，不再需要在tab中重复定义
         ])
     elif active_tab == "tab-2":
         # Tab2: 配置管理页面
@@ -1922,44 +1968,124 @@ def render_tab_content(active_tab):
                 ], width=12)
             ], className="mb-4"),
             
-            # 配置管理功能
+            # 存储组件 - 已移到主布局中，不再需要在tab中重复定义
+        ])
+    
+    elif active_tab == "tab-3":
+        # Tab3: 日志管理页面
+        # 获取日志文件列表
+        log_files = get_log_files()
+        file_items = []
+        
+        if log_files:
+            for filename in sorted(log_files):
+                file_path = os.path.join(LOG_DIR, filename)
+                try:
+                    # 获取文件信息
+                    stat = os.stat(file_path)
+                    size = stat.st_size
+                    mod_time = datetime.fromtimestamp(stat.st_mtime)
+                    
+                    # 创建文件项
+                    file_item = dbc.Card([
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H6(filename, className="mb-0 text-primary")
+                                ], width=8),
+                                dbc.Col([
+                                    html.Small(f"{size // 1024} KB", className="text-muted"),
+                                    html.Br(),
+                                    html.Small(mod_time.strftime("%Y-%m-%d %H:%M"), className="text-muted")
+                                ], width=4, className="text-end")
+                            ], className="align-items-center")
+                        ])
+                    ], className="mb-2")
+                    
+                    file_items.append(file_item)
+                except Exception as e:
+                    print(f"获取文件信息失败 {filename}: {e}")
+        
+        return html.Div([
+            # 日志管理功能
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
                         dbc.CardHeader([
-                            html.H4("配置管理", className="mb-0")
+                            html.H4("日志文件管理", className="mb-0")
                         ]),
                         dbc.CardBody([
-                            html.P("您可以在这里管理配置文件，包括创建、加载和删除配置文件。"),
+                            # 日志文件列表和操作
                             dbc.Row([
                                 dbc.Col([
-                                    dbc.Button("查看配置文件", id="view-config-btn", color="primary", className="w-100 mb-2"),
-                                ], width=6),
+                                    html.H5("日志文件列表", className="mb-3"),
+                                    html.Div(file_items if file_items else html.P("暂无日志文件", className="text-muted"), style={"maxHeight": "400px", "overflowY": "auto"})
+                                ], width=8),
+                                
                                 dbc.Col([
-                                    dbc.Button("创建新配置", id="create-config-btn", color="success", className="w-100 mb-2"),
-                                ], width=6)
+                                    html.H5("文件操作", className="mb-3"),
+                                    
+                                    # 上传新日志文件
+                                    dbc.Card([
+                                        dbc.CardBody([
+                                            html.H6("上传日志文件", className="mb-2"),
+                                            dcc.Upload(
+                                                id='upload-log-file-management',
+                                                children=html.Div([
+                                                    html.I(className="bi bi-cloud-upload me-2"),
+                                                    '点击或拖拽文件'
+                                                ]),
+                                                style={
+                                                    'width': '100%',
+                                                    'height': '60px',
+                                                    'lineHeight': '60px',
+                                                    'borderWidth': '2px',
+                                                    'borderStyle': 'dashed',
+                                                    'borderRadius': '5px',
+                                                    'textAlign': 'center',
+                                                    'cursor': 'pointer',
+                                                    'backgroundColor': '#f8f9fa'
+                                                },
+                                                multiple=False,
+                                                accept='.txt,.log,.text'
+                                            ),
+                                            html.Div(id='upload-management-status', className="mt-2")
+                                        ])
+                                    ], className="mb-3"),
+                                    
+                                    # 批量操作
+                                    dbc.Card([
+                                        dbc.CardBody([
+                                            html.H6("文件操作", className="mb-2"),
+                                            html.P("文件列表会自动更新", className="text-muted small")
+                                        ])
+                                    ])
+                                ], width=4)
                             ]),
+                            
+                            # 日志文件信息统计
+                            html.Hr(),
                             dbc.Row([
                                 dbc.Col([
-                                    dbc.Button("加载默认配置", id="load-default-config-btn", color="info", className="w-100 mb-2"),
-                                ], width=6),
-                                dbc.Col([
-                                    dbc.Button("保存当前配置", id="save-current-config-btn", color="warning", className="w-100 mb-2"),
-                                ], width=6)
+                                    html.H5("日志统计信息", className="mb-3"),
+                                    html.P("文件列表会自动更新", className="text-muted")
+                                ], width=12)
                             ])
                         ])
                     ])
                 ], width=12)
-            ]),
+            ], className="mb-4"),
             
             # 存储组件
-            dcc.Store(id="data-store"),
-            dcc.Store(id="selected-strings", data=[]),
-            dcc.Store(id="selected-log-file", data=""),
+            dcc.Store(id="log-files-data", data={})
         ])
     
     # 默认返回空内容
     return html.Div()
+
+
+
+
 
 
 
