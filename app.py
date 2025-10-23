@@ -1792,7 +1792,39 @@ def render_tab_content(active_tab):
                                         ]),
                                         html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"})
                                     ], width=6)
-                                ])
+                                ]),
+                                
+                                # 保存至配置文件功能区域
+                                html.Hr(),
+                                html.H4("保存至配置文件", className="mt-4 mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("配置名称:"),
+                                        dbc.Input(
+                                            id="config-name-input",
+                                            type="text",
+                                            placeholder="输入配置文件名（不含.json后缀）",
+                                            className="mb-2"
+                                        )
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("选择配置文件:"),
+                                        dcc.Dropdown(
+                                            id="config-file-selector",
+                                            placeholder="选择要加载或删除的配置文件...",
+                                            clearable=True
+                                        )
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("操作:", className="d-block"),
+                                        dbc.Button("保存配置", id="save-config-btn", color="primary", className="w-100 mb-2"),
+                                        dbc.Button("加载配置", id="load-config-btn", color="success", className="w-100 mb-2")
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("管理:", className="d-block"),
+                                        dbc.Button("删除配置", id="delete-config-btn", color="danger", className="w-100")
+                                    ], width=3)
+                                ], className="mt-3")
                             ]),
                             id="config-management-collapse",
                             is_open=True
@@ -2111,6 +2143,170 @@ def initialize_file_list(active_tab):
         return file_list
     
     return dash.no_update
+
+# 更新配置文件选择器选项
+@app.callback(
+    Output('config-file-selector', 'options'),
+    [Input('main-tabs', 'active_tab')],
+    prevent_initial_call='initial_duplicate'
+)
+def update_config_file_selector(active_tab):
+    if active_tab == "tab-2":
+        config_files = get_config_files()
+        options = [{'label': file, 'value': file} for file in config_files]
+        return options
+    return dash.no_update
+
+# 加载配置文件回调
+@app.callback(
+    [Output('selected-strings', 'data', allow_duplicate=True),
+     Output('status-alert', 'children', allow_duplicate=True),
+     Output('status-alert', 'is_open', allow_duplicate=True),
+     Output('status-alert', 'color', allow_duplicate=True)],
+    [Input('load-config-btn', 'n_clicks')],
+    [State('config-file-selector', 'value'),
+     State('selected-log-file', 'data')],
+    prevent_initial_call=True
+)
+def load_configuration(n_clicks, config_name, selected_log_file):
+    if n_clicks is None or n_clicks == 0 or not config_name:
+        return dash.no_update, "请选择要加载的配置文件", True, "warning"
+    
+    try:
+        config_path = get_config_path(config_name)
+        
+        if not os.path.exists(config_path):
+            return dash.no_update, f"配置文件 {config_name} 不存在", True, "danger"
+        
+        # 加载配置文件
+        with open(config_path, 'r', encoding='utf-8') as f:
+            saved_selections = json.load(f)
+        
+        # 从保存的选择中提取所有字符串
+        loaded_strings = []
+        
+        for category, content in saved_selections.items():
+            if isinstance(content, dict):
+                # 处理保留字符串
+                if "keep" in content:
+                    for string_text in content["keep"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "keep"
+                        })
+                
+                # 处理过滤字符串
+                if "filter" in content:
+                    for string_text in content["filter"]:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "filter"
+                        })
+            else:
+                # 处理旧格式的配置文件
+                for string_text in content:
+                    loaded_strings.append({
+                        "text": string_text,
+                        "type": "keep"  # 默认为保留字符串
+                    })
+        
+        # 保存到用户选择状态
+        if selected_log_file:
+            save_user_selections(selected_log_file, loaded_strings)
+        
+        return loaded_strings, f"成功加载配置文件: {config_name}", True, "success"
+    
+    except Exception as e:
+        print(f"加载配置文件时出错: {e}")
+        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger"
+
+# 保存配置文件回调
+@app.callback(
+    [Output('status-alert', 'children', allow_duplicate=True),
+     Output('status-alert', 'is_open', allow_duplicate=True),
+     Output('status-alert', 'color', allow_duplicate=True),
+     Output('config-file-selector', 'options', allow_duplicate=True)],
+    [Input('save-config-btn', 'n_clicks')],
+    [State('config-name-input', 'value'),
+     State('config-file-selector', 'value'),
+     State('selected-strings', 'data')],
+    prevent_initial_call=True
+)
+def save_configuration(n_clicks, config_name_input, config_file_selector, selected_strings):
+    if n_clicks is None or n_clicks == 0:
+        return dash.no_update, False, "success", dash.no_update
+    
+    # 判断配置名称输入框和选择配置文件的下拉框哪个有值
+    # 如果都有值则使用配置名称输入框的值来保存配置
+    if config_name_input and config_file_selector:
+        # 两者都有值，优先使用配置名称输入框的值
+        config_name = config_name_input
+    elif config_name_input:
+        # 只有配置名称输入框有值
+        config_name = config_name_input
+    elif config_file_selector:
+        # 只有下拉框有值
+        config_name = config_file_selector
+    else:
+        # 两者都没有值
+        return "请填写配置名称或选择配置文件", True, "warning", dash.no_update
+    
+    # 验证配置名称
+    if not config_name.strip():
+        return "配置名称不能为空", True, "warning", dash.no_update
+    
+    try:
+        config_path = get_config_path(config_name)
+        
+        # 按分类和类型组织选中的字符串
+        categorized_strings = {}
+        
+        # 加载当前数据以获取分类信息
+        current_data = load_data()
+        
+        for item in selected_strings:
+            if isinstance(item, dict):
+                string_text = item["text"]
+                string_type = item["type"]
+                
+                # 查找字符串所属的分类
+                for category, strings in current_data["categories"].items():
+                    if string_text in strings:
+                        # 创建分类（如果不存在）
+                        if category not in categorized_strings:
+                            categorized_strings[category] = {"keep": [], "filter": []}
+                        
+                        # 添加字符串到相应类型
+                        categorized_strings[category][string_type].append(string_text)
+                        break
+            else:
+                # 处理旧格式的字符串（不带类型信息）
+                string_text = item
+                
+                # 查找字符串所属的分类
+                for category, strings in current_data["categories"].items():
+                    if string_text in strings:
+                        # 创建分类（如果不存在）
+                        if category not in categorized_strings:
+                            categorized_strings[category] = {"keep": [], "filter": []}
+                        
+                        # 默认为保留字符串
+                        categorized_strings[category]["keep"].append(string_text)
+                        break
+        
+        # 保存到配置文件
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
+        
+        # 更新配置文件选择器选项
+        config_files = get_config_files()
+        options = [{'label': file, 'value': file} for file in config_files]
+        
+        return f"配置已成功保存为: {config_name}", True, "success", options
+    
+    except Exception as e:
+        print(f"保存配置文件时出错: {e}")
+        return f"保存配置文件失败: {str(e)}", True, "danger", dash.no_update
 
 
 if __name__ == "__main__":
