@@ -16,7 +16,8 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.BOOTSTRAP],
     external_scripts=[
         "/assets/fullscreen_log.js"
-    ]
+    ],
+    suppress_callback_exceptions=True
 )
 
 # 数据存储文件路径
@@ -277,302 +278,23 @@ app.layout = html.Div([
             ], width=12)
         ]),
         
+        # Tab导航
+        dbc.Row([
+            dbc.Col([
+                dbc.Tabs([
+                    dbc.Tab(label="日志过滤", tab_id="tab-1"),
+                    dbc.Tab(label="配置管理", tab_id="tab-2")
+                ], id="main-tabs", active_tab="tab-1")
+            ], width=12)
+        ], className="mb-4"),
+        
+        # Tab内容容器
+        html.Div(id="tab-content"),
+        
         # 存储组件
         dcc.Store(id='filtered-result-store', data=''),
         dcc.Store(id='source-result-store', data=''),
         
-        # 日志过滤选项
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardHeader([
-                        html.Button(
-                            [html.I(className="bi bi-chevron-down me-2"), "日志过滤选项"],
-                            id="filter-options-toggle",
-                            className="btn btn-link text-decoration-none w-100 text-start"
-                        )
-                    ]),
-                    dbc.Collapse(
-                        dbc.CardBody([
-                            dbc.Row([
-                                # 左侧：当前控件
-                                dbc.Col([
-                                    # 文件选择
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("选择日志文件:"),
-                                            dcc.Dropdown(
-                                                id="log-file-selector",
-                                                placeholder="从logs目录选择文件...",
-                                                options=[],
-                                                clearable=False
-                                            )
-                                        ], width=12, className="mb-3")
-                                    ]),
-                                    
-                                    # 生成的命令
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("生成的命令:", className="mt-3"),
-                                            dbc.Textarea(
-                                                id="generated-command",
-                                                placeholder="这里将显示生成的grep命令...",
-                                                style={"height": "100px", "fontFamily": "monospace"}
-                                            ),
-                                            dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
-                                        ], width=12)
-                                    ])
-                                ], width=6),
-                                
-                                # 右侧：日志上传/删除功能
-                                dbc.Col([
-                                    # 标题
-                                    dbc.Label("日志管理:", className="text-center mb-3"),
-                                    
-                                    # 切换按钮
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.ButtonGroup([
-                                                dbc.Button("上传", id="upload-mode-btn", color="primary", active=True),
-                                                dbc.Button("删除", id="delete-mode-btn", color="secondary", active=False)
-                                            ], className="w-100")
-                                        ], width=12)
-                                    ], className="mb-3"),
-                                    
-                                    # 上传模式内容
-                                    html.Div(id="upload-mode-content", children=[
-                                        # 文件上传组件
-                                        dcc.Upload(
-                                            id='upload-log-file',
-                                            children=html.Div([
-                                                html.I(className="bi bi-cloud-upload me-2"),
-                                                '拖拽文件到这里或点击选择文件'
-                                            ]),
-                                            style={
-                                                'width': '100%',
-                                                'height': '100px',
-                                                'lineHeight': '100px',
-                                                'borderWidth': '2px',
-                                                'borderStyle': 'dashed',
-                                                'borderRadius': '5px',
-                                                'textAlign': 'center',
-                                                'margin': '10px 0',
-                                                'cursor': 'pointer',
-                                                'backgroundColor': '#f8f9fa'
-                                            },
-                                            multiple=False,
-                                            accept='.txt,.log,.text'
-                                        ),
-                                        
-                                        # 上传状态显示
-                                        html.Div(id='upload-status', className="mt-2")
-                                    ]),
-                                    
-                                    # 删除模式内容
-                                    html.Div(id="delete-mode-content", style={"display": "none"}, children=[
-                                        # 文件选择器
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.Label("选择要删除的文件:"),
-                                                dcc.Dropdown(
-                                                    id="delete-file-selector",
-                                                    placeholder="选择文件...",
-                                                    options=[],
-                                                    clearable=False
-                                                )
-                                            ], width=12, className="mb-3")
-                                        ]),
-                                        
-                                        # 删除按钮
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.Button(
-                                                    "删除选中文件", 
-                                                    id="delete-file-btn", 
-                                                    color="danger", 
-                                                    className="w-100"
-                                                )
-                                            ], width=12)
-                                        ]),
-                                        
-                                        # 删除状态显示
-                                        html.Div(id='delete-status', className="mt-2")
-                                    ]),
-                                    
-                                ], width=6)
-                            ])
-                        ]),
-                        id="filter-options-collapse",
-                        is_open=True
-                    )
-                ])
-            ], width=12)
-        ], className="mb-4"),
-        
-        # 配置文件管理选项
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardHeader([
-                        html.Button(
-                            [html.I(className="bi bi-chevron-down me-2"), "配置文件管理"],
-                            id="config-management-toggle",
-                            className="btn btn-link text-decoration-none w-100 text-start"
-                        )
-                    ]),
-                    dbc.Collapse(
-                        dbc.CardBody([
-                            # 配置文件选择器已移除
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
-                                ], width=12)
-                            ], className="mb-2"),
-                            
-
-                            
-                            # 选中的字符串和已保存的字符串区域（并排布局）
-                            html.Hr(),
-                            dbc.Row([
-                                # 左侧：选中的字符串
-                                dbc.Col([
-                                    html.H4("选中的字符串", className="card-title"),
-                                    dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
-                                    html.Div(id="selected-strings-container", style={"maxHeight": "600px", "overflowY": "auto"})
-                                ], width=6),
-                                
-                                # 右侧：已保存的字符串
-                                dbc.Col([
-                                    html.H4("已保存的字符串", className="card-title"),
-                                    dcc.Dropdown(
-                                        id="category-filter",
-                                        options=[{"label": "所有分类", "value": "all"}] + 
-                                                [{"label": cat, "value": cat} for cat in data["categories"].keys()],
-                                        value="all",
-                                        clearable=False
-                                    ),
-                                    html.Div(className="mt-2 mb-2", children=[
-                                        dbc.Label("字符串类型:", className="me-2"),
-                                        dbc.RadioItems(
-                                            id="string-type-radio",
-                                            options=[
-                                                {"label": "保留字符串", "value": "keep"},
-                                                {"label": "过滤字符串", "value": "filter"}
-                                            ],
-                                            value="keep",
-                                            inline=True
-                                        )
-                                    ]),
-                                    html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"})
-                                ], width=6)
-                            ])
-                        ]),
-                        id="config-management-collapse",
-                        is_open=True
-                    )
-                ])
-            ], width=12)
-        ], className="mb-4"),
-        
-        # 执行过滤命令按钮
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100", size="lg")
-                            ], width=12)
-                        ])
-                    ])
-                ])
-            ], width=12)
-        ], className="mb-3"),
-        
-        # 日志过滤结果
-        dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4("日志过滤结果", className="card-title"),
-                        # 显示模式切换开关
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Label("显示模式:"),
-                                dbc.RadioItems(
-                                    id="display-mode",
-                                    options=[
-                                        {"label": "过滤结果", "value": "filtered"},
-                                        {"label": "源文件", "value": "source"},
-                                        {"label": "高亮显示", "value": "highlight"}
-                                    ],
-                                    value="filtered",
-                                    inline=True
-                                )
-                            ], width=12, className="mb-3")
-                        ]),
-                        html.Div(id="log-filter-results", style={"maxHeight": "600px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
-                    ])
-                ])
-            ], width=12)
-        ], className="mb-4"),
-        
-        # 抽屉组件
-        dbc.Offcanvas(
-            [
-                html.H4("字符串管理", className="mt-3 mb-4"),
-                
-                # 添加字符串部分
-                html.H5("添加新字符串", className="mb-3"),
-                dbc.Row([
-                    dbc.Col([
-                        dbc.Label("字符串内容:"),
-                        dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
-                    ], width=12, className="mb-3"),
-                    dbc.Col([
-                        dbc.Label("分类:"),
-                        dbc.Input(
-                            id="input-category",
-                            placeholder="输入分类名称...",
-                            type="text",
-                            list="category-suggestions"
-                        ),
-                        html.Datalist(
-                            id="category-suggestions",
-                            children=[]
-                        )
-                    ], width=12, className="mb-3"),
-                    dbc.Col([
-                        dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
-                    ], width=12)
-                ], className="mb-4 p-3 border rounded"),
-                
-                # 管理现有字符串部分
-                html.H5("管理现有字符串", className="mb-3"),
-                dbc.Row([
-                    dbc.Col([
-                        dbc.Label("选择分类:"),
-                        dcc.Dropdown(
-                            id="drawer-category-filter",
-                            placeholder="选择分类查看字符串...",
-                            clearable=True
-                        )
-                    ], width=12, className="mb-3"),
-                    dbc.Col([
-                        html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
-                    ], width=12)
-                ], className="mb-4 p-3 border rounded")
-            ],
-            id="keyword-drawer",
-            placement="end",
-            is_open=False,
-            style={"width": "66.67%"}
-        ),
-        
-        # 存储组件
-        dcc.Store(id="data-store"),
-        dcc.Store(id="selected-strings", data=[]),
-        dcc.Store(id="selected-log-file", data=""),
     ], fluid=True)
 ])
 
@@ -590,22 +312,21 @@ def initialize_data_store(status_children):
     Output("log-file-selector", "value"),
     [Input("data-store", "data")],
     [State("log-file-selector", "options")],
-    prevent_initial_call=False
+    prevent_initial_call=True  # 改为True，防止页面加载时立即触发
 )
 def restore_previous_selections(data_store_data, log_file_options):
     ctx = dash.callback_context
     
-    # 检查是否是页面初始加载
-    # 在页面加载时，triggered可能包含初始触发信息，我们需要检查是否是真正的用户交互
-    is_initial_load = True
+    # 检查是否是用户交互触发的
+    is_user_interaction = False
     if ctx.triggered:
-        # 检查触发源，如果是data-store的初始加载，则认为是页面初始加载
+        # 检查触发源，如果是data-store的数据更新，则认为是有效的交互
         trigger_id = ctx.triggered[0]["prop_id"]
-        if trigger_id != "data-store.data":
-            is_initial_load = False
+        if trigger_id == "data-store.data" and data_store_data is not None:
+            is_user_interaction = True
     
-    # 只在页面初始加载时执行恢复
-    if is_initial_load:
+    # 只在有效交互时执行恢复
+    if is_user_interaction:
         # 从文件加载用户选择状态
         user_selections = load_user_selections()
         selected_log_file = user_selections.get("selected_log_file", "")
@@ -620,7 +341,7 @@ def restore_previous_selections(data_store_data, log_file_options):
         # 如果没有找到匹配的日志文件，返回空字符串
         return ""
     
-    # 如果不是初始加载，保持当前状态不变
+    # 如果不是有效交互，保持当前状态不变
     return dash.no_update
 
 # 页面加载时恢复字符串选择
@@ -660,7 +381,8 @@ def restore_string_selections(selected_log_file):
 @app.callback(
     Output("config-management-collapse", "is_open"),
     [Input("config-management-toggle", "n_clicks")],
-    [State("config-management-collapse", "is_open")]
+    [State("config-management-collapse", "is_open")],
+    prevent_initial_call=True
 )
 def toggle_config_management(n_clicks, is_open):
     if n_clicks:
@@ -682,7 +404,8 @@ def toggle_drawer(n_clicks, is_open):
 @app.callback(
     Output("category-suggestions", "children"),
     [Input("data-store", "data"),
-     Input("keyword-drawer", "is_open")]
+     Input("keyword-drawer", "is_open")],
+    prevent_initial_call=True  # 防止页面加载时立即触发
 )
 def update_drawer_category_options(data, is_open):
     if not data or "categories" not in data:
@@ -699,7 +422,8 @@ def update_drawer_category_options(data, is_open):
     [Input("add-string-btn", "n_clicks")],
     [State("input-string", "value"),
      State("input-category", "value"),
-     State("data-store", "data")]
+     State("data-store", "data")],
+    prevent_initial_call=True
 )
 def add_string(n_clicks, input_string, input_category, data):
     if n_clicks and input_string and input_category:
@@ -783,7 +507,7 @@ def update_saved_strings(data, selected_category, string_type, selected_strings)
 @app.callback(
     Output("log-file-selector", "options"),
     [Input("status-alert", "children")],
-    prevent_initial_call=False
+    prevent_initial_call=True  # 改为True，防止页面加载时立即触发
 )
 def update_log_file_selector(status_children):
     # 始终显示日志文件选择器
@@ -824,15 +548,20 @@ def save_log_file_selection(selected_file, selected_strings):
 @app.callback(
     Output("selected-strings", "data"),
     [Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
-     Input("clear-selection-btn", "n_clicks")],
+     Input({"type": "clear-selection-btn", "index": dash.ALL}, "n_clicks")],
     [State("selected-strings", "data"),
      State("data-store", "data"),
      State("string-type-radio", "value"),
-     State("selected-log-file", "data")],
+     State("selected-log-file", "data"),
+     State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True  # 防止页面加载时触发
 )
-def select_string(select_clicks, clear_clicks, selected_strings, data, string_type, selected_log_file):
+def select_string(select_clicks, clear_clicks, selected_strings, data, string_type, selected_log_file, active_tab):
     ctx = callback_context
+    
+    # 只有在配置管理tab激活时才处理回调
+    if active_tab != "tab-2":
+        return dash.no_update
     
     # 检查是否是用户交互触发的
     is_user_interaction = False
@@ -843,11 +572,17 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
             is_user_interaction = True
     
     # 清除选择
-    if clear_clicks and is_user_interaction:
-        save_user_selections(selected_log_file, [])
-        # 同时清除默认配置文件
-        save_default_config([])
-        return []
+    if ctx.triggered and is_user_interaction:
+        button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        
+        # 检查是否是清除选择按钮触发的
+        if "clear-selection-btn" in button_id:
+            # 检查是否有清除按钮被点击
+            if clear_clicks and any(clicks is not None and clicks > 0 for clicks in clear_clicks):
+                save_user_selections(selected_log_file, [])
+                # 同时清除默认配置文件
+                save_default_config([])
+                return []
     
     # 选择字符串
     if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
@@ -895,37 +630,48 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
     
     return selected_strings
 
-# 状态提示回调 - 整合所有状态更新
+# 日志过滤tab的状态提示回调
 @app.callback(
     [Output("status-alert", "children"),
      Output("status-alert", "is_open"),
      Output("status-alert", "color")],
-    [Input("add-string-btn", "n_clicks"),
-     Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
-     Input("clear-selection-btn", "n_clicks")],
+    [Input("add-string-btn", "n_clicks")],
     [State("input-string", "value"),
      State("input-category", "value"),
-     State("data-store", "data"),
-     State("selected-strings", "data")]
+     State("data-store", "data")],
+    prevent_initial_call=True
 )
-def show_status(add_clicks, select_clicks, clear_clicks, input_string, input_category, data, selected_strings):
+def show_add_string_status(add_clicks, input_string, input_category, data):
+    if add_clicks and input_string and input_category:
+        return f"成功添加字符串到分类 '{input_category}'", True, "success"
+    elif add_clicks:
+        return "请输入字符串和分类", True, "danger"
+    
+    return "", False, "success"
+
+# 配置管理tab的状态提示回调
+@app.callback(
+    [Output("status-alert", "children", allow_duplicate=True),
+     Output("status-alert", "is_open", allow_duplicate=True),
+     Output("status-alert", "color", allow_duplicate=True)],
+    [Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
+     Input({"type": "clear-selection-btn", "index": dash.ALL}, "n_clicks")],
+    [State("data-store", "data"),
+     State("selected-strings", "data"),
+     State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def show_config_status(select_clicks, clear_clicks, data, selected_strings, active_tab):
+    # 只在配置管理tab激活时处理
+    if active_tab != 'tab-2':
+        return "", False, "success"
+    
     ctx = callback_context
     
     if not ctx.triggered:
         return "", False, "success"
 
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    # 添加字符串状态
-    if "add-string-btn" in trigger_id and add_clicks:
-        if input_string and input_category:
-            return f"成功添加字符串到分类 '{input_category}'", True, "success"
-        else:
-            return "请输入字符串和分类", True, "danger"
-    
-    # 清除选择状态
-    if "clear-selection-btn" in trigger_id and clear_clicks:
-        return "已清除所有选择", True, "info"
     
     # 选择字符串状态
     if "select-string-btn" in trigger_id:
@@ -943,12 +689,19 @@ def show_status(add_clicks, select_clicks, clear_clicks, input_string, input_cat
             else:
                 return "已选择字符串", True, "success"
     
+    # 清除选择状态
+    if "clear-selection-btn" in trigger_id:
+        # 检查是否有清除按钮被点击
+        if clear_clicks and any(clicks is not None and clicks > 0 for clicks in clear_clicks):
+            return "已清除所有选择", True, "info"
+    
     return "", False, "success"
 
 # 抽屉中更新分类选项的回调
 @app.callback(
     Output("drawer-category-filter", "options"),
-    [Input("data-store", "data")]
+    [Input("data-store", "data")],
+    prevent_initial_call=True  # 防止页面加载时立即触发
 )
 def update_drawer_category_options(data):
     if not data or "categories" not in data:
@@ -1145,7 +898,8 @@ def delete_drawer_string(n_clicks, button_ids, selected_category, data):
 @app.callback(
     Output("selected-strings-container", "children"),
     [Input("selected-strings", "data"),
-     Input("data-store", "data")]
+     Input("data-store", "data")],
+    prevent_initial_call=True  # 防止页面加载时立即触发
 )  
 def update_selected_strings(selected_strings, data):
     if not selected_strings:
@@ -1855,12 +1609,357 @@ def handle_delete(n_clicks, selected_file):
 @app.callback(
     Output("filter-options-collapse", "is_open"),
     [Input("filter-options-toggle", "n_clicks")],
-    [State("filter-options-collapse", "is_open")]
+    [State("filter-options-collapse", "is_open")],
+    prevent_initial_call=True
 )
 def toggle_filter_options(n_clicks, is_open):
     if n_clicks:
         return not is_open
     return is_open
+
+# Tab切换回调函数
+@app.callback(
+    Output("tab-content", "children"),
+    [Input("main-tabs", "active_tab")]
+)
+def render_tab_content(active_tab):
+    if active_tab == "tab-1":
+        # Tab1: 日志过滤页面
+        return html.Div([
+            # 日志过滤选项
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.Button(
+                                [html.I(className="bi bi-chevron-down me-2"), "日志过滤选项"],
+                                id="filter-options-toggle",
+                                className="btn btn-link text-decoration-none w-100 text-start"
+                            )
+                        ]),
+                        dbc.Collapse(
+                            dbc.CardBody([
+                                dbc.Row([
+                                    # 左侧：当前控件
+                                    dbc.Col([
+                                        # 文件选择
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.Label("选择日志文件:"),
+                                                dcc.Dropdown(
+                                                    id="log-file-selector",
+                                                    placeholder="从logs目录选择文件...",
+                                                    options=[],
+                                                    clearable=False
+                                                )
+                                            ], width=12, className="mb-3")
+                                        ]),
+                                        
+                                        # 生成的命令
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.Label("生成的命令:", className="mt-3"),
+                                                dbc.Textarea(
+                                                    id="generated-command",
+                                                    placeholder="这里将显示生成的grep命令...",
+                                                    style={"height": "100px", "fontFamily": "monospace"}
+                                                ),
+                                                dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
+                                            ], width=12)
+                                        ])
+                                    ], width=6),
+                                    
+                                    # 右侧：日志上传/删除功能
+                                    dbc.Col([
+                                        # 标题
+                                        dbc.Label("日志管理:", className="text-center mb-3"),
+                                        
+                                        # 切换按钮
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dbc.ButtonGroup([
+                                                    dbc.Button("上传", id="upload-mode-btn", color="primary", active=True),
+                                                    dbc.Button("删除", id="delete-mode-btn", color="secondary", active=False)
+                                                ], className="w-100")
+                                            ], width=12)
+                                        ], className="mb-3"),
+                                        
+                                        # 上传模式内容
+                                        html.Div(id="upload-mode-content", children=[
+                                            # 文件上传组件
+                                            dcc.Upload(
+                                                id='upload-log-file',
+                                                children=html.Div([
+                                                    html.I(className="bi bi-cloud-upload me-2"),
+                                                    '拖拽文件到这里或点击选择文件'
+                                                ]),
+                                                style={
+                                                    'width': '100%',
+                                                    'height': '100px',
+                                                    'lineHeight': '100px',
+                                                    'borderWidth': '2px',
+                                                    'borderStyle': 'dashed',
+                                                    'borderRadius': '5px',
+                                                    'textAlign': 'center',
+                                                    'margin': '10px 0',
+                                                    'cursor': 'pointer',
+                                                    'backgroundColor': '#f8f9fa'
+                                                },
+                                                multiple=False,
+                                                accept='.txt,.log,.text'
+                                            ),
+                                            
+                                            # 上传状态显示
+                                            html.Div(id='upload-status', className="mt-2")
+                                        ]),
+                                        
+                                        # 删除模式内容
+                                        html.Div(id="delete-mode-content", style={"display": "none"}, children=[
+                                            # 文件选择器
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("选择要删除的文件:"),
+                                                    dcc.Dropdown(
+                                                        id="delete-file-selector",
+                                                        placeholder="选择文件...",
+                                                        options=[],
+                                                        clearable=False
+                                                    )
+                                                ], width=12, className="mb-3")
+                                            ]),
+                                            
+                                            # 删除按钮
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Button(
+                                                        "删除选中文件", 
+                                                        id="delete-file-btn", 
+                                                        color="danger", 
+                                                        className="w-100"
+                                                    )
+                                                ], width=12)
+                                            ]),
+                                            
+                                            # 删除状态显示
+                                            html.Div(id='delete-status', className="mt-2")
+                                        ]),
+                                        
+                                    ], width=6)
+                                ])
+                            ]),
+                            id="filter-options-collapse",
+                            is_open=True
+                        )
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+
+            
+            # 执行过滤命令按钮
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100", size="lg")
+                                ], width=12)
+                            ])
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-3"),
+            
+            # 日志过滤结果
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H4("日志过滤结果", className="card-title"),
+                            # 显示模式切换开关
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("显示模式:"),
+                                    dbc.RadioItems(
+                                        id="display-mode",
+                                        options=[
+                                            {"label": "过滤结果", "value": "filtered"},
+                                            {"label": "源文件", "value": "source"},
+                                            {"label": "高亮显示", "value": "highlight"}
+                                        ],
+                                        value="filtered",
+                                        inline=True
+                                    )
+                                ], width=12, className="mb-3")
+                            ]),
+                            html.Div(id="log-filter-results", style={"maxHeight": "600px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+            # 抽屉组件
+            dbc.Offcanvas(
+                [
+                    html.H4("字符串管理", className="mt-3 mb-4"),
+                    
+                    # 添加字符串部分
+                    html.H5("添加新字符串", className="mb-3"),
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Label("字符串内容:"),
+                            dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
+                        ], width=12, className="mb-3"),
+                        dbc.Col([
+                            dbc.Label("分类:"),
+                            dbc.Input(
+                                id="input-category",
+                                placeholder="输入分类名称...",
+                                type="text",
+                                list="category-suggestions"
+                            ),
+                            html.Datalist(
+                                id="category-suggestions",
+                                children=[]
+                            )
+                        ], width=12, className="mb-3"),
+                        dbc.Col([
+                            dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
+                        ], width=12)
+                    ], className="mb-4 p-3 border rounded"),
+                    
+                    # 管理现有字符串部分
+                    html.H5("管理现有字符串", className="mb-3"),
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Label("选择分类:"),
+                            dcc.Dropdown(
+                                id="drawer-category-filter",
+                                placeholder="选择分类查看字符串...",
+                                clearable=True
+                            )
+                        ], width=12, className="mb-3"),
+                        dbc.Col([
+                            html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                        ], width=12)
+                    ], className="mb-4 p-3 border rounded")
+                ],
+                id="keyword-drawer",
+                placement="end",
+                is_open=False,
+                style={"width": "66.67%"}
+            ),
+            
+            # 存储组件
+            dcc.Store(id="data-store"),
+            dcc.Store(id="selected-strings", data=[]),
+            dcc.Store(id="selected-log-file", data=""),
+        ])
+    elif active_tab == "tab-2":
+        # Tab2: 配置管理页面
+        return html.Div([
+            # 配置文件管理选项
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.Button(
+                                [html.I(className="bi bi-chevron-down me-2"), "配置文件管理"],
+                                id="config-management-toggle",
+                                className="btn btn-link text-decoration-none w-100 text-start"
+                            )
+                        ]),
+                        dbc.Collapse(
+                            dbc.CardBody([
+                                # 配置文件选择器已移除
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
+                                    ], width=12)
+                                ], className="mb-2"),
+                                
+                                # 选中的字符串和已保存的字符串区域（并排布局）
+                                html.Hr(),
+                                dbc.Row([
+                                    # 左侧：选中的字符串
+                                    dbc.Col([
+                                        html.H4("选中的字符串", className="card-title"),
+                                        dbc.Button("清除选择", id={"type": "clear-selection-btn", "index": "main"}, color="danger", size="sm", className="mb-2"),
+                                        html.Div(id="selected-strings-container", style={"maxHeight": "600px", "overflowY": "auto"})
+                                    ], width=6),
+                                    
+                                    # 右侧：已保存的字符串
+                                    dbc.Col([
+                                        html.H4("已保存的字符串", className="card-title"),
+                                        dcc.Dropdown(
+                                            id="category-filter",
+                                            options=[{"label": "所有分类", "value": "all"}] + 
+                                                    [{"label": cat, "value": cat} for cat in data["categories"].keys()],
+                                            value="all",
+                                            clearable=False
+                                        ),
+                                        html.Div(className="mt-2 mb-2", children=[
+                                            dbc.Label("字符串类型:", className="me-2"),
+                                            dbc.RadioItems(
+                                                id="string-type-radio",
+                                                options=[
+                                                    {"label": "保留字符串", "value": "keep"},
+                                                    {"label": "过滤字符串", "value": "filter"}
+                                                ],
+                                                value="keep",
+                                                inline=True
+                                            )
+                                        ]),
+                                        html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"})
+                                    ], width=6)
+                                ])
+                            ]),
+                            id="config-management-collapse",
+                            is_open=True
+                        )
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+            # 配置管理功能
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.H4("配置管理", className="mb-0")
+                        ]),
+                        dbc.CardBody([
+                            html.P("您可以在这里管理配置文件，包括创建、加载和删除配置文件。"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button("查看配置文件", id="view-config-btn", color="primary", className="w-100 mb-2"),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Button("创建新配置", id="create-config-btn", color="success", className="w-100 mb-2"),
+                                ], width=6)
+                            ]),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button("加载默认配置", id="load-default-config-btn", color="info", className="w-100 mb-2"),
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Button("保存当前配置", id="save-current-config-btn", color="warning", className="w-100 mb-2"),
+                                ], width=6)
+                            ])
+                        ])
+                    ])
+                ], width=12)
+            ]),
+            
+            # 存储组件
+            dcc.Store(id="data-store"),
+            dcc.Store(id="selected-strings", data=[]),
+            dcc.Store(id="selected-log-file", data=""),
+        ])
+    
+    # 默认返回空内容
+    return html.Div()
 
 
 
