@@ -2286,6 +2286,14 @@ def load_configuration(n_clicks, config_name, selected_log_file):
         # 保存到用户选择状态
         if selected_log_file:
             save_user_selections(selected_log_file, loaded_strings)
+        else:
+            # 如果当前没有选择日志文件，只保存字符串配置，不覆盖日志文件选择
+            current_selections = load_user_selections()
+            current_selections["selected_strings"] = loaded_strings
+            current_selections["last_updated"] = datetime.now().isoformat()
+            selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
+            with open(selections_file, 'w', encoding='utf-8') as f:
+                json.dump(current_selections, f, ensure_ascii=False, indent=2)
         
         return loaded_strings, f"成功加载配置文件: {config_name}", True, "success"
     
@@ -2476,19 +2484,21 @@ app.clientside_callback(
     [Output('filter-tab-strings-store', 'data', allow_duplicate=True),
      Output('status-alert', 'children', allow_duplicate=True),
      Output('status-alert', 'is_open', allow_duplicate=True),
-     Output('status-alert', 'color', allow_duplicate=True)],
+     Output('status-alert', 'color', allow_duplicate=True),
+     Output('selected-log-file', 'data', allow_duplicate=True)],  # 添加输出以更新日志文件选择
     [Input('selected-config-files', 'data')],
     [State('selected-log-file', 'data'),
-     State('main-tabs', 'active_tab')],
+     State('main-tabs', 'active_tab'),
+     State('log-file-selector', 'value')],  # 添加当前选择的日志文件状态
     prevent_initial_call=True
 )
-def load_selected_config_files(selected_config_files, selected_log_file, active_tab):
+def load_selected_config_files(selected_config_files, selected_log_file, active_tab, current_log_file_value):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
         
     if not selected_config_files:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     try:
         loaded_strings = []
@@ -2498,7 +2508,7 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             config_path = get_config_path(selected_config_file)
             
             if not os.path.exists(config_path):
-                return dash.no_update, f"配置文件 {selected_config_file} 不存在", True, "danger"
+                return dash.no_update, f"配置文件 {selected_config_file} 不存在", True, "danger", dash.no_update
             
             # 加载配置文件
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -2532,20 +2542,32 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             
             loaded_configs.append(selected_config_file)
         
+        # 确定要使用的日志文件：优先使用当前选择的日志文件，如果没有则使用保存的日志文件
+        effective_log_file = current_log_file_value if current_log_file_value else selected_log_file
+        
         # 保存到用户选择状态
-        if selected_log_file:
-            save_user_selections(selected_log_file, loaded_strings)
+        if effective_log_file:
+            save_user_selections(effective_log_file, loaded_strings)
+        else:
+            # 如果当前没有选择日志文件，只保存字符串配置，不覆盖日志文件选择
+            current_selections = load_user_selections()
+            current_selections["selected_strings"] = loaded_strings
+            current_selections["last_updated"] = datetime.now().isoformat()
+            selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
+            with open(selections_file, 'w', encoding='utf-8') as f:
+                json.dump(current_selections, f, ensure_ascii=False, indent=2)
         
         if len(loaded_configs) == 1:
             message = f"成功加载配置文件: {loaded_configs[0]}"
         else:
             message = f"成功加载 {len(loaded_configs)} 个配置文件: {', '.join(loaded_configs)}"
         
-        return loaded_strings, message, True, "success"
+        # 返回加载的字符串和更新后的日志文件选择
+        return loaded_strings, message, True, "success", effective_log_file
     
     except Exception as e:
         print(f"加载配置文件时出错: {e}")
-        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger"
+        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger", dash.no_update
 
 
 
@@ -2672,7 +2694,7 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
     print("不是按钮点击事件，返回无更新")
     return dash.no_update
 
-# 临时关键字变化时自动更新右侧显示结果
+# 临时关键字变化时自动更新右侧显示结果（已禁用自动过滤，改为手动触发）
 @app.callback(
     Output("log-filter-results", "children", allow_duplicate=True),
     [Input("temp-keywords-store", "data"),
@@ -2691,34 +2713,16 @@ def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, sele
     has_temp_keywords = temp_keywords and len(temp_keywords) > 0
     has_selected_strings = filter_tab_strings and len(filter_tab_strings) > 0
     
-    # 如果没有临时关键字且没有选中的字符串，不自动更新
+    # 如果没有临时关键字且没有选中的字符串，显示提示信息
     if not has_temp_keywords and not has_selected_strings:
-        return dash.no_update
+        return html.P("请选择配置文件或输入临时关键字，然后点击'生成'按钮执行过滤", className="text-info text-center")
     
     # 如果没有选择日志文件，显示提示
     if not selected_log_file:
         return html.P("请选择日志文件", className="text-danger text-center")
     
-    # 执行过滤命令，包含临时关键字
-    filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
-    
-    # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
-    source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
-    
-    # 根据显示模式返回结果
-    if display_mode == "source":
-        return source_result
-    elif display_mode == "highlight":
-        # 高亮模式：使用highlight配置执行过滤命令
-        highlight_strings = load_highlight_config()
-        if highlight_strings:
-            highlight_command, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
-            return highlight_result
-        else:
-            # 如果没有highlight配置，显示提示信息
-            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center")
-    else:
-        return filtered_result
+    # 不再自动执行过滤，而是显示提示信息
+    return html.P("配置已更新，请点击'生成'按钮执行过滤", className="text-success text-center")
 
 def get_temp_keywords_store():
     """获取临时关键字存储中的当前值"""
