@@ -358,6 +358,7 @@ app.layout = html.Div([
         dcc.Store(id='filtered-result-store', data=''),
         dcc.Store(id='source-result-store', data=''),
         dcc.Store(id='selected-strings', data=[]),
+        dcc.Store(id='filter-tab-strings-store', data=[]),  # 日志过滤tab专用的字符串存储
         dcc.Store(id='selected-log-file', data=''),
         dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
         dcc.Store(id='selected-config-files', data=[]),  # 存储选中的配置文件列表（支持多选）
@@ -1192,13 +1193,13 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
      Output("source-result-store", "data")],
     [Input("execute-filter-btn", "n_clicks"),
      Input("display-mode", "value")],
-    [State("selected-strings", "data"),
+    [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
      State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, display_mode, selected_strings, temp_keywords, selected_log_file, active_tab):
+def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update, dash.no_update, dash.no_update
@@ -1215,10 +1216,10 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, temp_keywor
         return html.P("请先执行过滤操作", className="text-info text-center"), "", ""
     
     # 执行过滤命令，包含临时关键字
-    filtered_command, filtered_result = execute_filter_logic(selected_strings, temp_keywords, selected_log_file)
+    filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
     
     # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
-    source_command, source_result = execute_source_logic(selected_log_file, selected_strings, temp_keywords)
+    source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
     
     # 根据显示模式返回结果
     if display_mode == "source":
@@ -2425,10 +2426,15 @@ def update_config_files_display(active_tab, selected_config_files):
     Output('selected-config-files', 'data'),
     [Input({"type": "config-file-btn", "index": dash.ALL}, 'n_clicks'),
      Input('clear-config-selection-btn', 'n_clicks')],
-    [State('selected-config-files', 'data')],
+    [State('selected-config-files', 'data'),
+     State('main-tabs', 'active_tab')],
     prevent_initial_call=True
 )
-def handle_config_file_selection(config_btn_clicks, clear_click, current_selection):
+def handle_config_file_selection(config_btn_clicks, clear_click, current_selection, active_tab):
+    # 只有在日志过滤tab激活时才处理回调
+    if active_tab != "tab-1":
+        return dash.no_update
+        
     ctx = callback_context
     
     # 如果点击了清除按钮
@@ -2452,17 +2458,35 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
     
     return dash.no_update
 
+# 为日志过滤tab创建独立的数据存储
+# 日志过滤tab的选中字符串存储
+app.clientside_callback(
+    """
+    function(n_clicks) {
+        return window.dash_clientside = window.dash_clientside || {};
+    }
+    """,
+    Output('filter-tab-strings-store', 'data'),
+    [Input('main-tabs', 'active_tab')],
+    prevent_initial_call=True
+)
+
 # 加载选中的配置文件（支持多选）
 @app.callback(
-    [Output('selected-strings', 'data', allow_duplicate=True),
+    [Output('filter-tab-strings-store', 'data', allow_duplicate=True),
      Output('status-alert', 'children', allow_duplicate=True),
      Output('status-alert', 'is_open', allow_duplicate=True),
      Output('status-alert', 'color', allow_duplicate=True)],
     [Input('selected-config-files', 'data')],
-    [State('selected-log-file', 'data')],
+    [State('selected-log-file', 'data'),
+     State('main-tabs', 'active_tab')],
     prevent_initial_call=True
 )
-def load_selected_config_files(selected_config_files, selected_log_file):
+def load_selected_config_files(selected_config_files, selected_log_file, active_tab):
+    # 只有在日志过滤tab激活时才处理回调
+    if active_tab != "tab-1":
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        
     if not selected_config_files:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
@@ -2652,20 +2676,20 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
 @app.callback(
     Output("log-filter-results", "children", allow_duplicate=True),
     [Input("temp-keywords-store", "data"),
-     Input("selected-strings", "data"),
+     Input("filter-tab-strings-store", "data"),
      Input("log-file-selector", "value"),
      Input("display-mode", "value")],
     [State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
-def auto_update_results_on_temp_keywords(temp_keywords, selected_strings, selected_log_file, display_mode, active_tab):
+def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, selected_log_file, display_mode, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update
     
     # 检查是否有临时关键字或选中的字符串
     has_temp_keywords = temp_keywords and len(temp_keywords) > 0
-    has_selected_strings = selected_strings and len(selected_strings) > 0
+    has_selected_strings = filter_tab_strings and len(filter_tab_strings) > 0
     
     # 如果没有临时关键字且没有选中的字符串，不自动更新
     if not has_temp_keywords and not has_selected_strings:
@@ -2676,10 +2700,10 @@ def auto_update_results_on_temp_keywords(temp_keywords, selected_strings, select
         return html.P("请选择日志文件", className="text-danger text-center")
     
     # 执行过滤命令，包含临时关键字
-    filtered_command, filtered_result = execute_filter_logic(selected_strings, temp_keywords, selected_log_file)
+    filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
     
     # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
-    source_command, source_result = execute_source_logic(selected_log_file, selected_strings, temp_keywords)
+    source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
     
     # 根据显示模式返回结果
     if display_mode == "source":
