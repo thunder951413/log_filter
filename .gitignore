@@ -1,0 +1,6 @@
+logs/*
+configs/*
+__pycache__/*
+user_selections.json
+configs/default.json
+
