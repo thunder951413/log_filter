@@ -290,6 +290,58 @@ app.layout = html.Div([
         # Tab内容容器
         html.Div(id="tab-content"),
         
+        # 抽屉组件 - 移到主布局中，确保所有tab都能访问
+        dbc.Offcanvas(
+            [
+                html.H4("字符串管理", className="mt-3 mb-4"),
+                
+                # 添加字符串部分
+                html.H5("添加新字符串", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("字符串内容:"),
+                        dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        dbc.Label("分类:"),
+                        dbc.Input(
+                            id="input-category",
+                            placeholder="输入分类名称...",
+                            type="text",
+                            list="category-suggestions"
+                        ),
+                        html.Datalist(
+                            id="category-suggestions",
+                            children=[]
+                        )
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
+                    ], width=12)
+                ], className="mb-4 p-3 border rounded"),
+                
+                # 管理现有字符串部分
+                html.H5("管理现有字符串", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("选择分类:"),
+                        dcc.Dropdown(
+                            id="drawer-category-filter",
+                            placeholder="选择分类查看字符串...",
+                            clearable=True
+                        )
+                    ], width=12, className="mb-3"),
+                    dbc.Col([
+                        html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                    ], width=12)
+                ], className="mb-4 p-3 border rounded")
+            ],
+            id="keyword-drawer",
+            placement="end",
+            is_open=False,
+            style={"width": "66.67%"}
+        ),
+        
         # 存储组件 - 移到主布局中，确保所有tab都能访问
         dcc.Store(id='data-store', data=load_data()),
         dcc.Store(id='filtered-result-store', data=''),
@@ -426,30 +478,7 @@ def toggle_config_management(n_clicks, is_open):
         return not is_open
     return is_open
 
-# 控制抽屉显示隐藏的回调
-@app.callback(
-    Output("keyword-drawer", "is_open"),
-    [Input("keyword-btn", "n_clicks")],
-    [State("keyword-drawer", "is_open")]
-)
-def toggle_drawer(n_clicks, is_open):
-    if n_clicks:
-        return not is_open
-    return is_open
 
-# 更新抽屉分类建议列表
-@app.callback(
-    Output("category-suggestions", "children"),
-    [Input("data-store", "data"),
-     Input("keyword-drawer", "is_open")],
-    prevent_initial_call=True  # 防止页面加载时立即触发
-)
-def update_drawer_category_options(data, is_open):
-    if not data or "categories" not in data:
-        return []
-    
-    # 返回所有分类作为建议选项
-    return [html.Option(value=cat) for cat in data["categories"].keys()]
 
 # 添加字符串回调
 @app.callback(
@@ -487,6 +516,248 @@ def add_string(n_clicks, input_string, input_category, data):
         )
     
     return data, "", ""
+
+# 关键字管理控件的分类建议回调
+@app.callback(
+    Output("keyword-category-suggestions", "children"),
+    [Input("data-store", "data")]
+)
+def update_keyword_category_suggestions(data):
+    if not data or "categories" not in data:
+        return []
+    
+    # 返回所有分类作为建议选项
+    return [html.Option(value=cat) for cat in data["categories"].keys()]
+
+# 关键字管理控件的添加字符串回调
+@app.callback(
+    [Output("data-store", "data", allow_duplicate=True),
+     Output("keyword-input-string", "value"),
+     Output("keyword-input-category", "value")],
+    [Input("keyword-add-string-btn", "n_clicks")],
+    [State("keyword-input-string", "value"),
+     State("keyword-input-category", "value"),
+     State("data-store", "data")],
+    prevent_initial_call=True
+)
+def keyword_add_string(n_clicks, input_string, input_category, data):
+    if n_clicks and input_string and input_category:
+        # 去除分类名称前后空格，确保唯一性
+        input_category = input_category.strip()
+        
+        # 如果分类不存在，创建新分类
+        if input_category not in data["categories"]:
+            data["categories"][input_category] = []
+        
+        # 添加字符串到分类
+        data["categories"][input_category].append(input_string)
+        
+        # 保存数据
+        save_data(data)
+        
+        # 更新全局data变量
+        globals()['data'] = load_data()
+        
+        return (
+            data,
+            "",  # 清空输入字符串
+            input_category  # 保留分类名称
+        )
+    
+    return dash.no_update, "", ""
+
+# 关键字管理控件的分类选项更新回调
+@app.callback(
+    Output("keyword-category-filter", "options"),
+    [Input("data-store", "data")]
+)
+def update_keyword_category_options(data):
+    if not data or "categories" not in data:
+        return []
+    
+    # 返回所有分类作为选项
+    return [{"label": cat, "value": cat} for cat in data["categories"].keys()]
+
+# 关键字管理控件的字符串显示回调
+@app.callback(
+    Output("keyword-strings-container", "children"),
+    [Input("data-store", "data"),
+     Input("keyword-category-filter", "value")]
+)
+def update_keyword_strings(data, selected_category):
+    if not data or "categories" not in data or not selected_category:
+        return html.P("请选择分类查看字符串", className="text-muted text-center")
+    
+    if selected_category not in data["categories"]:
+        return html.P("该分类不存在", className="text-muted text-center")
+    
+    strings = data["categories"][selected_category]
+    
+    if not strings:
+        return html.P("该分类中没有字符串", className="text-muted text-center")
+    
+    # 创建字符串按钮列表
+    string_elements = []
+    string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
+    
+    # 使用flex布局创建紧凑的按钮显示
+    string_buttons = []
+    for i, string in enumerate(strings):
+        string_buttons.append(
+            dbc.Button(
+                string, 
+                id={"type": "keyword-string-btn", "index": f"{selected_category}-{i}"},
+                color="danger", 
+                outline=True,
+                size="sm",
+                className="m-1",
+                style={"whiteSpace": "nowrap", "flexShrink": 0}
+            )
+        )
+    
+    # 使用d-flex和flex-wrap实现多列布局
+    string_elements.append(
+        html.Div(
+            string_buttons,
+            className="d-flex flex-wrap gap-2",
+            style={"minHeight": "50px"}
+        )
+    )
+    
+    return string_elements
+
+# 关键字管理控件的删除字符串回调
+@app.callback(
+    [Output("data-store", "data", allow_duplicate=True),
+     Output("keyword-strings-container", "children", allow_duplicate=True),
+     Output("keyword-category-filter", "options", allow_duplicate=True),
+     Output("saved-strings-container", "children", allow_duplicate=True),
+     Output("category-filter", "options", allow_duplicate=True)],
+    [Input({"type": "keyword-string-btn", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "keyword-string-btn", "index": dash.ALL}, "id"),
+     State("keyword-category-filter", "value"),
+     State("data-store", "data")],
+    prevent_initial_call=True
+)
+def delete_keyword_string(n_clicks, button_ids, selected_category, data):
+    # 检查是否有按钮被点击
+    if not any(n_clicks):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 找出被点击的按钮
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 找出被点击的按钮索引
+    clicked_index = None
+    for i, clicks in enumerate(n_clicks):
+        if clicks is not None and clicks > 0:
+            clicked_index = i
+            break
+    
+    if clicked_index is None:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 获取被点击按钮的ID
+    button_id = button_ids[clicked_index]
+    if "index" not in button_id:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    # 解析按钮ID获取分类和索引
+    try:
+        category_index = button_id["index"].split("-")
+        if len(category_index) != 2:
+            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        
+        category = category_index[0]
+        index = int(category_index[1])
+        
+        # 删除字符串
+        if category in data["categories"] and 0 <= index < len(data["categories"][category]):
+            data["categories"][category].pop(index)
+            
+            # 如果分类为空，删除该分类
+            if not data["categories"][category]:
+                del data["categories"][category]
+            
+            # 保存数据
+            save_data(data)
+            
+            # 更新全局data变量
+            globals()['data'] = load_data()
+            
+            # 更新关键字管理控件中的字符串显示
+            if selected_category in data["categories"] and data["categories"][selected_category]:
+                strings = data["categories"][selected_category]
+                string_elements = []
+                string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
+                
+                # 使用flex布局创建紧凑的按钮显示
+                string_buttons = []
+                for i, string in enumerate(strings):
+                    string_buttons.append(
+                        dbc.Button(
+                            string, 
+                            id={"type": "keyword-string-btn", "index": f"{selected_category}-{i}"},
+                            color="danger", 
+                            outline=True,
+                            size="sm",
+                            className="m-1",
+                            style={"whiteSpace": "nowrap", "flexShrink": 0}
+                        )
+                    )
+                
+                # 使用d-flex和flex-wrap实现多列布局
+                string_elements.append(
+                    html.Div(
+                        string_buttons,
+                        className="d-flex flex-wrap gap-2",
+                        style={"minHeight": "50px"}
+                    )
+                )
+            else:
+                # 如果分类被删除或为空，显示提示信息
+                string_elements = html.P("该分类中没有字符串", className="text-muted text-center")
+            
+            # 更新分类选项
+            category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
+            
+            # 更新主页面中的已保存字符串显示
+            main_string_elements = []
+            for category, strings in data["categories"].items():
+                if strings:  # 只显示非空分类
+                    main_string_elements.append(html.H6(category, className="mt-3 mb-2"))
+                    
+                    # 创建一个包含所有按钮的容器，使用d-flex和flex-wrap确保多列显示
+                    button_container = html.Div(
+                        className="d-flex flex-wrap gap-2",
+                        children=[
+                            dbc.Button(
+                                string,
+                                id={"type": "select-string-btn", "index": f"{category}-{i}"},
+                                color="success",  # 默认颜色
+                                outline=True,
+                                size="sm",
+                                style={"whiteSpace": "nowrap", "flexShrink": 0}
+                            ) for i, string in enumerate(strings)
+                        ]
+                    )
+                    main_string_elements.append(button_container)
+            
+            if not main_string_elements:
+                main_string_elements = [html.P("没有找到字符串", className="text-muted")]
+            
+            # 更新配置文件管理中的分类选项
+            config_category_options = [{"label": "所有分类", "value": "all"}] + \
+                                     [{"label": cat, "value": cat} for cat in data["categories"].keys()]
+            
+            return data, string_elements, category_options, main_string_elements, config_category_options
+        
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    except Exception as e:
+        print(f"删除字符串时出错: {e}")
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
 # 更新已保存字符串显示
 @app.callback(
@@ -550,7 +821,7 @@ def update_saved_strings(data, selected_category, string_type, selected_strings,
 @app.callback(
     Output("log-file-selector", "options", allow_duplicate=True),
     [Input("status-alert", "children")],
-    prevent_initial_call=True  # 改为True，防止页面加载时立即触发
+    prevent_initial_call='initial_duplicate'  # 使用initial_duplicate允许页面加载时初始化
 )
 def update_log_file_selector(status_children):
     # 只有在组件存在时才更新选项
@@ -732,202 +1003,8 @@ def show_config_status(select_clicks, clear_clicks, data, selected_strings, acti
     
     return "", False, "success"
 
-# 抽屉中更新分类选项的回调
-@app.callback(
-    Output("drawer-category-filter", "options"),
-    [Input("data-store", "data")],
-    prevent_initial_call=True  # 防止页面加载时立即触发
-)
-def update_drawer_category_options(data):
-    if not data or "categories" not in data:
-        return []
-    
-    # 创建分类选项，只显示有字符串的分类
-    category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
-    
-    return category_options
 
-# 抽屉中显示分类字符串的回调
-@app.callback(
-    Output("drawer-strings-container", "children"),
-    [Input("data-store", "data"),
-     Input("drawer-category-filter", "value")]
-)
-def update_drawer_strings(data, selected_category):
-    if not data or "categories" not in data or not selected_category:
-        return html.P("请选择分类查看字符串", className="text-muted text-center")
-    
-    if selected_category not in data["categories"]:
-        return html.P("该分类不存在", className="text-muted text-center")
-    
-    strings = data["categories"][selected_category]
-    
-    if not strings:
-        return html.P("该分类中没有字符串", className="text-muted text-center")
-    
-    # 创建字符串按钮列表
-    string_elements = []
-    string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
-    
-    # 使用flex布局创建紧凑的按钮显示
-    string_buttons = []
-    for i, string in enumerate(strings):
-        string_buttons.append(
-            dbc.Button(
-                string, 
-                id={"type": "drawer-string-btn", "index": f"{selected_category}-{i}"},
-                color="danger", 
-                outline=True,
-                size="sm",
-                className="m-1",
-                style={"whiteSpace": "nowrap", "flexShrink": 0}
-            )
-        )
-    
-    # 使用d-flex和flex-wrap实现多列布局
-    string_elements.append(
-        html.Div(
-            string_buttons,
-            className="d-flex flex-wrap gap-2",
-            style={"minHeight": "50px"}
-        )
-    )
-    
-    return string_elements
-
-# 抽屉中点击字符串删除的回调
-@app.callback(
-    [Output("data-store", "data", allow_duplicate=True),
-     Output("drawer-strings-container", "children", allow_duplicate=True),
-     Output("drawer-category-filter", "options", allow_duplicate=True),
-     Output("saved-strings-container", "children", allow_duplicate=True),
-     Output("category-filter", "options", allow_duplicate=True)],
-    [Input({"type": "drawer-string-btn", "index": dash.ALL}, "n_clicks")],
-    [State({"type": "drawer-string-btn", "index": dash.ALL}, "id"),
-     State("drawer-category-filter", "value"),
-     State("data-store", "data")],
-    prevent_initial_call=True
-)
-def delete_drawer_string(n_clicks, button_ids, selected_category, data):
-    # 检查是否有按钮被点击
-    if not any(n_clicks):
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    # 找出被点击的按钮
-    ctx = callback_context
-    if not ctx.triggered:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    # 找出被点击的按钮索引
-    clicked_index = None
-    for i, clicks in enumerate(n_clicks):
-        if clicks is not None and clicks > 0:
-            clicked_index = i
-            break
-    
-    if clicked_index is None:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    # 获取被点击按钮的ID
-    button_id = button_ids[clicked_index]
-    if "index" not in button_id:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    # 解析按钮ID获取分类和索引
-    try:
-        category_index = button_id["index"].split("-")
-        if len(category_index) != 2:
-            return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-        
-        category = category_index[0]
-        index = int(category_index[1])
-        
-        # 删除字符串
-        if category in data["categories"] and 0 <= index < len(data["categories"][category]):
-            data["categories"][category].pop(index)
-            
-            # 如果分类为空，删除该分类
-            if not data["categories"][category]:
-                del data["categories"][category]
-            
-            # 保存数据
-            save_data(data)
-            
-            # 更新全局data变量
-            globals()['data'] = load_data()
-            
-            # 更新抽屉中的字符串显示
-            if selected_category in data["categories"] and data["categories"][selected_category]:
-                strings = data["categories"][selected_category]
-                string_elements = []
-                string_elements.append(html.P("点击字符串可直接删除", className="text-muted small mb-2"))
-                
-                # 使用flex布局创建紧凑的按钮显示
-                string_buttons = []
-                for i, string in enumerate(strings):
-                    string_buttons.append(
-                        dbc.Button(
-                            string, 
-                            id={"type": "drawer-string-btn", "index": f"{selected_category}-{i}"},
-                            color="danger", 
-                            outline=True,
-                            size="sm",
-                            className="m-1",
-                            style={"whiteSpace": "nowrap", "flexShrink": 0}
-                        )
-                    )
-                
-                # 使用d-flex和flex-wrap实现多列布局
-                string_elements.append(
-                    html.Div(
-                        string_buttons,
-                        className="d-flex flex-wrap gap-2",
-                        style={"minHeight": "50px"}
-                    )
-                )
-            else:
-                # 如果分类被删除或为空，显示提示信息
-                string_elements = html.P("该分类中没有字符串", className="text-muted text-center")
-            
-            # 更新分类选项
-            category_options = [{"label": cat, "value": cat} for cat in data["categories"].keys() if data["categories"][cat]]
-            
-            # 更新主页面中的已保存字符串显示
-            main_string_elements = []
-            for category, strings in data["categories"].items():
-                if strings:  # 只显示非空分类
-                    main_string_elements.append(html.H6(category, className="mt-3 mb-2"))
-                    
-                    # 创建一个包含所有按钮的容器，使用d-flex和flex-wrap确保多列显示
-                    button_container = html.Div(
-                        className="d-flex flex-wrap gap-2",
-                        children=[
-                            dbc.Button(
-                                string,
-                                id={"type": "select-string-btn", "index": f"{category}-{i}"},
-                                color="primary",
-                                outline=True,
-                                size="sm",
-                                style={"whiteSpace": "nowrap", "flexShrink": 0}
-                            ) for i, string in enumerate(strings)
-                        ]
-                    )
-                    
-                    main_string_elements.append(button_container)
-            
-            if not main_string_elements:
-                main_string_elements = [html.P("没有找到字符串", className="text-muted")]
-            
-            # 更新主页面分类选项
-            main_category_options = [{"label": "所有分类", "value": "all"}] + \
-                                   [{"label": cat, "value": cat} for cat in data["categories"].keys()]
-            
-            return data, string_elements, category_options, main_string_elements, main_category_options
-        
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    except (ValueError, IndexError, AttributeError):
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+# 更新选中字符串显示
 
 # 更新选中字符串显示
 @app.callback(
@@ -1097,8 +1174,7 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
 
 # 生成并执行过滤命令的回调
 @app.callback(
-    [Output("generated-command", "value"),
-     Output("log-filter-results", "children"),
+    [Output("log-filter-results", "children"),
      Output("filtered-result-store", "data"),
      Output("source-result-store", "data")],
     [Input("execute-filter-btn", "n_clicks"),
@@ -1111,18 +1187,18 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
 def execute_filter_command(n_clicks, display_mode, selected_strings, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     
     # 获取触发回调的组件ID
     ctx = dash.callback_context
     if not ctx.triggered:
-        return "", "", "", ""
+        return "", "", ""
     
     triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
     # 如果是显示模式切换，但还没有执行过滤操作
     if triggered_id == "display-mode" and n_clicks == 0:
-        return "", html.P("请先执行过滤操作", className="text-info text-center"), "", ""
+        return html.P("请先执行过滤操作", className="text-info text-center"), "", ""
     
     # 执行过滤命令
     filtered_command, filtered_result = execute_filter_logic(selected_strings, selected_log_file)
@@ -1132,18 +1208,18 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
     
     # 根据显示模式返回结果
     if display_mode == "source":
-        return source_command, source_result, filtered_result, source_result
+        return source_result, filtered_result, source_result
     elif display_mode == "highlight":
         # 高亮模式：使用highlight配置执行过滤命令
         highlight_strings = load_highlight_config()
         if highlight_strings:
             highlight_command, highlight_result = execute_filter_logic(highlight_strings, selected_log_file)
-            return highlight_command, highlight_result, filtered_result, source_result
+            return highlight_result, filtered_result, source_result
         else:
             # 如果没有highlight配置，显示提示信息
-            return "", html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result
+            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result
     else:
-        return filtered_command, filtered_result, filtered_result, source_result
+        return filtered_result, filtered_result, source_result
 
 def execute_filter_logic(selected_strings, selected_log_file):
     """执行过滤逻辑"""
@@ -1527,17 +1603,7 @@ def execute_command(full_command, selected_strings=None, data=None):
 
 
 
-# 切换日志过滤选项折叠状态的回调
-@app.callback(
-    Output("filter-options-collapse", "is_open"),
-    [Input("filter-options-toggle", "n_clicks")],
-    [State("filter-options-collapse", "is_open")],
-    prevent_initial_call=True
-)
-def toggle_filter_options(n_clicks, is_open):
-    if n_clicks:
-        return not is_open
-    return is_open
+
 
 # Tab切换回调函数
 @app.callback(
@@ -1548,53 +1614,23 @@ def render_tab_content(active_tab):
     if active_tab == "tab-1":
         # Tab1: 日志过滤页面
         return html.Div([
-            # 日志过滤选项
+            # 文件选择器
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
-                        dbc.CardHeader([
-                            html.Button(
-                                [html.I(className="bi bi-chevron-down me-2"), "日志过滤选项"],
-                                id="filter-options-toggle",
-                                className="btn btn-link text-decoration-none w-100 text-start"
-                            )
-                        ]),
-                        dbc.Collapse(
-                            dbc.CardBody([
-                                dbc.Row([
-                                    # 文件选择和命令生成区域（全宽）
-                                    dbc.Col([
-                                        # 文件选择
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.Label("选择日志文件:"),
-                                                dcc.Dropdown(
-                                                    id="log-file-selector",
-                                                    placeholder="从logs目录选择文件...",
-                                                    options=[],
-                                                    clearable=False
-                                                )
-                                            ], width=12, className="mb-3")
-                                        ]),
-                                        
-                                        # 生成的命令
-                                        dbc.Row([
-                                            dbc.Col([
-                                                dbc.Label("生成的命令:", className="mt-3"),
-                                                dbc.Textarea(
-                                                    id="generated-command",
-                                                    placeholder="这里将显示生成的grep命令...",
-                                                    style={"height": "100px", "fontFamily": "monospace"}
-                                                ),
-                                                dbc.Button("复制命令", id="copy-command-btn", color="secondary", size="sm", className="mt-2")
-                                            ], width=12)
-                                        ])
-                                    ], width=12)
-                                ])
-                            ]),
-                            id="filter-options-collapse",
-                            is_open=True
-                        )
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("选择日志文件:"),
+                                    dcc.Dropdown(
+                                        id="log-file-selector",
+                                        placeholder="从logs目录选择文件...",
+                                        options=[],
+                                        clearable=False
+                                    )
+                                ], width=12)
+                            ])
+                        ])
                     ])
                 ], width=12)
             ], className="mb-4"),
@@ -1644,63 +1680,72 @@ def render_tab_content(active_tab):
                 ], width=12)
             ], className="mb-4"),
             
-            # 抽屉组件
-            dbc.Offcanvas(
-                [
-                    html.H4("字符串管理", className="mt-3 mb-4"),
-                    
-                    # 添加字符串部分
-                    html.H5("添加新字符串", className="mb-3"),
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("字符串内容:"),
-                            dbc.Textarea(id="input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
-                        ], width=12, className="mb-3"),
-                        dbc.Col([
-                            dbc.Label("分类:"),
-                            dbc.Input(
-                                id="input-category",
-                                placeholder="输入分类名称...",
-                                type="text",
-                                list="category-suggestions"
-                            ),
-                            html.Datalist(
-                                id="category-suggestions",
-                                children=[]
-                            )
-                        ], width=12, className="mb-3"),
-                        dbc.Col([
-                            dbc.Button("添加字符串", id="add-string-btn", color="primary", className="w-100")
-                        ], width=12)
-                    ], className="mb-4 p-3 border rounded"),
-                    
-                    # 管理现有字符串部分
-                    html.H5("管理现有字符串", className="mb-3"),
-                    dbc.Row([
-                        dbc.Col([
-                            dbc.Label("选择分类:"),
-                            dcc.Dropdown(
-                                id="drawer-category-filter",
-                                placeholder="选择分类查看字符串...",
-                                clearable=True
-                            )
-                        ], width=12, className="mb-3"),
-                        dbc.Col([
-                            html.Div(id="drawer-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
-                        ], width=12)
-                    ], className="mb-4 p-3 border rounded")
-                ],
-                id="keyword-drawer",
-                placement="end",
-                is_open=False,
-                style={"width": "66.67%"}
-            ),
-            
             # 存储组件 - data-store已移到主布局中，不再需要在tab中重复定义
         ])
     elif active_tab == "tab-2":
         # Tab2: 配置管理页面
         return html.Div([
+            # 关键字管理控件
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.Button(
+                                [html.I(className="bi bi-chevron-down me-2"), "关键字管理"],
+                                id="keyword-management-toggle",
+                                className="btn btn-link text-decoration-none w-100 text-start"
+                            )
+                        ]),
+                        dbc.Collapse(
+                            dbc.CardBody([
+                                # 添加字符串部分
+                                html.H5("添加新字符串", className="mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("字符串内容:"),
+                                        dbc.Textarea(id="keyword-input-string", placeholder="输入要分类的字符串...", style={"height": "30px"})
+                                    ], width=12, className="mb-3"),
+                                    dbc.Col([
+                                        dbc.Label("分类:"),
+                                        dbc.Input(
+                                            id="keyword-input-category",
+                                            placeholder="输入分类名称...",
+                                            type="text",
+                                            list="keyword-category-suggestions"
+                                        ),
+                                        html.Datalist(
+                                            id="keyword-category-suggestions",
+                                            children=[]
+                                        )
+                                    ], width=12, className="mb-3"),
+                                    dbc.Col([
+                                        dbc.Button("添加字符串", id="keyword-add-string-btn", color="primary", className="w-100")
+                                    ], width=12)
+                                ], className="mb-4 p-3 border rounded"),
+                                
+                                # 管理现有字符串部分
+                                html.H5("管理现有字符串", className="mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("选择分类:"),
+                                        dcc.Dropdown(
+                                            id="keyword-category-filter",
+                                            placeholder="选择分类查看字符串...",
+                                            clearable=True
+                                        )
+                                    ], width=12, className="mb-3"),
+                                    dbc.Col([
+                                        html.Div(id="keyword-strings-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                                    ], width=12)
+                                ], className="mb-4 p-3 border rounded")
+                            ]),
+                            id="keyword-management-collapse",
+                            is_open=True
+                        )
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
             # 配置文件管理选项
             dbc.Row([
                 dbc.Col([
@@ -1714,15 +1759,7 @@ def render_tab_content(active_tab):
                         ]),
                         dbc.Collapse(
                             dbc.CardBody([
-                                # 配置文件选择器已移除
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Button("keyword", id="keyword-btn", color="primary", className="float-end"),
-                                    ], width=12)
-                                ], className="mb-2"),
-                                
                                 # 选中的字符串和已保存的字符串区域（并排布局）
-                                html.Hr(),
                                 dbc.Row([
                                     # 左侧：选中的字符串
                                     dbc.Col([
@@ -1915,7 +1952,7 @@ def handle_file_upload(contents, filename, last_modified):
 @app.callback(
     Output('log-file-manager-selector', 'options', allow_duplicate=True),
     [Input('main-tabs', 'active_tab')],
-    prevent_initial_call=True
+    prevent_initial_call='initial_duplicate'
 )
 def update_file_manager_options(active_tab):
     if active_tab == "tab-3":
@@ -2047,7 +2084,7 @@ def delete_log_file(n_clicks, selected_file):
 @app.callback(
     Output('uploaded-files-list', 'children', allow_duplicate=True),
     [Input('main-tabs', 'active_tab')],
-    prevent_initial_call=True
+    prevent_initial_call='initial_duplicate'
 )
 def initialize_file_list(active_tab):
     if active_tab == "tab-3":
