@@ -27,6 +27,17 @@ CONFIG_DIR = 'configs'
 # 日志文件目录
 LOG_DIR = 'logs'
 
+# 获取配置文件列表（不包含.json后缀）
+def get_config_files():
+    """获取configs目录下的所有配置文件（不包含.json后缀）"""
+    if not os.path.exists(CONFIG_DIR):
+        return []
+    config_files = []
+    for file in os.listdir(CONFIG_DIR):
+        if file.endswith('.json'):
+            config_files.append(file[:-5])  # 去掉.json后缀
+    return sorted(config_files)
+
 def ensure_config_dir():
     """确保配置目录存在"""
     if not os.path.exists(CONFIG_DIR):
@@ -349,6 +360,8 @@ app.layout = html.Div([
         dcc.Store(id='selected-strings', data=[]),
         dcc.Store(id='selected-log-file', data=''),
         dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
+        dcc.Store(id='selected-config-files', data=[]),  # 存储选中的配置文件列表（支持多选）
+        dcc.Store(id='temp-keywords-store', data=[]),  # 存储临时关键字列表
         
     ], fluid=True)
 ])
@@ -1180,11 +1193,12 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
     [Input("execute-filter-btn", "n_clicks"),
      Input("display-mode", "value")],
     [State("selected-strings", "data"),
+     State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
      State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, display_mode, selected_strings, selected_log_file, active_tab):
+def execute_filter_command(n_clicks, display_mode, selected_strings, temp_keywords, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update, dash.no_update, dash.no_update
@@ -1200,11 +1214,11 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
     if triggered_id == "display-mode" and n_clicks == 0:
         return html.P("请先执行过滤操作", className="text-info text-center"), "", ""
     
-    # 执行过滤命令
-    filtered_command, filtered_result = execute_filter_logic(selected_strings, selected_log_file)
+    # 执行过滤命令，包含临时关键字
+    filtered_command, filtered_result = execute_filter_logic(selected_strings, temp_keywords, selected_log_file)
     
-    # 执行源文件命令，传递选中的字符串用于高亮
-    source_command, source_result = execute_source_logic(selected_log_file, selected_strings)
+    # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
+    source_command, source_result = execute_source_logic(selected_log_file, selected_strings, temp_keywords)
     
     # 根据显示模式返回结果
     if display_mode == "source":
@@ -1213,7 +1227,7 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
         # 高亮模式：使用highlight配置执行过滤命令
         highlight_strings = load_highlight_config()
         if highlight_strings:
-            highlight_command, highlight_result = execute_filter_logic(highlight_strings, selected_log_file)
+            highlight_command, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
             return highlight_result, filtered_result, source_result
         else:
             # 如果没有highlight配置，显示提示信息
@@ -1221,20 +1235,29 @@ def execute_filter_command(n_clicks, display_mode, selected_strings, selected_lo
     else:
         return filtered_result, filtered_result, source_result
 
-def execute_filter_logic(selected_strings, selected_log_file):
-    """执行过滤逻辑"""
+def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
+    """执行过滤逻辑，包含临时关键字"""
+    # 合并选中的字符串和临时关键字
+    all_strings = []
+    if selected_strings:
+        all_strings.extend(selected_strings)
+    if temp_keywords:
+        # 临时关键字默认为保留字符串
+        for keyword in temp_keywords:
+            all_strings.append(keyword)
+    
     # 提取保留字符串和过滤字符串
     keep_strings = []
     filter_strings = []
     
-    for item in selected_strings:
+    for item in all_strings:
         if isinstance(item, dict):
             if item["type"] == "keep":
                 keep_strings.append(item["text"])
             else:
                 filter_strings.append(item["text"])
         else:
-            # 旧格式字符串，默认为保留字符串
+            # 旧格式字符串和临时关键字，默认为保留字符串
             keep_strings.append(item)
     
     # 本地方式
@@ -1285,22 +1308,31 @@ def execute_filter_logic(selected_strings, selected_log_file):
     
     # 执行命令，传递选中的字符串和数据用于高亮
     data = load_data()  # 加载当前数据
-    result_display = execute_command(full_command, selected_strings, data)
+    result_display = execute_command(full_command, all_strings, data)
     
     return full_command, result_display
 
-def execute_source_logic(selected_log_file, selected_strings=None):
-    """执行源文件逻辑"""
+def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords=None):
+    """执行源文件逻辑，包含临时关键字"""
     # 本地方式显示源文件
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
     full_command = f"cat {log_path}"
     
-    # 执行命令，如果提供了选中的字符串，则进行高亮
+    # 合并选中的字符串和临时关键字
+    all_strings = []
     if selected_strings:
+        all_strings.extend(selected_strings)
+    if temp_keywords:
+        # 临时关键字默认为保留字符串
+        for keyword in temp_keywords:
+            all_strings.append(keyword)
+    
+    # 执行命令，如果提供了选中的字符串，则进行高亮
+    if all_strings:
         data = load_data()  # 加载当前数据
-        result_display = execute_command(full_command, selected_strings, data)
+        result_display = execute_command(full_command, all_strings, data)
     else:
         result_display = execute_command(full_command)
     
@@ -1635,7 +1667,47 @@ def render_tab_content(active_tab):
                 ], width=12)
             ], className="mb-4"),
             
-
+            # 配置文件选择器
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H4("选择配置文件", className="card-title"),
+                                    dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="mb-2"),
+                                    html.Div(id="config-files-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                                ], width=12)
+                            ])
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+            # 临时关键字显示
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H4("临时关键字", className="card-title"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("添加临时关键字:"),
+                                    dbc.Input(
+                                        id="temp-keyword-text",
+                                        type="text",
+                                        placeholder="输入临时关键字...",
+                                        className="mb-2"
+                                    ),
+                                    dbc.Button("添加", id="temp-keyword-add-btn", color="primary", className="w-100")
+                                ], width=6)
+                            ]),
+                            dbc.Label("已输入的关键字:"),
+                            html.Div(id="temp-keywords-display", className="border rounded p-2", style={"minHeight": "50px", "backgroundColor": "#f8f9fa"})
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4"),
             
             # 执行过滤命令按钮
             dbc.Row([
@@ -2307,6 +2379,364 @@ def save_configuration(n_clicks, config_name_input, config_file_selector, select
     except Exception as e:
         print(f"保存配置文件时出错: {e}")
         return f"保存配置文件失败: {str(e)}", True, "danger", dash.no_update
+
+# 更新配置文件按钮显示
+@app.callback(
+    Output('config-files-container', 'children'),
+    [Input('main-tabs', 'active_tab'),
+     Input('selected-config-files', 'data')],
+    prevent_initial_call='initial_duplicate'
+)
+def update_config_files_display(active_tab, selected_config_files):
+    if active_tab == "tab-1":
+        config_files = get_config_files()
+        
+        if not config_files:
+            return html.P("暂无配置文件，请在配置管理页面创建配置文件", className="text-muted text-center")
+        
+        # 创建配置文件按钮列表
+        config_buttons = []
+        for config_file in config_files:
+            # 检查当前配置文件是否被选中（支持多选）
+            is_selected = config_file in selected_config_files
+            
+            config_buttons.append(
+                dbc.Button(
+                    config_file,
+                    id={"type": "config-file-btn", "index": config_file},
+                    color="primary" if is_selected else "outline-primary",
+                    size="sm",
+                    className="m-1",
+                    style={"whiteSpace": "nowrap", "flexShrink": 0}
+                )
+            )
+        
+        # 使用d-flex和flex-wrap实现多列布局
+        return html.Div(
+            config_buttons,
+            className="d-flex flex-wrap gap-2",
+            style={"minHeight": "50px"}
+        )
+    
+    return dash.no_update
+
+# 处理配置文件选择（支持多选）
+@app.callback(
+    Output('selected-config-files', 'data'),
+    [Input({"type": "config-file-btn", "index": dash.ALL}, 'n_clicks'),
+     Input('clear-config-selection-btn', 'n_clicks')],
+    [State('selected-config-files', 'data')],
+    prevent_initial_call=True
+)
+def handle_config_file_selection(config_btn_clicks, clear_click, current_selection):
+    ctx = callback_context
+    
+    # 如果点击了清除按钮
+    if ctx.triggered and ctx.triggered[0]['prop_id'] == 'clear-config-selection-btn.n_clicks':
+        return []
+    
+    # 如果点击了配置文件按钮
+    if ctx.triggered and 'config-file-btn' in ctx.triggered[0]['prop_id']:
+        # 获取被点击的按钮的index（即配置文件名）
+        prop_id = ctx.triggered[0]['prop_id']
+        config_file = prop_id.split('.')[0].split('"index":"')[1].split('"')[0]
+        
+        # 如果配置文件已经在选中列表中，则移除它（取消选择）
+        if config_file in current_selection:
+            current_selection.remove(config_file)
+        else:
+            # 否则添加到选中列表中
+            current_selection.append(config_file)
+        
+        return current_selection
+    
+    return dash.no_update
+
+# 加载选中的配置文件（支持多选）
+@app.callback(
+    [Output('selected-strings', 'data', allow_duplicate=True),
+     Output('status-alert', 'children', allow_duplicate=True),
+     Output('status-alert', 'is_open', allow_duplicate=True),
+     Output('status-alert', 'color', allow_duplicate=True)],
+    [Input('selected-config-files', 'data')],
+    [State('selected-log-file', 'data')],
+    prevent_initial_call=True
+)
+def load_selected_config_files(selected_config_files, selected_log_file):
+    if not selected_config_files:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    
+    try:
+        loaded_strings = []
+        loaded_configs = []
+        
+        for selected_config_file in selected_config_files:
+            config_path = get_config_path(selected_config_file)
+            
+            if not os.path.exists(config_path):
+                return dash.no_update, f"配置文件 {selected_config_file} 不存在", True, "danger"
+            
+            # 加载配置文件
+            with open(config_path, 'r', encoding='utf-8') as f:
+                saved_selections = json.load(f)
+            
+            # 从保存的选择中提取所有字符串
+            for category, content in saved_selections.items():
+                if isinstance(content, dict):
+                    # 处理保留字符串
+                    if "keep" in content:
+                        for string_text in content["keep"]:
+                            loaded_strings.append({
+                                "text": string_text,
+                                "type": "keep"
+                            })
+                    
+                    # 处理过滤字符串
+                    if "filter" in content:
+                        for string_text in content["filter"]:
+                            loaded_strings.append({
+                                "text": string_text,
+                                "type": "filter"
+                            })
+                else:
+                    # 处理旧格式的配置文件
+                    for string_text in content:
+                        loaded_strings.append({
+                            "text": string_text,
+                            "type": "keep"  # 默认为保留字符串
+                        })
+            
+            loaded_configs.append(selected_config_file)
+        
+        # 保存到用户选择状态
+        if selected_log_file:
+            save_user_selections(selected_log_file, loaded_strings)
+        
+        if len(loaded_configs) == 1:
+            message = f"成功加载配置文件: {loaded_configs[0]}"
+        else:
+            message = f"成功加载 {len(loaded_configs)} 个配置文件: {', '.join(loaded_configs)}"
+        
+        return loaded_strings, message, True, "success"
+    
+    except Exception as e:
+        print(f"加载配置文件时出错: {e}")
+        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger"
+
+
+
+# 监听临时关键字存储变化，更新显示
+@app.callback(
+    Output('temp-keywords-display', 'children', allow_duplicate=True),
+    [Input('temp-keywords-store', 'data')],
+    prevent_initial_call=True
+)
+def update_temp_keywords_display(keywords):
+    """根据存储的数据更新临时关键字显示"""
+    print(f"=== 存储变化触发显示更新 ===")
+    print(f"存储中的关键字: {keywords}")
+    print(f"关键字类型: {type(keywords)}")
+    print(f"关键字ID: {id(keywords)}")
+    result = create_temp_keyword_buttons(keywords or [])
+    print(f"更新的显示内容: {type(result)}")
+    return result
+
+# 添加临时关键字
+@app.callback(
+    Output('temp-keywords-store', 'data'),
+    [Input('temp-keyword-add-btn', 'n_clicks')],
+    [State('temp-keyword-text', 'value'),
+     State('temp-keywords-store', 'data')],
+    prevent_initial_call=True
+)
+def add_temp_keyword(n_clicks, keyword_text, existing_keywords):
+    print(f"=== 添加临时关键字回调被触发 ===")
+    print(f"n_clicks: {n_clicks}")
+    print(f"keyword_text: '{keyword_text}'")
+    print(f"existing_keywords: {existing_keywords}")
+    print(f"existing_keywords 类型: {type(existing_keywords)}")
+    print(f"existing_keywords ID: {id(existing_keywords)}")
+    
+    # 获取回调上下文
+    ctx = dash.callback_context
+    print(f"回调上下文: {ctx.triggered}")
+    
+    # 只有在按钮被点击时才处理
+    if not ctx.triggered:
+        print("没有触发事件，返回无更新")
+        return dash.no_update
+    
+    # 检查是否是按钮点击事件
+    prop_id = ctx.triggered[0]['prop_id']
+    print(f"触发ID: {prop_id}")
+    
+    if 'temp-keyword-add-btn' not in prop_id:
+        print("不是添加按钮点击事件，返回无更新")
+        return dash.no_update
+        
+    if n_clicks is None:
+        print("按钮未被点击，返回无更新")
+        return dash.no_update
+        
+    if keyword_text and keyword_text.strip():
+        # 直接使用输入的关键字（去除前后空格）
+        new_keyword = keyword_text.strip()
+        print(f"添加新关键字: '{new_keyword}'")
+        
+        # 合并现有关键字和新关键字，去重
+        all_keywords = existing_keywords or []
+        if new_keyword not in all_keywords:
+            all_keywords.append(new_keyword)
+            print(f"关键字已添加到列表: {all_keywords}")
+        else:
+            print(f"关键字已存在，不重复添加")
+        
+        # 只返回存储数据，显示由存储监听回调更新
+        return all_keywords
+    else:
+        print("输入内容为空，返回现有内容")
+        # 如果没有输入内容，保持现有存储不变
+        return existing_keywords or []
+
+# 处理临时关键字按钮点击（删除关键字）
+@app.callback(
+    Output('temp-keywords-store', 'data', allow_duplicate=True),
+    [Input({"type": "temp-keyword-btn", "index": dash.ALL}, 'n_clicks')],
+    [State('temp-keywords-store', 'data')],
+    prevent_initial_call=True
+)
+def handle_temp_keyword_click(keyword_clicks, current_keywords):
+    ctx = dash.callback_context
+    
+    print(f"=== 删除关键字回调被触发 ===")
+    print(f"keyword_clicks: {keyword_clicks}")
+    print(f"current_keywords: {current_keywords}")
+    print(f"current_keywords 类型: {type(current_keywords)}")
+    print(f"current_keywords ID: {id(current_keywords)}")
+    print(f"ctx.triggered: {ctx.triggered}")
+    
+    # 如果没有点击事件，返回无更新
+    if not ctx.triggered:
+        print("没有触发事件，返回无更新")
+        return dash.no_update
+    
+    # 获取被点击的关键字
+    prop_id = ctx.triggered[0]['prop_id']
+    print(f"触发ID: {prop_id}")
+    
+    # 检查是否是关键字按钮点击事件
+    if 'temp-keyword-btn' in prop_id:
+        # 检查按钮是否真的被点击了（n_clicks不为None）
+        trigger_value = ctx.triggered[0].get('value')
+        print(f"触发值: {trigger_value}")
+        
+        if trigger_value is None:
+            print("按钮未被点击，返回无更新")
+            return dash.no_update
+            
+        # 提取被点击的关键字
+        keyword = prop_id.split('.')[0].split('"index":"')[1].split('"')[0]
+        print(f"要删除的关键字: '{keyword}'")
+        
+        # 从关键字列表中移除被点击的关键字
+        updated_keywords = [kw for kw in current_keywords if kw != keyword]
+        print(f"更新后的关键字列表: {updated_keywords}")
+        
+        # 只返回更新后的关键字列表，显示由存储监听回调更新
+        return updated_keywords
+    
+    print("不是按钮点击事件，返回无更新")
+    return dash.no_update
+
+# 临时关键字变化时自动更新右侧显示结果
+@app.callback(
+    Output("log-filter-results", "children", allow_duplicate=True),
+    [Input("temp-keywords-store", "data"),
+     Input("selected-strings", "data"),
+     Input("log-file-selector", "value"),
+     Input("display-mode", "value")],
+    [State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def auto_update_results_on_temp_keywords(temp_keywords, selected_strings, selected_log_file, display_mode, active_tab):
+    # 只有在日志过滤tab激活时才处理回调
+    if active_tab != "tab-1":
+        return dash.no_update
+    
+    # 检查是否有临时关键字或选中的字符串
+    has_temp_keywords = temp_keywords and len(temp_keywords) > 0
+    has_selected_strings = selected_strings and len(selected_strings) > 0
+    
+    # 如果没有临时关键字且没有选中的字符串，不自动更新
+    if not has_temp_keywords and not has_selected_strings:
+        return dash.no_update
+    
+    # 如果没有选择日志文件，显示提示
+    if not selected_log_file:
+        return html.P("请选择日志文件", className="text-danger text-center")
+    
+    # 执行过滤命令，包含临时关键字
+    filtered_command, filtered_result = execute_filter_logic(selected_strings, temp_keywords, selected_log_file)
+    
+    # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
+    source_command, source_result = execute_source_logic(selected_log_file, selected_strings, temp_keywords)
+    
+    # 根据显示模式返回结果
+    if display_mode == "source":
+        return source_result
+    elif display_mode == "highlight":
+        # 高亮模式：使用highlight配置执行过滤命令
+        highlight_strings = load_highlight_config()
+        if highlight_strings:
+            highlight_command, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
+            return highlight_result
+        else:
+            # 如果没有highlight配置，显示提示信息
+            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center")
+    else:
+        return filtered_result
+
+def get_temp_keywords_store():
+    """获取临时关键字存储中的当前值"""
+    try:
+        # 从app的layout中获取存储组件的当前值
+        store_component = app.layout.get('temp-keywords-store')
+        if store_component and hasattr(store_component, 'data'):
+            return store_component.data or []
+        return []
+    except:
+        return []
+
+def create_temp_keyword_buttons(keywords):
+    """创建临时关键字按钮列表"""
+    print(f"=== create_temp_keyword_buttons 被调用 ===")
+    print(f"输入的关键字列表: {keywords}")
+    print(f"列表类型: {type(keywords)}")
+    print(f"列表长度: {len(keywords) if keywords else 0}")
+    
+    if not keywords:
+        print("关键字列表为空，返回提示信息")
+        return html.P("未输入临时关键字", className="text-muted")
+    
+    keyword_buttons = []
+    for keyword in keywords:
+        keyword_buttons.append(
+            dbc.Button(
+                keyword,
+                id={"type": "temp-keyword-btn", "index": keyword},
+                color="outline-primary",
+                size="sm",
+                className="m-1",
+                style={"whiteSpace": "nowrap", "flexShrink": 0}
+            )
+        )
+    
+    # 使用d-flex和flex-wrap实现多列布局
+    return html.Div(
+        keyword_buttons,
+        className="d-flex flex-wrap gap-2",
+        style={"minHeight": "50px"}
+    )
 
 
 if __name__ == "__main__":
