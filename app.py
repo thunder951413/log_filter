@@ -438,7 +438,7 @@ app.layout = html.Div([
                                 dbc.Col([
                                     html.H4("选中的字符串", className="card-title"),
                                     dbc.Button("清除选择", id="clear-selection-btn", color="danger", size="sm", className="mb-2"),
-                                    html.Div(id="selected-strings-container", style={"maxHeight": "400px", "overflowY": "auto"})
+                                    html.Div(id="selected-strings-container", style={"maxHeight": "600px", "overflowY": "auto"})
                                 ], width=6),
                                 
                                 # 右侧：已保存的字符串
@@ -463,7 +463,7 @@ app.layout = html.Div([
                                             inline=True
                                         )
                                     ]),
-                                    html.Div(id="saved-strings-container", style={"maxHeight": "250px", "overflowY": "auto", "marginTop": "10px"})
+                                    html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"})
                                 ], width=6)
                             ])
                         ]),
