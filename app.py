@@ -240,12 +240,29 @@ def save_data(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # 保存用户选择状态
-def save_user_selections(selected_log_file, selected_strings):
+def save_user_selections(selected_log_file, selected_strings, selected_config_files=None):
+    # 加载当前的选择状态以保留其他字段
+    current_selections = load_user_selections()
+    
     selections = {
         "selected_log_file": selected_log_file,
         "selected_strings": selected_strings,
         "last_updated": datetime.now().isoformat()
     }
+    
+    # 保留现有的selected_config_files，除非提供了新的值
+    if selected_config_files is not None:
+        selections["selected_config_files"] = selected_config_files
+    elif "selected_config_files" in current_selections:
+        selections["selected_config_files"] = current_selections["selected_config_files"]
+    else:
+        selections["selected_config_files"] = []
+    
+    # 保留其他可能存在的字段
+    for key, value in current_selections.items():
+        if key not in selections:
+            selections[key] = value
+    
     selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
     with open(selections_file, 'w', encoding='utf-8') as f:
         json.dump(selections, f, ensure_ascii=False, indent=2)
@@ -404,27 +421,30 @@ def restore_string_type_from_store(active_tab, store_value):
 # 页面加载时自动恢复之前的选择
 @app.callback(
     Output("log-file-selector", "value"),
-    [Input("data-store", "data")],
+    [Input("data-store", "data"),
+     Input("main-tabs", "active_tab")],  # 添加tab切换作为触发
     [State("log-file-selector", "options")],
-    prevent_initial_call=True  # 改为True，防止页面加载时立即触发
+    prevent_initial_call='initial_duplicate'  # 允许初始调用
 )
-def restore_previous_selections(data_store_data, log_file_options):
-    # 只有在组件存在且有选项时才处理
-    if not log_file_options:
+def restore_previous_selections(data_store_data, active_tab, log_file_options):
+    # 只有在tab-1（日志过滤tab）激活时才处理回调
+    if active_tab != "tab-1":
         return dash.no_update
-        
+    
     ctx = dash.callback_context
     
-    # 检查是否是用户交互触发的
-    is_user_interaction = False
+    # 检查是否是页面加载时的初始调用或tab切换
+    is_valid_trigger = False
     if ctx.triggered:
-        # 检查触发源，如果是data-store的数据更新，则认为是有效的交互
         trigger_id = ctx.triggered[0]["prop_id"]
+        # 如果是data-store的数据更新或tab切换，则认为是有效的触发
         if trigger_id == "data-store.data" and data_store_data is not None:
-            is_user_interaction = True
+            is_valid_trigger = True
+        elif trigger_id == "main-tabs.active_tab" and active_tab:
+            is_valid_trigger = True
     
-    # 只在有效交互时执行恢复
-    if is_user_interaction:
+    # 只在有效触发时执行恢复
+    if is_valid_trigger:
         # 从文件加载用户选择状态
         user_selections = load_user_selections()
         selected_log_file = user_selections.get("selected_log_file", "")
@@ -439,46 +459,148 @@ def restore_previous_selections(data_store_data, log_file_options):
         # 如果没有找到匹配的日志文件，返回空字符串
         return ""
     
-    # 如果不是有效交互，保持当前状态不变
+    # 如果不是有效触发，保持当前状态不变
     return dash.no_update
 
 # 页面加载时恢复字符串选择
 @app.callback(
     Output("selected-strings", "data", allow_duplicate=True),
     [Input("selected-log-file", "data"),
-     Input("main-tabs", "active_tab")],  # 添加当前激活的tab状态
+     Input("main-tabs", "active_tab"),
+     Input("data-store", "data")],  # 添加数据存储作为输入
     prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
 )
-def restore_string_selections(selected_log_file, active_tab):
-    # 只有在配置管理tab激活时才处理回调
-    if active_tab != "tab-2":
-        return dash.no_update
+def restore_string_selections(selected_log_file, active_tab, data_store_data):
+    ctx = dash.callback_context
     
-    # 只有当有选中的日志文件时才恢复字符串
-    if selected_log_file:
+    # 检查是否是页面加载时的初始调用
+    is_initial_load = False
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]["prop_id"]
+        if trigger_id == "data-store.data" and data_store_data is not None:
+            is_initial_load = True
+    
+    # 页面加载时或任何tab激活时都尝试恢复字符串选择
+    if is_initial_load or active_tab:
         # 从文件加载用户选择状态
         user_selections = load_user_selections()
         
         # 检查是否有保存的字符串数据
         selected_strings = user_selections.get("selected_strings", [])
+        
+        # 检查是否有保存的配置文件数据
+        selected_config_files = user_selections.get("selected_config_files", [])
+        
+        # 如果有保存的字符串数据，直接返回
         if selected_strings:
             # 检查对应的日志文件是否存在
             saved_log_file = user_selections.get("selected_log_file", "")
-            if saved_log_file == selected_log_file:
+            if saved_log_file:
                 log_path = get_log_path(saved_log_file)
                 if os.path.exists(log_path):
                     return selected_strings
-    
-    # 如果没有保存的字符串数据或日志文件不匹配，尝试从默认配置文件加载
-    if has_default_config():
-        default_strings = load_default_config()
-        if default_strings:
-            # 保存到用户选择状态
-            save_user_selections(selected_log_file, default_strings)
-            return default_strings
+            else:
+                # 如果没有保存的日志文件，但保存了字符串，也返回字符串
+                return selected_strings
+        
+        # 如果有保存的配置文件数据，尝试加载配置文件
+        if selected_config_files:
+            loaded_strings = []
+            for config_file in selected_config_files:
+                config_path = get_config_path(config_file)
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            saved_selections = json.load(f)
+                        
+                        # 从保存的选择中提取所有字符串
+                        for category, content in saved_selections.items():
+                            if isinstance(content, dict):
+                                # 处理保留字符串
+                                if "keep" in content:
+                                    for string_text in content["keep"]:
+                                        loaded_strings.append({
+                                            "text": string_text,
+                                            "type": "keep"
+                                        })
+                                
+                                # 处理过滤字符串
+                                if "filter" in content:
+                                    for string_text in content["filter"]:
+                                        loaded_strings.append({
+                                            "text": string_text,
+                                            "type": "filter"
+                                        })
+                            else:
+                                # 处理旧格式的配置文件
+                                for string_text in content:
+                                    loaded_strings.append({
+                                        "text": string_text,
+                                        "type": "keep"  # 默认为保留字符串
+                                    })
+                    except Exception as e:
+                        print(f"加载配置文件 {config_file} 时出错: {e}")
+            
+            if loaded_strings:
+                # 保存到用户选择状态
+                save_user_selections(selected_log_file, loaded_strings)
+                return loaded_strings
+        
+        # 如果没有保存的字符串数据或配置文件，尝试从默认配置文件加载
+        if has_default_config():
+            default_strings = load_default_config()
+            if default_strings:
+                # 保存到用户选择状态
+                save_user_selections(selected_log_file, default_strings)
+                return default_strings
     
     # 如果都没有，返回空列表
     return []
+
+# 页面加载时恢复配置文件选择
+@app.callback(
+    Output("selected-config-files", "data", allow_duplicate=True),
+    [Input("data-store", "data"),
+     Input("main-tabs", "active_tab")],
+    prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
+)
+def restore_config_selections(data_store_data, active_tab):
+    ctx = dash.callback_context
+    
+    # 检查是否是页面加载时的初始调用或tab切换
+    is_valid_trigger = False
+    if ctx.triggered:
+        trigger_id = ctx.triggered[0]["prop_id"]
+        # 如果是data-store的数据更新或tab切换，则认为是有效的触发
+        if trigger_id == "data-store.data" and data_store_data is not None:
+            is_valid_trigger = True
+        elif trigger_id == "main-tabs.active_tab" and active_tab:
+            is_valid_trigger = True
+    
+    # 只在有效触发时执行恢复
+    if is_valid_trigger:
+        # 从文件加载用户选择状态
+        user_selections = load_user_selections()
+        
+        # 检查是否有保存的配置文件数据
+        selected_config_files = user_selections.get("selected_config_files", [])
+        
+        # 如果有保存的配置文件数据，检查配置文件是否仍然存在
+        if selected_config_files:
+            valid_config_files = []
+            for config_file in selected_config_files:
+                config_path = get_config_path(config_file)
+                if os.path.exists(config_path):
+                    valid_config_files.append(config_file)
+            
+            # 返回有效的配置文件列表
+            return valid_config_files
+        
+        # 如果没有保存的配置文件数据，返回空列表
+        return []
+    
+    # 如果不是有效触发，保持当前状态不变
+    return dash.no_update
 
 # 控制配置文件管理区域折叠/展开的回调
 @app.callback(
@@ -2447,6 +2569,8 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
     
     # 如果点击了清除按钮
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'clear-config-selection-btn.n_clicks':
+        # 保存空的选择状态
+        save_user_selections(None, [], selected_config_files=[])
         return []
     
     # 如果点击了配置文件按钮
@@ -2461,6 +2585,9 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
         else:
             # 否则添加到选中列表中
             current_selection.append(config_file)
+        
+        # 保存配置文件选择状态（只保存配置文件名称，不加载内容）
+        save_user_selections(None, [], selected_config_files=current_selection)
         
         return current_selection
     
@@ -2488,11 +2615,10 @@ app.clientside_callback(
      Output('selected-log-file', 'data', allow_duplicate=True)],  # 添加输出以更新日志文件选择
     [Input('selected-config-files', 'data')],
     [State('selected-log-file', 'data'),
-     State('main-tabs', 'active_tab'),
-     State('log-file-selector', 'value')],  # 添加当前选择的日志文件状态
+     State('main-tabs', 'active_tab')],
     prevent_initial_call=True
 )
-def load_selected_config_files(selected_config_files, selected_log_file, active_tab, current_log_file_value):
+def load_selected_config_files(selected_config_files, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
@@ -2542,20 +2668,11 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             
             loaded_configs.append(selected_config_file)
         
-        # 确定要使用的日志文件：优先使用当前选择的日志文件，如果没有则使用保存的日志文件
-        effective_log_file = current_log_file_value if current_log_file_value else selected_log_file
+        # 使用保存的日志文件
+        effective_log_file = selected_log_file
         
-        # 保存到用户选择状态
-        if effective_log_file:
-            save_user_selections(effective_log_file, loaded_strings)
-        else:
-            # 如果当前没有选择日志文件，只保存字符串配置，不覆盖日志文件选择
-            current_selections = load_user_selections()
-            current_selections["selected_strings"] = loaded_strings
-            current_selections["last_updated"] = datetime.now().isoformat()
-            selections_file = os.path.join(os.path.dirname(DATA_FILE), "user_selections.json")
-            with open(selections_file, 'w', encoding='utf-8') as f:
-                json.dump(current_selections, f, ensure_ascii=False, indent=2)
+        # 只保存配置文件名称到用户选择状态，不保存配置文件内容
+        save_user_selections(effective_log_file, [], selected_config_files=selected_config_files)
         
         if len(loaded_configs) == 1:
             message = f"成功加载配置文件: {loaded_configs[0]}"
