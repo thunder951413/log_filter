@@ -2869,6 +2869,7 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             message = f"成功加载 {len(loaded_configs)} 个配置文件: {', '.join(loaded_configs)}"
         
         # 返回加载的字符串和更新后的日志文件选择
+        # 注意：这里只更新filter-tab-strings-store的数据，不会自动触发日志显示更新
         return loaded_strings, html.Script(f"""
             if (typeof window.showToast === 'function') {{
                 window.showToast('{message}', 'success');
@@ -3023,20 +3024,34 @@ def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, sele
     if active_tab != "tab-1":
         return dash.no_update
     
-    # 检查是否有临时关键字或选中的字符串
-    has_temp_keywords = temp_keywords and len(temp_keywords) > 0
-    has_selected_strings = filter_tab_strings and len(filter_tab_strings) > 0
+    # 获取回调上下文，检查触发源
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
     
-    # 如果没有临时关键字且没有选中的字符串，显示提示信息
-    if not has_temp_keywords and not has_selected_strings:
-        return html.P("请选择配置文件或输入临时关键字，然后点击'生成'按钮执行过滤", className="text-info text-center")
+    # 获取触发回调的组件ID
+    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
-    # 如果没有选择日志文件，显示提示
-    if not selected_log_file:
-        return html.P("请选择日志文件", className="text-danger text-center")
+    # 只有当临时关键字变化时才显示提示信息
+    # 配置文件选择变化时不自动更新显示，保持当前过滤结果
+    if triggered_id == "temp-keywords-store":
+        # 检查是否有临时关键字或选中的字符串
+        has_temp_keywords = temp_keywords and len(temp_keywords) > 0
+        has_selected_strings = filter_tab_strings and len(filter_tab_strings) > 0
+        
+        # 如果没有临时关键字且没有选中的字符串，显示提示信息
+        if not has_temp_keywords and not has_selected_strings:
+            return html.P("请选择配置文件或输入临时关键字，然后点击'生成'按钮执行过滤", className="text-info text-center")
+        
+        # 如果没有选择日志文件，显示提示
+        if not selected_log_file:
+            return html.P("请选择日志文件", className="text-danger text-center")
+        
+        # 临时关键字变化时显示提示信息
+        return html.P("临时关键字已更新，请点击'生成'按钮执行过滤", className="text-success text-center")
     
-    # 不再自动执行过滤，而是显示提示信息
-    return html.P("配置已更新，请点击'生成'按钮执行过滤", className="text-success text-center")
+    # 对于其他触发源（如配置文件选择、日志文件选择、显示模式切换），保持当前显示不变
+    return dash.no_update
 
 def get_temp_keywords_store():
     """获取临时关键字存储中的当前值"""
