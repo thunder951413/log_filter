@@ -2424,6 +2424,62 @@ def load_configuration(n_clicks, config_name, selected_log_file):
         print(f"加载配置文件时出错: {e}")
         return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger"
 
+# 删除配置文件回调
+@app.callback(
+    [Output('status-alert', 'children', allow_duplicate=True),
+     Output('status-alert', 'is_open', allow_duplicate=True),
+     Output('status-alert', 'color', allow_duplicate=True),
+     Output('config-file-selector', 'options', allow_duplicate=True),
+     Output('config-name-input', 'value', allow_duplicate=True),
+     Output('config-file-selector', 'value', allow_duplicate=True)],
+    [Input('delete-config-btn', 'n_clicks')],
+    [State('config-name-input', 'value'),
+     State('config-file-selector', 'value')],
+    prevent_initial_call=True
+)
+def delete_configuration(n_clicks, config_name_input, config_file_selector):
+    if n_clicks is None or n_clicks == 0:
+        return dash.no_update, False, "success", dash.no_update, dash.no_update, dash.no_update
+    
+    # 判断配置名称输入框和选择配置文件的下拉框哪个有值
+    # 如果都有值则使用配置名称输入框的值来删除配置
+    if config_name_input and config_file_selector:
+        # 两者都有值，优先使用配置名称输入框的值
+        config_name = config_name_input
+    elif config_name_input:
+        # 只有配置名称输入框有值
+        config_name = config_name_input
+    elif config_file_selector:
+        # 只有下拉框有值
+        config_name = config_file_selector
+    else:
+        # 两者都没有值
+        return "请填写配置名称或选择要删除的配置文件", True, "warning", dash.no_update, dash.no_update, dash.no_update
+    
+    # 验证配置名称
+    if not config_name.strip():
+        return "配置名称不能为空", True, "warning", dash.no_update, dash.no_update, dash.no_update
+    
+    try:
+        config_path = get_config_path(config_name)
+        
+        # 检查配置文件是否存在
+        if not os.path.exists(config_path):
+            return f"配置文件 '{config_name}' 不存在", True, "warning", dash.no_update, dash.no_update, dash.no_update
+        
+        # 删除配置文件
+        os.remove(config_path)
+        
+        # 更新配置文件选择器选项
+        config_files = get_config_files()
+        options = [{'label': file, 'value': file} for file in config_files]
+        
+        return f"配置文件 '{config_name}' 删除成功", True, "success", options, "", None
+        
+    except Exception as e:
+        print(f"删除配置文件时出错: {e}")
+        return f"删除配置文件失败: {str(e)}", True, "danger", dash.no_update, dash.no_update, dash.no_update
+
 # 保存配置文件回调
 @app.callback(
     [Output('status-alert', 'children', allow_duplicate=True),
