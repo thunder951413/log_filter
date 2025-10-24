@@ -296,13 +296,16 @@ ensure_config_dir()
 
 # 应用布局
 app.layout = html.Div([
+    # Toast通知容器
+    html.Div(id="toast-container", className="toast-container"),
+    
     dbc.Container([
-        # 状态提示
+        # 状态提示 - 隐藏原始状态栏，使用toast通知
         dbc.Row([
             dbc.Col([
-                dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000)
+                dbc.Alert(id="status-alert", is_open=False, dismissable=True, duration=4000, style={"display": "none"})
             ], width=12)
-        ]),
+        ], style={"display": "none"}),
         
         # Tab导航
         dbc.Row([
@@ -317,94 +320,113 @@ app.layout = html.Div([
         
         # Tab1内容 - 日志过滤
         html.Div(id="tab-1-content", children=[
-            # 文件选择器
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("选择日志文件:"),
-                                    dcc.Dropdown(
-                                        id="log-file-selector",
-                                        placeholder="从logs目录选择文件...",
-                                        options=[],
-                                        clearable=False
-                                    )
-                                ], width=12)
-                            ])
+            # 右上角固定按钮区域
+            html.Div([
+                dbc.ButtonGroup([
+                    dbc.Button(
+                        "📁 日志文件", 
+                        id="log-file-drawer-toggle", 
+                        color="primary", 
+                        size="sm",
+                        className="me-2"
+                    ),
+                    dbc.Button(
+                        "🔍 临时关键字", 
+                        id="temp-keyword-drawer-toggle", 
+                        color="secondary", 
+                        size="sm"
+                    )
+                ], className="position-fixed", style={"top": "20px", "right": "20px", "zIndex": 1000}),
+                # 当前选择的日志文件名显示区域（悬空显示在按钮下方）
+                html.Div([
+                    html.Div(
+                        id="current-log-file-display",
+                        className="border rounded p-2 bg-light text-center",
+                        style={
+                            "position": "fixed",
+                            "top": "70px",
+                            "right": "20px",
+                            "zIndex": 999,
+                            "minWidth": "200px",
+                            "maxWidth": "300px",
+                            "fontSize": "12px",
+                            "boxShadow": "0 2px 10px rgba(0,0,0,0.1)",
+                            "borderRadius": "8px",
+                            "backgroundColor": "rgba(248, 249, 250, 0.95)",
+                            "backdropFilter": "blur(5px)"
+                        }
+                    )
+                ])
+            ]),
+            
+            # 日志文件选择器 Drawer
+            dbc.Offcanvas([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H4("日志文件选择", className="card-title"),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("选择日志文件:"),
+                                dcc.Dropdown(
+                                    id="log-file-selector",
+                                    placeholder="从logs目录选择文件...",
+                                    options=[],
+                                    clearable=False
+                                )
+                            ], width=12)
                         ])
                     ])
-                ], width=12)
-            ], className="mb-4"),
+                ])
+            ], id="log-file-drawer", title="日志文件选择", placement="end", is_open=False, style={"width": "50%"}),
             
-            # 配置文件选择器
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            dbc.Row([
-                                dbc.Col([
-                                    html.H4("选择配置文件", className="card-title"),
-                                    dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="mb-2"),
-                                    html.Div(id="config-files-container", className="border rounded p-3", style={"maxHeight": "300px", "overflowY": "auto"})
-                                ], width=12)
-                            ])
+            # 临时关键字 Drawer
+            dbc.Offcanvas([
+                dbc.Card([
+                    dbc.CardBody([
+                        html.H4("临时关键字", className="card-title"),
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("添加临时关键字:"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Input(
+                                            id="temp-keyword-text",
+                                            type="text",
+                                            placeholder="输入临时关键字..."
+                                        )
+                                    ], width=6),
+                                    dbc.Col([
+                                        dbc.Button("添加", id="temp-keyword-add-btn", color="primary", style={"width": "auto", "minWidth": "60px"})
+                                    ], width=6)
+                                ], className="mb-2"),
+                                # 将已输入的关键字移动到输入框下方
+                                dbc.Label("已输入的关键字:", className="mt-3"),
+                                html.Div(id="temp-keywords-display", className="border rounded p-2", style={"minHeight": "50px", "backgroundColor": "#f8f9fa"})
+                            ], width=12)
                         ])
                     ])
-                ], width=12)
-            ], className="mb-4"),
-            
-            # 临时关键字显示
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            html.H4("临时关键字", className="card-title"),
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("添加临时关键字:"),
-                                    dbc.Input(
-                                        id="temp-keyword-text",
-                                        type="text",
-                                        placeholder="输入临时关键字...",
-                                        className="mb-2"
-                                    ),
-                                    dbc.Button("添加", id="temp-keyword-add-btn", color="primary", className="w-100")
-                                ], width=6)
-                            ]),
-                            dbc.Label("已输入的关键字:"),
-                            html.Div(id="temp-keywords-display", className="border rounded p-2", style={"minHeight": "50px", "backgroundColor": "#f8f9fa"})
-                        ])
-                    ])
-                ], width=12)
-            ], className="mb-4"),
-            
-            # 执行过滤命令按钮
-            dbc.Row([
-                dbc.Col([
-                    dbc.Card([
-                        dbc.CardBody([
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Button("生成并执行过滤命令", id="execute-filter-btn", color="primary", className="w-100", size="lg")
-                                ], width=12)
-                            ])
-                        ])
-                    ])
-                ], width=12)
-            ], className="mb-3"),
-            
+                ])
+            ], id="temp-keyword-drawer", title="临时关键字", placement="end", is_open=False, style={"width": "50%"}),
+
             # 日志过滤结果
             dbc.Row([
                 dbc.Col([
                     dbc.Card([
                         dbc.CardBody([
-                            html.H4("日志过滤结果", className="card-title"),
-                            # 显示模式切换开关
+                            # 左侧：配置文件选择器和相关按钮
                             dbc.Row([
                                 dbc.Col([
-                                    dbc.Label("显示模式:"),
+                                    html.Div(id="config-files-container", className="border rounded p-2", style={"maxHeight": "150px", "overflowY": "auto", "fontSize": "11px"}),
+                                    # 将清除选择和过滤按钮放在一起
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="w-100")
+                                        ], width=6),
+                                        dbc.Col([
+                                            dbc.Button("过滤", id="execute-filter-btn", color="success", className="w-100", size="sm")
+                                        ], width=6)
+                                    ], className="mt-2 mb-3"),
+                                    # 显示模式切换开关
                                     dbc.RadioItems(
                                         id="display-mode",
                                         options=[
@@ -415,9 +437,9 @@ app.layout = html.Div([
                                         value="filtered",
                                         inline=True
                                     )
-                                ], width=12, className="mb-3")
-                            ]),
-                            html.Div(id="log-filter-results", style={"maxHeight": "600px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                ], width=12)
+                            ], className="mb-3"),
+                            html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                         ])
                     ])
                 ], width=12)
@@ -506,7 +528,7 @@ app.layout = html.Div([
                                     dbc.Col([
                                         html.H4("选中的字符串", className="card-title"),
                                         dbc.Button("清除选择", id={"type": "clear-selection-btn", "index": "main"}, color="danger", size="sm", className="mb-2"),
-                                        html.Div(id="selected-strings-container", style={"maxHeight": "600px", "overflowY": "auto"})
+                                        html.Div(id="selected-strings-container", style={"maxHeight": "calc(100vh - 250px)", "overflowY": "auto"})
                                     ], width=6),
                                     
                                     # 右侧：已保存的字符串
@@ -723,11 +745,14 @@ app.layout = html.Div([
 # 初始化数据存储
 @app.callback(
     Output("data-store", "data", allow_duplicate=True),
-    [Input("status-alert", "children")],
+    [Input("main-tabs", "active_tab")],
     prevent_initial_call="initial_duplicate"
 )
-def initialize_data_store(status_children):
-    return load_data()
+def initialize_data_store(active_tab):
+    # 当页面加载或tab切换时初始化数据
+    if active_tab:
+        return load_data()
+    return dash.no_update
 
 # 单向同步：从string-type-radio更新到string-type-store
 @app.callback(
@@ -753,6 +778,30 @@ def restore_string_type_from_store(active_tab, store_value):
     if active_tab == "tab-2" and store_value:
         return store_value
     return dash.no_update
+
+# 控制日志文件选择器drawer的打开/关闭
+@app.callback(
+    Output("log-file-drawer", "is_open"),
+    [Input("log-file-drawer-toggle", "n_clicks")],
+    [State("log-file-drawer", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_log_file_drawer(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
+
+# 控制临时关键字drawer的打开/关闭
+@app.callback(
+    Output("temp-keyword-drawer", "is_open"),
+    [Input("temp-keyword-drawer-toggle", "n_clicks")],
+    [State("temp-keyword-drawer", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_temp_keyword_drawer(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
 
 # 页面加载时自动恢复之前的选择
 @app.callback(
@@ -1292,14 +1341,16 @@ def update_saved_strings(data, selected_category, string_type, selected_strings,
 # 更新日志文件选择器选项
 @app.callback(
     Output("log-file-selector", "options", allow_duplicate=True),
-    [Input("status-alert", "children")],
+    [Input("main-tabs", "active_tab")],
     prevent_initial_call='initial_duplicate'  # 使用initial_duplicate允许页面加载时初始化
 )
-def update_log_file_selector(status_children):
-    # 只有在组件存在时才更新选项
-    log_files = get_log_files()
-    options = [{"label": file, "value": file} for file in log_files]
-    return options
+def update_log_file_selector(active_tab):
+    # 当页面加载或tab切换时更新选项
+    if active_tab:
+        log_files = get_log_files()
+        options = [{"label": file, "value": file} for file in log_files]
+        return options
+    return dash.no_update
 
 # 保存日志文件选择状态
 @app.callback(
@@ -1310,8 +1361,8 @@ def update_log_file_selector(status_children):
     prevent_initial_call=True  # 防止页面加载时触发保存
 )
 def save_log_file_selection(selected_file, selected_strings, active_tab):
-    # 只有在配置管理tab激活时才处理回调
-    if active_tab != "tab-2":
+    # 只有在日志过滤tab激活时才处理回调
+    if active_tab != "tab-1":
         return dash.no_update
     
     # 只有在用户真正选择文件时才保存，而不是在恢复过程中
@@ -1320,6 +1371,26 @@ def save_log_file_selection(selected_file, selected_strings, active_tab):
         save_user_selections(selected_file, selected_strings)
     
     return selected_file if selected_file else ""
+
+# 更新当前选择的日志文件名显示
+@app.callback(
+    Output("current-log-file-display", "children"),
+    [Input("selected-log-file", "data"),
+     Input("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def update_current_log_file_display(selected_file, active_tab):
+    # 只有在日志过滤tab激活时才显示
+    if active_tab != "tab-1":
+        return html.Div("当前未选择日志文件", className="text-muted")
+    
+    if selected_file and selected_file != "":
+        return html.Div([
+            html.Small("当前选择的日志文件:", className="d-block text-muted mb-1"),
+            html.Strong(selected_file, className="text-primary")
+        ])
+    else:
+        return html.Div("请选择日志文件", className="text-muted")
 
 # 选择字符串回调
 @app.callback(
@@ -1407,11 +1478,9 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
     
     return selected_strings
 
-# 日志过滤tab的状态提示回调
+# 日志过滤tab的状态提示回调 - 更新为Toast系统
 @app.callback(
-    [Output("status-alert", "children"),
-     Output("status-alert", "is_open"),
-     Output("status-alert", "color")],
+    Output("toast-container", "children"),
     [Input("add-string-btn", "n_clicks")],
     [State("input-string", "value"),
      State("input-category", "value"),
@@ -1420,17 +1489,23 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
 )
 def show_add_string_status(add_clicks, input_string, input_category, data):
     if add_clicks and input_string and input_category:
-        return f"成功添加字符串到分类 '{input_category}'", True, "success"
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('成功添加字符串到分类 "{input_category}"', 'success');
+            }}
+        """)
     elif add_clicks:
-        return "请输入字符串和分类", True, "danger"
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('请输入字符串和分类', 'error');
+            }}
+        """)
     
-    return "", False, "success"
+    return dash.no_update
 
-# 配置管理tab的状态提示回调
+# 配置管理tab的状态提示回调 - 更新为Toast系统
 @app.callback(
-    [Output("status-alert", "children", allow_duplicate=True),
-     Output("status-alert", "is_open", allow_duplicate=True),
-     Output("status-alert", "color", allow_duplicate=True)],
+    Output("toast-container", "children", allow_duplicate=True),
     [Input({"type": "select-string-btn", "index": dash.ALL}, "n_clicks"),
      Input({"type": "clear-selection-btn", "index": dash.ALL}, "n_clicks")],
     [State("data-store", "data"),
@@ -1441,12 +1516,12 @@ def show_add_string_status(add_clicks, input_string, input_category, data):
 def show_config_status(select_clicks, clear_clicks, data, selected_strings, active_tab):
     # 只在配置管理tab激活时处理
     if active_tab != 'tab-2':
-        return "", False, "success"
+        return dash.no_update
     
     ctx = callback_context
     
     if not ctx.triggered:
-        return "", False, "success"
+        return dash.no_update
 
     trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
@@ -1462,18 +1537,25 @@ def show_config_status(select_clicks, clear_clicks, data, selected_strings, acti
             
             # 检查是否已经选择
             if selected_string in selected_strings:
-                return "该字符串已经被选择", True, "warning"
+                return html.Script(f"""
+                    if (typeof window.showToast === 'function') {{
+                        window.showToast('该字符串已经被选择', 'warning');
+                    }}
+                """)
             else:
-                # 不显示"已选择字符串"提示
-                return "", False, "success"
+                return dash.no_update
     
     # 清除选择状态
     if "clear-selection-btn" in trigger_id:
         # 检查是否有清除按钮被点击
         if clear_clicks and any(clicks is not None and clicks > 0 for clicks in clear_clicks):
-            return "已清除所有选择", True, "info"
+            return html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('已清除所有选择', 'info');
+                }}
+            """)
     
-    return "", False, "success"
+    return dash.no_update
 
 
 # 更新选中字符串显示
@@ -2353,12 +2435,10 @@ def update_config_file_selector(active_tab):
         return options
     return dash.no_update
 
-# 加载配置文件回调
+# 加载配置文件回调 - 更新为Toast系统
 @app.callback(
     [Output('selected-strings', 'data', allow_duplicate=True),
-     Output('status-alert', 'children', allow_duplicate=True),
-     Output('status-alert', 'is_open', allow_duplicate=True),
-     Output('status-alert', 'color', allow_duplicate=True)],
+     Output('toast-container', 'children', allow_duplicate=True)],
     [Input('load-config-btn', 'n_clicks')],
     [State('config-file-selector', 'value'),
      State('selected-log-file', 'data')],
@@ -2366,13 +2446,21 @@ def update_config_file_selector(active_tab):
 )
 def load_configuration(n_clicks, config_name, selected_log_file):
     if n_clicks is None or n_clicks == 0 or not config_name:
-        return dash.no_update, "请选择要加载的配置文件", True, "warning"
+        return dash.no_update, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('请选择要加载的配置文件', 'warning');
+            }}
+        """)
     
     try:
         config_path = get_config_path(config_name)
         
         if not os.path.exists(config_path):
-            return dash.no_update, f"配置文件 {config_name} 不存在", True, "danger"
+            return dash.no_update, html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('配置文件 {config_name} 不存在', 'error');
+                }}
+            """)
         
         # 加载配置文件
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -2418,17 +2506,23 @@ def load_configuration(n_clicks, config_name, selected_log_file):
             with open(selections_file, 'w', encoding='utf-8') as f:
                 json.dump(current_selections, f, ensure_ascii=False, indent=2)
         
-        return loaded_strings, f"成功加载配置文件: {config_name}", True, "success"
+        return loaded_strings, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('成功加载配置文件: {config_name}', 'success');
+            }}
+        """)
     
     except Exception as e:
         print(f"加载配置文件时出错: {e}")
-        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger"
+        return dash.no_update, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('加载配置文件失败: {str(e)}', 'error');
+            }}
+        """)
 
-# 删除配置文件回调
+# 删除配置文件回调 - 更新为Toast系统
 @app.callback(
-    [Output('status-alert', 'children', allow_duplicate=True),
-     Output('status-alert', 'is_open', allow_duplicate=True),
-     Output('status-alert', 'color', allow_duplicate=True),
+    [Output('toast-container', 'children', allow_duplicate=True),
      Output('config-file-selector', 'options', allow_duplicate=True),
      Output('config-name-input', 'value', allow_duplicate=True),
      Output('config-file-selector', 'value', allow_duplicate=True)],
@@ -2439,7 +2533,7 @@ def load_configuration(n_clicks, config_name, selected_log_file):
 )
 def delete_configuration(n_clicks, config_name_input, config_file_selector):
     if n_clicks is None or n_clicks == 0:
-        return dash.no_update, False, "success", dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     # 判断配置名称输入框和选择配置文件的下拉框哪个有值
     # 如果都有值则使用配置名称输入框的值来删除配置
@@ -2454,18 +2548,30 @@ def delete_configuration(n_clicks, config_name_input, config_file_selector):
         config_name = config_file_selector
     else:
         # 两者都没有值
-        return "请填写配置名称或选择要删除的配置文件", True, "warning", dash.no_update, dash.no_update, dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('请填写配置名称或选择要删除的配置文件', 'warning');
+            }}
+        """), dash.no_update, dash.no_update, dash.no_update
     
     # 验证配置名称
     if not config_name.strip():
-        return "配置名称不能为空", True, "warning", dash.no_update, dash.no_update, dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('配置名称不能为空', 'warning');
+            }}
+        """), dash.no_update, dash.no_update, dash.no_update
     
     try:
         config_path = get_config_path(config_name)
         
         # 检查配置文件是否存在
         if not os.path.exists(config_path):
-            return f"配置文件 '{config_name}' 不存在", True, "warning", dash.no_update, dash.no_update, dash.no_update
+            return html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('配置文件 '{config_name}' 不存在', 'warning');
+                }}
+            """), dash.no_update, dash.no_update, dash.no_update
         
         # 删除配置文件
         os.remove(config_path)
@@ -2474,17 +2580,23 @@ def delete_configuration(n_clicks, config_name_input, config_file_selector):
         config_files = get_config_files()
         options = [{'label': file, 'value': file} for file in config_files]
         
-        return f"配置文件 '{config_name}' 删除成功", True, "success", options, "", None
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('配置文件 '{config_name}' 删除成功', 'success');
+            }}
+        """), options, "", None
         
     except Exception as e:
         print(f"删除配置文件时出错: {e}")
-        return f"删除配置文件失败: {str(e)}", True, "danger", dash.no_update, dash.no_update, dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('删除配置文件失败: {str(e)}', 'error');
+            }}
+        """), dash.no_update, dash.no_update, dash.no_update
 
-# 保存配置文件回调
+# 保存配置文件回调 - 更新为Toast系统
 @app.callback(
-    [Output('status-alert', 'children', allow_duplicate=True),
-     Output('status-alert', 'is_open', allow_duplicate=True),
-     Output('status-alert', 'color', allow_duplicate=True),
+    [Output('toast-container', 'children', allow_duplicate=True),
      Output('config-file-selector', 'options', allow_duplicate=True)],
     [Input('save-config-btn', 'n_clicks')],
     [State('config-name-input', 'value'),
@@ -2494,7 +2606,7 @@ def delete_configuration(n_clicks, config_name_input, config_file_selector):
 )
 def save_configuration(n_clicks, config_name_input, config_file_selector, selected_strings):
     if n_clicks is None or n_clicks == 0:
-        return dash.no_update, False, "success", dash.no_update
+        return dash.no_update, dash.no_update
     
     # 判断配置名称输入框和选择配置文件的下拉框哪个有值
     # 如果都有值则使用配置名称输入框的值来保存配置
@@ -2509,11 +2621,19 @@ def save_configuration(n_clicks, config_name_input, config_file_selector, select
         config_name = config_file_selector
     else:
         # 两者都没有值
-        return "请填写配置名称或选择配置文件", True, "warning", dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('请填写配置名称或选择配置文件', 'warning');
+            }}
+        """), dash.no_update
     
     # 验证配置名称
     if not config_name.strip():
-        return "配置名称不能为空", True, "warning", dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('配置名称不能为空', 'warning');
+            }}
+        """), dash.no_update
     
     try:
         config_path = get_config_path(config_name)
@@ -2562,11 +2682,19 @@ def save_configuration(n_clicks, config_name_input, config_file_selector, select
         config_files = get_config_files()
         options = [{'label': file, 'value': file} for file in config_files]
         
-        return f"配置已成功保存为: {config_name}", True, "success", options
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('配置已成功保存为: {config_name}', 'success');
+            }}
+        """), options
     
     except Exception as e:
         print(f"保存配置文件时出错: {e}")
-        return f"保存配置文件失败: {str(e)}", True, "danger", dash.no_update
+        return html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('保存配置文件失败: {str(e)}', 'error');
+            }}
+        """), dash.no_update
 
 # 更新配置文件按钮显示
 @app.callback(
@@ -2626,8 +2754,9 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
     
     # 如果点击了清除按钮
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'clear-config-selection-btn.n_clicks':
-        # 保存空的选择状态
-        save_user_selections(None, [], selected_config_files=[])
+        # 保存空的选择状态，但保留当前的日志文件选择
+        current_selections = load_user_selections()
+        save_user_selections(current_selections.get("selected_log_file", ""), [], selected_config_files=[])
         return []
     
     # 如果点击了配置文件按钮
@@ -2643,8 +2772,9 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
             # 否则添加到选中列表中
             current_selection.append(config_file)
         
-        # 保存配置文件选择状态（只保存配置文件名称，不加载内容）
-        save_user_selections(None, [], selected_config_files=current_selection)
+        # 保存配置文件选择状态（只保存配置文件名称，不加载内容，但保留日志文件选择）
+        current_selections = load_user_selections()
+        save_user_selections(current_selections.get("selected_log_file", ""), [], selected_config_files=current_selection)
         
         return current_selection
     
@@ -2663,12 +2793,10 @@ app.clientside_callback(
     prevent_initial_call=True
 )
 
-# 加载选中的配置文件（支持多选）
+# 加载选中的配置文件（支持多选）- 更新为Toast系统
 @app.callback(
     [Output('filter-tab-strings-store', 'data', allow_duplicate=True),
-     Output('status-alert', 'children', allow_duplicate=True),
-     Output('status-alert', 'is_open', allow_duplicate=True),
-     Output('status-alert', 'color', allow_duplicate=True),
+     Output('toast-container', 'children', allow_duplicate=True),
      Output('selected-log-file', 'data', allow_duplicate=True)],  # 添加输出以更新日志文件选择
     [Input('selected-config-files', 'data')],
     [State('selected-log-file', 'data'),
@@ -2678,10 +2806,10 @@ app.clientside_callback(
 def load_selected_config_files(selected_config_files, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
         
     if not selected_config_files:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     
     try:
         loaded_strings = []
@@ -2691,7 +2819,11 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             config_path = get_config_path(selected_config_file)
             
             if not os.path.exists(config_path):
-                return dash.no_update, f"配置文件 {selected_config_file} 不存在", True, "danger", dash.no_update
+                return dash.no_update, html.Script(f"""
+                    if (typeof window.showToast === 'function') {{
+                        window.showToast('配置文件 {selected_config_file} 不存在', 'error');
+                    }}
+                """), dash.no_update
             
             # 加载配置文件
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -2728,7 +2860,7 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
         # 使用保存的日志文件
         effective_log_file = selected_log_file
         
-        # 只保存配置文件名称到用户选择状态，不保存配置文件内容
+        # 只保存配置文件名称到用户选择状态，保留现有的选择字符串，不保存配置文件内容
         save_user_selections(effective_log_file, [], selected_config_files=selected_config_files)
         
         if len(loaded_configs) == 1:
@@ -2737,11 +2869,19 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             message = f"成功加载 {len(loaded_configs)} 个配置文件: {', '.join(loaded_configs)}"
         
         # 返回加载的字符串和更新后的日志文件选择
-        return loaded_strings, message, True, "success", effective_log_file
+        return loaded_strings, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('{message}', 'success');
+            }}
+        """), effective_log_file
     
     except Exception as e:
         print(f"加载配置文件时出错: {e}")
-        return dash.no_update, f"加载配置文件失败: {str(e)}", True, "danger", dash.no_update
+        return dash.no_update, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('加载配置文件失败: {str(e)}', 'error');
+            }}
+        """), dash.no_update
 
 
 

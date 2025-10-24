@@ -1,0 +1,137 @@
+/* Modern Toast Notification - Bottom Right */
+.toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1050;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 400px;
+    pointer-events: none;
+}
+
+.toast {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    color: #333;
+    padding: 16px 20px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    font-size: 14px;
+    font-weight: 500;
+    opacity: 0;
+    transform: translateX(400px);
+    transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    min-width: 280px;
+    max-width: 350px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    position: relative;
+    overflow: hidden;
+    pointer-events: auto;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast.toast-success {
+    background: rgba(76, 175, 80, 0.95);
+    color: white;
+    border-left: 4px solid #4CAF50;
+}
+
+.toast.toast-error {
+    background: rgba(244, 67, 54, 0.95);
+    color: white;
+    border-left: 4px solid #f44336;
+}
+
+.toast.toast-warning {
+    background: rgba(255, 152, 0, 0.95);
+    color: white;
+    border-left: 4px solid #ff9800;
+}
+
+.toast.toast-info {
+    background: rgba(33, 150, 243, 0.95);
+    color: white;
+    border-left: 4px solid #2196F3;
+}
+
+/* Toast animation */
+@keyframes toast-slide-in {
+    from {
+        opacity: 0;
+        transform: translateY(-20px) translateX(-50%);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) translateX(-50%);
+    }
+}
+
+@keyframes toast-slide-out {
+    from {
+        opacity: 1;
+        transform: translateY(0) translateX(-50%);
+    }
+    to {
+        opacity: 0;
+        transform: translateY(-20px) translateX(-50%);
+    }
+}
+
+.toast.animate-in {
+    animation: toast-slide-in 0.3s ease-out;
+}
+
+.toast.animate-out {
+    animation: toast-slide-out 0.3s ease-in;
+}
+
+/* Hide original Bootstrap alerts */
+#status-alert,
+.alert {
+    display: none !important;
+}
+
+/* Ensure toast appears above all content */
+.toast-container {
+    position: fixed !important;
+    top: 20px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+}
+
+/* Modern glassmorphism effect for toasts */
+.toast {
+    background: rgba(50, 50, 50, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+}
+
+.toast.toast-success {
+    background: rgba(76, 175, 80, 0.85);
+}
+
+.toast.toast-error {
+    background: rgba(244, 67, 54, 0.85);
+}
+
+.toast.toast-warning {
+    background: rgba(255, 152, 0, 0.85);
+}
+
+.toast.toast-info {
+    background: rgba(33, 150, 243, 0.85);
+}
