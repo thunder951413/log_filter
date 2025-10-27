@@ -53,7 +53,8 @@
       "dvr_playback_stop"
     ],
     "DTV_LOG": [
-      "DTV_LOG"
+      "DTV_LOG",
+      "STBPVRPR_AMLMP"
     ],
     "dtvkitserver": [
       "IPC",
@@ -77,7 +78,18 @@
       "STB_CiHandlePinEvent",
       "STB_CINotifyRecordStartStatus",
       "STB_CiCcNotifyModuleInsert",
-      "STB_CiCcNotifyModuleRemove"
+      "STB_CiCcNotifyModuleRemove",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiHandlePinEvent",
+      "STB_CiCcSendPinPlayback",
+      "STB_CiCcSendPinPlayback"
+    ],
+    "CI_PIN": [
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiHandlePinEvent",
+      "STB_CiCcSendPinPlayback"
     ]
   }
 }

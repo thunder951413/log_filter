@@ -1,0 +1,44 @@
+{
+  "PlayerInterface": {
+    "keep": [
+      "Player.play"
+    ],
+    "filter": []
+  },
+  "demux": {
+    "keep": [
+      "STBHWDMX"
+    ],
+    "filter": []
+  },
+  "pvr": {
+    "keep": [
+      "STBPVR"
+    ],
+    "filter": []
+  },
+  "av": {
+    "keep": [
+      "STBHWAV_AMLMP"
+    ],
+    "filter": []
+  },
+  "STBHWDEMUX_USB": {
+    "keep": [
+      "STBHWDEMUX_USB"
+    ],
+    "filter": []
+  },
+  "CIPlus": {
+    "keep": [
+      "CIPlusEventTask"
+    ],
+    "filter": []
+  },
+  "STBCICC": {
+    "keep": [
+      "STBCICC"
+    ],
+    "filter": []
+  }
+}

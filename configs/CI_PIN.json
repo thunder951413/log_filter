@@ -1,0 +1,11 @@
+{
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiHandlePinEvent",
+      "STB_CiCcSendPinPlayback"
+    ],
+    "filter": []
+  }
+}
