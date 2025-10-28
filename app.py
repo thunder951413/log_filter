@@ -9,7 +9,52 @@ import os
 import subprocess
 import re
 import base64
+import hashlib
+import time
 from datetime import datetime
+
+# 高亮缓存系统
+class HighlightCache:
+    def __init__(self, max_size=100):
+        self.cache = {}
+        self.max_size = max_size
+        self.access_order = []
+    
+    def get_cache_key(self, text, selected_strings, data):
+        """生成缓存键"""
+        # 使用文本内容、选中的字符串和配置数据的哈希作为键
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        strings_hash = hashlib.md5(str(selected_strings).encode('utf-8')).hexdigest()
+        data_hash = hashlib.md5(json.dumps(data, sort_keys=True).encode('utf-8')).hexdigest()
+        return f"{text_hash}:{strings_hash}:{data_hash}"
+    
+    def get(self, key):
+        """从缓存中获取结果"""
+        if key in self.cache:
+            # 更新访问顺序
+            if key in self.access_order:
+                self.access_order.remove(key)
+            self.access_order.append(key)
+            return self.cache[key]
+        return None
+    
+    def put(self, key, value):
+        """将结果存入缓存"""
+        # 如果缓存已满，移除最久未使用的项
+        if len(self.cache) >= self.max_size:
+            oldest_key = self.access_order.pop(0)
+            del self.cache[oldest_key]
+        
+        self.cache[key] = value
+        self.access_order.append(key)
+    
+    def clear(self):
+        """清空缓存"""
+        self.cache.clear()
+        self.access_order.clear()
+
+# 全局高亮缓存实例
+highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 app = dash.Dash(
@@ -1987,9 +2032,34 @@ def highlight_keywords(text, selected_strings, data):
     return highlighted_text
 
 def highlight_keywords_dash(text, selected_strings, data):
-    """为Dash组件生成高亮显示的组件列表"""
+    """为Dash组件生成高亮显示的组件列表（优化版本）"""
+    start_time = time.time()
+    
     if not selected_strings or not data or "categories" not in data:
-        return html.Pre(text, className="small")
+        result = html.Pre(text, className="small")
+        return result
+    
+    # 性能优化：使用缓存
+    cache_key = highlight_cache.get_cache_key(text, selected_strings, data)
+    cached_result = highlight_cache.get(cache_key)
+    if cached_result:
+        end_time = time.time()
+        print(f"高亮处理（缓存命中）: {end_time - start_time:.3f}秒")
+        return cached_result
+    
+    # 性能监控：记录文本大小
+    text_size = len(text)
+    
+    # 性能优化：如果文本过大，使用简化模式
+    if text_size > 100000:  # 超过100KB的文本
+        result = html.Div([
+            html.P(f"注意：文本过大（{text_size} 字节），已禁用高亮显示以提升性能", className="text-warning mb-2"),
+            html.Pre(text, className="small")
+        ])
+        highlight_cache.put(cache_key, result)
+        end_time = time.time()
+        print(f"高亮处理（大文件简化）: {end_time - start_time:.3f}秒，文本大小: {text_size} 字节")
+        return result
     
     # 获取所有分类
     categories = list(data["categories"].keys())
@@ -2017,84 +2087,128 @@ def highlight_keywords_dash(text, selected_strings, data):
             keywords_to_highlight.append(string_text)
     
     if not keywords_to_highlight:
-        return html.Pre(text, className="small")
+        result = html.Pre(text, className="small")
+        highlight_cache.put(cache_key, result)
+        return result
+    
+    # 性能优化：限制高亮关键字数量
+    if len(keywords_to_highlight) > 20:
+        keywords_to_highlight = keywords_to_highlight[:20]  # 最多处理20个关键字
     
     # 按长度降序排序，确保长关键字优先匹配
     keywords_to_highlight.sort(key=len, reverse=True)
     
-    # 按行处理文本，确保每行都能正确高亮
-    lines = text.split('\n')
-    highlighted_lines = []
-    
-    for line in lines:
-        if not line.strip():
-            # 空行直接添加
-            highlighted_lines.append(html.Div('\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
-            continue
-            
-        components = []
-        remaining_text = line
-        
-        # 查找该行中所有需要高亮的关键字位置
-        keyword_positions = []
+    # 性能优化：使用单一正则表达式进行匹配
+    try:
+        # 构建单一正则表达式模式
+        pattern_parts = []
         for keyword in keywords_to_highlight:
-            if keyword in keyword_to_category:
-                pattern = re.escape(keyword)
-                matches = re.finditer(pattern, remaining_text, re.IGNORECASE)
-                for match in matches:
-                    keyword_positions.append({
-                        'keyword': keyword,
-                        'start': match.start(),
-                        'end': match.end(),
-                        'category': keyword_to_category[keyword],
-                        'color': category_colors[keyword_to_category[keyword]]
-                    })
+            escaped_keyword = re.escape(keyword)
+            pattern_parts.append(escaped_keyword)
         
-        # 按起始位置排序
-        keyword_positions.sort(key=lambda x: x['start'])
+        if not pattern_parts:
+            result = html.Pre(text, className="small")
+            highlight_cache.put(cache_key, result)
+            return result
         
-        if not keyword_positions:
-            # 该行没有关键字，直接添加
-            highlighted_lines.append(html.Div(line + '\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
-            continue
+        # 创建单一正则表达式（不区分大小写）
+        combined_pattern = f"({'|'.join(pattern_parts)})"
+        regex = re.compile(combined_pattern, re.IGNORECASE)
         
-        # 构建该行的组件
-        current_pos = 0
-        for pos in keyword_positions:
-            # 添加关键字前的文本
-            if pos['start'] > current_pos:
-                before_text = line[current_pos:pos['start']]
-                components.append(before_text)
+        # 按行处理文本
+        lines = text.split('\n')
+        highlighted_lines = []
+        
+        for line in lines:
+            if not line.strip():
+                # 空行直接添加
+                highlighted_lines.append(html.Div('\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+                continue
             
-            # 添加高亮的关键字
-            components.append(
-                html.Span(
-                    line[pos['start']:pos['end']],
-                    style={
-                        'backgroundColor': pos['color'],
-                        'color': 'white',
-                        'padding': '2px 4px',
-                        'borderRadius': '3px',
-                        'fontWeight': 'bold',
-                        'display': 'inline'
-                    }
-                )
-            )
+            # 使用单一正则表达式查找所有匹配
+            matches = list(regex.finditer(line))
             
-            current_pos = pos['end']
+            if not matches:
+                # 该行没有关键字，直接添加
+                highlighted_lines.append(html.Div(line + '\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+                continue
+            
+            # 构建该行的组件
+            components = []
+            current_pos = 0
+            
+            for match in matches:
+                # 添加匹配前的文本
+                if match.start() > current_pos:
+                    components.append(line[current_pos:match.start()])
+                
+                # 获取匹配的关键字和对应的分类颜色
+                matched_text = match.group()
+                category = None
+                color = None
+                
+                # 查找匹配的关键字对应的分类
+                for keyword in keywords_to_highlight:
+                    if keyword.lower() == matched_text.lower():
+                        if keyword in keyword_to_category:
+                            category = keyword_to_category[keyword]
+                            color = category_colors[category]
+                            break
+                
+                if color:
+                    # 添加高亮的关键字
+                    components.append(
+                        html.Span(
+                            matched_text,
+                            style={
+                                'backgroundColor': color,
+                                'color': 'white',
+                                'padding': '2px 4px',
+                                'borderRadius': '3px',
+                                'fontWeight': 'bold',
+                                'display': 'inline'
+                            }
+                        )
+                    )
+                else:
+                    # 如果没有找到对应的分类，直接添加文本
+                    components.append(matched_text)
+                
+                current_pos = match.end()
+            
+            # 添加剩余文本
+            if current_pos < len(line):
+                components.append(line[current_pos:])
+            
+            # 添加换行符
+            components.append('\n')
+            
+            # 创建该行的Div组件
+            highlighted_lines.append(html.Div(components, style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
         
-        # 添加剩余文本
-        if current_pos < len(line):
-            components.append(line[current_pos:])
+        # 返回包含所有行的Div
+        result = html.Div(highlighted_lines)
+        highlight_cache.put(cache_key, result)
         
-        # 添加换行符
-        components.append('\n')
+        # 性能监控：记录处理时间
+        end_time = time.time()
+        processing_time = end_time - start_time
+        print(f"高亮处理完成: {processing_time:.3f}秒，文本大小: {text_size} 字节，关键字数量: {len(keywords_to_highlight)}")
         
-        # 创建该行的Div组件
-        highlighted_lines.append(html.Div(components, style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+        return result
     
-    # 返回包含所有行的Div
-    return html.Div(highlighted_lines)
+    except Exception as e:
+        # 如果正则表达式处理失败，回退到简单显示
+        print(f"高亮处理失败，使用简单显示: {e}")
+        result = html.Pre(text, className="small")
+        highlight_cache.put(cache_key, result)
+        
+        # 性能监控：记录错误处理时间
+        end_time = time.time()
+        processing_time = end_time - start_time
+        print(f"高亮处理失败: {processing_time:.3f}秒，文本大小: {text_size} 字节")
+        
+        return result
 
 def execute_command(full_command, selected_strings=None, data=None):
     """执行命令并返回结果显示"""
