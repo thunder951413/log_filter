@@ -412,7 +412,18 @@ app.layout = html.Div([
                                             dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="w-100")
                                         ], width=6),
                                         dbc.Col([
-                                            dbc.Button("过滤", id="execute-filter-btn", color="success", className="w-100", size="sm")
+                                            html.Div([
+                                                dbc.Button([
+                                                    html.Span("过滤", id="filter-btn-text"),
+                                                    dbc.Spinner(size="sm", color="light", id="filter-loading-spinner", spinner_style={"display": "none", "marginLeft": "5px"})
+                                                ], id="execute-filter-btn", color="success", className="w-100", size="sm"),
+                                                dcc.Loading(
+                                                    id="filter-loading",
+                                                    type="circle",
+                                                    children=html.Div(id="filter-loading-output"),
+                                                    style={"display": "none"}
+                                                )
+                                            ])
                                         ], width=6)
                                     ], className="mt-2 mb-3"),
                                     # 显示模式切换开关
@@ -1715,11 +1726,29 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
 
 
 
+# 过滤按钮加载状态控制回调
+@app.callback(
+    [Output("filter-loading-spinner", "spinner_style"),
+     Output("filter-btn-text", "children"),
+     Output("execute-filter-btn", "disabled")],
+    [Input("execute-filter-btn", "n_clicks")],
+    [State("filter-loading-spinner", "spinner_style")],
+    prevent_initial_call=True
+)
+def toggle_filter_loading(n_clicks, current_style):
+    if n_clicks:
+        # 显示加载状态
+        return {"display": "inline-block", "marginLeft": "5px"}, "处理中...", True
+    return current_style, "过滤", False
+
 # 生成并执行过滤命令的回调
 @app.callback(
     [Output("log-filter-results", "children"),
      Output("filtered-result-store", "data"),
-     Output("source-result-store", "data")],
+     Output("source-result-store", "data"),
+     Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
+     Output("filter-btn-text", "children", allow_duplicate=True),
+     Output("execute-filter-btn", "disabled", allow_duplicate=True)],
     [Input("execute-filter-btn", "n_clicks"),
      Input("display-mode", "value")],
     [State("filter-tab-strings-store", "data"),
@@ -1731,18 +1760,18 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
 def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     # 获取触发回调的组件ID
     ctx = dash.callback_context
     if not ctx.triggered:
-        return "", "", ""
+        return "", "", "", {"display": "none", "marginLeft": "5px"}, "过滤", False
     
     triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
     
     # 如果是显示模式切换，但还没有执行过滤操作
     if triggered_id == "display-mode" and n_clicks == 0:
-        return html.P("请先执行过滤操作", className="text-info text-center"), "", ""
+        return html.P("请先执行过滤操作", className="text-info text-center"), "", "", {"display": "none", "marginLeft": "5px"}, "过滤", False
     
     # 执行过滤命令，包含临时关键字
     filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
@@ -1752,18 +1781,18 @@ def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keyw
     
     # 根据显示模式返回结果
     if display_mode == "source":
-        return source_result, filtered_result, source_result
+        return source_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
     elif display_mode == "highlight":
         # 高亮模式：使用highlight配置执行过滤命令
         highlight_strings = load_highlight_config()
         if highlight_strings:
             highlight_command, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
-            return highlight_result, filtered_result, source_result
+            return highlight_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
         else:
             # 如果没有highlight配置，显示提示信息
-            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result
+            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
     else:
-        return filtered_result, filtered_result, source_result
+        return filtered_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
 
 def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     """执行过滤逻辑，包含临时关键字"""
