@@ -1,0 +1,8 @@
+{
+  "BIO_EVENT": {
+    "keep": [
+      "<Glue> SignalHandler"
+    ],
+    "filter": []
+  }
+}

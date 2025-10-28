@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import dash
-from dash import dcc, html, Input, Output, State, callback_context
+from dash import dcc, html, Input, Output, State
 import dash_bootstrap_components as dbc
 import plotly.express as px
 import pandas as pd
@@ -27,17 +27,6 @@ CONFIG_DIR = 'configs'
 # 日志文件目录
 LOG_DIR = 'logs'
 
-# 获取配置文件列表（不包含.json后缀）
-def get_config_files():
-    """获取configs目录下的所有配置文件（不包含.json后缀）"""
-    if not os.path.exists(CONFIG_DIR):
-        return []
-    config_files = []
-    for file in os.listdir(CONFIG_DIR):
-        if file.endswith('.json'):
-            config_files.append(file[:-5])  # 去掉.json后缀
-    return sorted(config_files)
-
 def ensure_config_dir():
     """确保配置目录存在"""
     if not os.path.exists(CONFIG_DIR):
@@ -49,14 +38,14 @@ def ensure_log_dir():
         os.makedirs(LOG_DIR)
 
 def get_config_files():
-    """获取所有配置文件列表"""
+    """获取configs目录下的所有配置文件（不包含.json后缀）"""
     ensure_config_dir()
     config_files = []
     if os.path.exists(CONFIG_DIR):
         for file in os.listdir(CONFIG_DIR):
             if file.endswith('.json'):
                 config_files.append(file[:-5])  # 去掉.json后缀
-    return config_files
+    return sorted(config_files)
 
 def get_log_files():
     """获取logs目录中的所有文本文件列表"""
@@ -1166,7 +1155,7 @@ def delete_keyword_string(n_clicks, button_ids, selected_category, data):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     # 找出被点击的按钮
-    ctx = callback_context
+    ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
@@ -1405,7 +1394,7 @@ def update_current_log_file_display(selected_file, active_tab):
     prevent_initial_call=True  # 防止页面加载时触发
 )
 def select_string(select_clicks, clear_clicks, selected_strings, data, string_type, selected_log_file, active_tab):
-    ctx = callback_context
+    ctx = dash.callback_context
     
     # 只有在配置管理tab激活时才处理回调
     if active_tab != "tab-2":
@@ -1518,7 +1507,7 @@ def show_config_status(select_clicks, clear_clicks, data, selected_strings, acti
     if active_tab != 'tab-2':
         return dash.no_update
     
-    ctx = callback_context
+    ctx = dash.callback_context
     
     if not ctx.triggered:
         return dash.no_update
@@ -1686,7 +1675,7 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
     if active_tab != "tab-2":
         return dash.no_update
     
-    ctx = callback_context
+    ctx = dash.callback_context
     
     if not ctx.triggered:
         return selected_strings
@@ -2750,7 +2739,7 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
     if active_tab != "tab-1":
         return dash.no_update
         
-    ctx = callback_context
+    ctx = dash.callback_context
     
     # 如果点击了清除按钮
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'clear-config-selection-btn.n_clicks':

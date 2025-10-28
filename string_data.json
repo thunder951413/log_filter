@@ -90,6 +90,12 @@
       "STB_CINotifyPinReply",
       "STB_CiHandlePinEvent",
       "STB_CiCcSendPinPlayback"
+    ],
+    "BIO_EVENT": [
+      "<Glue> SignalHandler"
+    ],
+    "CIPlusRaw": [
+      "DTV_LOG : <CI-Plus>"
     ]
   }
 }
