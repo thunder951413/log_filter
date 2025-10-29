@@ -19,23 +19,85 @@ class HighlightCache:
         self.cache = {}
         self.max_size = max_size
         self.access_order = []
+        # 缓存统计信息
+        self.hits = 0
+        self.misses = 0
+        self.total_requests = 0
     
     def get_cache_key(self, text, selected_strings, data):
-        """生成缓存键"""
-        # 使用文本内容、选中的字符串和配置数据的哈希作为键
-        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        """生成缓存键（优化版本，处理时间戳变化）"""
+        # 优化：对文本进行预处理，移除时间戳等变化内容
+        processed_text = self._preprocess_text(text)
+        
+        # 使用处理后的文本内容、选中的字符串和配置数据的哈希作为键
+        text_hash = hashlib.md5(processed_text.encode('utf-8')).hexdigest()
         strings_hash = hashlib.md5(str(selected_strings).encode('utf-8')).hexdigest()
         data_hash = hashlib.md5(json.dumps(data, sort_keys=True).encode('utf-8')).hexdigest()
         return f"{text_hash}:{strings_hash}:{data_hash}"
     
+    def _preprocess_text(self, text):
+        """预处理文本，移除时间戳等变化内容"""
+        if not text:
+            return ""
+        
+        lines = text.split('\n')
+        processed_lines = []
+        
+        for line in lines:
+            # 移除常见时间戳格式
+            processed_line = self._remove_timestamps(line)
+            processed_lines.append(processed_line)
+        
+        return '\n'.join(processed_lines)
+    
+    def _remove_timestamps(self, line):
+        """移除行中的时间戳和进程信息"""
+        # 常见日志前缀模式
+        log_prefix_patterns = [
+            # Android/系统日志格式: 10-19 20:38:49.474   455   504 I DTV_LOG : 
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*',
+            # 简化的系统日志格式: 10-19 20:38:49.474   455   504 I : 
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s*:\s*',
+            # 带标签的系统日志: 10-19 20:38:49.474   455   504 I TAG : 
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*',
+            # 标准系统日志: 10-19 20:38:49.474 I/TAG : 
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+[A-Z]/\w+\s*:\s*',
+            # ISO 8601格式: 2024-01-15 10:30:25
+            r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\s+',
+            # 简写格式: 01-15 10:30:25
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+',
+            # 时间格式: 10:30:25
+            r'^\d{2}:\d{2}:\d{2}\s+',
+            # 日志级别格式: [INFO] [2024-01-15 10:30:25]
+            r'^\[\w+\]\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s+',
+            # Unix时间戳: [1705307425]
+            r'^\[\d{10,13}\]\s+',
+        ]
+        
+        for pattern in log_prefix_patterns:
+            # 使用正则表达式移除匹配的前缀
+            import re
+            match = re.match(pattern, line)
+            if match:
+                # 返回移除前缀后的内容
+                return line[match.end():].strip()
+        
+        # 如果没有匹配的模式，返回原行
+        return line
+    
     def get(self, key):
         """从缓存中获取结果"""
+        self.total_requests += 1
+        
         if key in self.cache:
             # 更新访问顺序
             if key in self.access_order:
                 self.access_order.remove(key)
             self.access_order.append(key)
+            self.hits += 1
             return self.cache[key]
+        
+        self.misses += 1
         return None
     
     def put(self, key, value):
@@ -52,6 +114,22 @@ class HighlightCache:
         """清空缓存"""
         self.cache.clear()
         self.access_order.clear()
+        # 重置统计信息
+        self.hits = 0
+        self.misses = 0
+        self.total_requests = 0
+    
+    def get_stats(self):
+        """获取缓存统计信息"""
+        hit_rate = (self.hits / self.total_requests * 100) if self.total_requests > 0 else 0
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "total_requests": self.total_requests,
+            "hit_rate": round(hit_rate, 2),
+            "cache_size": len(self.cache),
+            "max_size": self.max_size
+        }
 
 # 全局高亮缓存实例
 highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
@@ -2044,7 +2122,9 @@ def highlight_keywords_dash(text, selected_strings, data):
     cached_result = highlight_cache.get(cache_key)
     if cached_result:
         end_time = time.time()
+        stats = highlight_cache.get_stats()
         print(f"高亮处理（缓存命中）: {end_time - start_time:.3f}秒")
+        print(f"缓存统计: 命中率 {stats['hit_rate']}% (命中: {stats['hits']}, 未命中: {stats['misses']}, 总请求: {stats['total_requests']})")
         return cached_result
     
     # 性能监控：记录文本大小
@@ -2193,7 +2273,9 @@ def highlight_keywords_dash(text, selected_strings, data):
         # 性能监控：记录处理时间
         end_time = time.time()
         processing_time = end_time - start_time
+        stats = highlight_cache.get_stats()
         print(f"高亮处理完成: {processing_time:.3f}秒，文本大小: {text_size} 字节，关键字数量: {len(keywords_to_highlight)}")
+        print(f"缓存统计: 命中率 {stats['hit_rate']}% (命中: {stats['hits']}, 未命中: {stats['misses']}, 总请求: {stats['total_requests']})")
         
         return result
     
