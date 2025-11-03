@@ -141,6 +141,15 @@ app = dash.Dash(
     suppress_callback_exceptions=True
 )
 
+# 配置Dash使用标准JSON序列化，避免orjson问题
+try:
+    import json as std_json
+    # 尝试禁用orjson
+    import os
+    os.environ['DASH_SERIALIZER'] = 'json'
+except:
+    pass
+
 # 数据存储文件路径
 DATA_FILE = 'string_data.json'
 
@@ -149,6 +158,14 @@ CONFIG_DIR = 'configs'
 
 # 日志文件目录
 LOG_DIR = 'logs'
+
+# 临时文件目录（用于存储过滤结果）
+TEMP_DIR = 'temp'
+
+def ensure_temp_dir():
+    """确保临时目录存在"""
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
 
 def ensure_config_dir():
     """确保配置目录存在"""
@@ -2292,8 +2309,88 @@ def highlight_keywords_dash(text, selected_strings, data):
         
         return result
 
-def execute_command(full_command, selected_strings=None, data=None):
-    """执行命令并返回结果显示"""
+def get_temp_file_path(session_id=None):
+    """获取临时文件路径"""
+    ensure_temp_dir()
+    if session_id is None:
+        session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
+    file_path = os.path.join(TEMP_DIR, f"filter_result_{session_id}.txt")
+    print(f"[滚动窗口] 生成临时文件路径: {file_path}, session_id: {session_id}")
+    return file_path
+
+def get_file_line_count(file_path):
+    """获取文件的总行数"""
+    try:
+        print(f"[滚动窗口] 开始计算文件行数: {file_path}")
+        with open(file_path, 'rb') as f:
+            count = sum(1 for _ in f)
+        print(f"[滚动窗口] 文件总行数: {count}")
+        return count
+    except Exception as e:
+        print(f"[滚动窗口] 获取文件行数失败: {e}")
+        return 0
+
+def get_file_lines_range(file_path, start_line, end_line, encoding=None):
+    """获取文件的指定行范围（1-based index）
+    
+    Returns:
+        tuple: (内容字符串, 检测到的编码)
+    """
+    try:
+        print(f"[滚动窗口] 读取文件行范围: {file_path}, 行 {start_line} - {end_line}")
+        lines = []
+        detected_encoding = 'utf-8'
+        encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+        
+        with open(file_path, 'rb') as f:
+            content_bytes = f.read()
+            print(f"[滚动窗口] 文件大小: {len(content_bytes)} 字节")
+            
+            for encoding_to_try in encodings:
+                try:
+                    decoded_content = content_bytes.decode(encoding_to_try)
+                    all_lines = decoded_content.split('\n')
+                    
+                    # 转换为0-based索引并获取范围
+                    start_idx = max(0, start_line - 1)
+                    end_idx = min(len(all_lines), end_line)
+                    
+                    lines = all_lines[start_idx:end_idx]
+                    detected_encoding = encoding_to_try
+                    print(f"[滚动窗口] 成功使用编码 {encoding_to_try} 读取 {len(lines)} 行")
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if not lines:
+                # 如果所有编码都失败，使用latin-1
+                print(f"[滚动窗口] 所有编码失败，使用latin-1")
+                decoded_content = content_bytes.decode('latin-1', errors='replace')
+                all_lines = decoded_content.split('\n')
+                start_idx = max(0, start_line - 1)
+                end_idx = min(len(all_lines), end_line)
+                lines = all_lines[start_idx:end_idx]
+                detected_encoding = 'latin-1'
+        
+        result_text = '\n'.join(lines)
+        print(f"[滚动窗口] 返回内容长度: {len(result_text)} 字符")
+        return result_text, detected_encoding
+    except Exception as e:
+        print(f"[滚动窗口] 读取文件行范围失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return "", 'utf-8'
+
+def execute_command(full_command, selected_strings=None, data=None, save_to_temp=False, session_id=None):
+    """执行命令并返回结果显示
+    
+    Args:
+        full_command: 要执行的命令
+        selected_strings: 选中的字符串列表（用于高亮）
+        data: 数据对象（用于高亮）
+        save_to_temp: 是否保存到临时文件（用于大文件）
+        session_id: 会话ID（用于临时文件命名）
+    """
     try:
         # 本地命令执行 - 使用二进制模式读取，然后尝试多种编码
         result = subprocess.run(
@@ -2332,6 +2429,83 @@ def execute_command(full_command, selected_strings=None, data=None):
             # 计算行数
             line_count = len(output.split('\n'))
             
+            # 定义大文件阈值（行数）
+            LARGE_FILE_THRESHOLD = 1000
+            
+            # 如果结果太大，保存到临时文件并使用滚动窗口
+            if line_count > LARGE_FILE_THRESHOLD or save_to_temp:
+                print(f"[滚动窗口] 检测到大文件 ({line_count} 行 > {LARGE_FILE_THRESHOLD} 行阈值)，启用滚动窗口模式")
+                # 确保临时目录存在
+                ensure_temp_dir()
+                
+                # 生成临时文件路径
+                if session_id is None:
+                    session_id = hashlib.md5((full_command + str(time.time())).encode()).hexdigest()
+                temp_file_path = get_temp_file_path(session_id)
+                
+                # 保存结果到临时文件
+                try:
+                    print(f"[滚动窗口] 开始保存过滤结果到临时文件: {temp_file_path}")
+                    # 确定编码
+                    detected_encoding = 'utf-8'
+                    for encoding in ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']:
+                        try:
+                            output_bytes.decode(encoding)
+                            detected_encoding = encoding
+                            print(f"[滚动窗口] 检测到编码: {encoding}")
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    
+                    # 保存到文件
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(output_bytes)
+                    file_size = os.path.getsize(temp_file_path)
+                    print(f"[滚动窗口] 成功保存临时文件，大小: {file_size} 字节")
+                    
+                    # 先加载初始窗口内容
+                    print(f"[滚动窗口] 开始加载初始窗口内容")
+                    initial_content, initial_encoding = get_file_lines_range(temp_file_path, 1, min(500, line_count))
+                    print(f"[滚动窗口] 初始窗口内容加载完成，长度: {len(initial_content)}")
+                    
+                    # 返回滚动窗口显示组件
+                    result_display = html.Div([
+                        html.Div(),
+                        html.Div(
+                            id=f"log-window-{session_id}",
+                            children=[html.Pre(initial_content, className="small")],
+                            style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
+                            **{
+                                "data-session-id": session_id,
+                                "data-total-lines": line_count,
+                                "data-window-size": 500
+                            }
+                        ),
+                        dcc.Store(id=f"temp-file-info-{session_id}", data={
+                            "file_path": temp_file_path,
+                            "total_lines": line_count,
+                            "session_id": session_id,
+                            # 注意：不存储selected_strings和data，避免orjson序列化问题
+                            # "selected_strings": selected_strings,
+                            # "data": data
+                        }),
+                        dcc.Store(id=f"current-window-{session_id}", data={
+                            "start_line": 1,
+                            "end_line": min(500, line_count),
+                            "total_lines": line_count
+                        }),
+                        html.Div(id=f"rolling-bootstrap-{session_id}"),
+                    ])
+                    
+                    print(f"[滚动窗口] 滚动窗口组件已创建，session_id: {session_id}")
+                    return result_display
+                except Exception as e:
+                    print(f"[滚动窗口] 保存到临时文件失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # 如果保存失败，回退到原来的方式
+            
+            # 如果结果不大，正常处理
             # 如果提供了选中的字符串和数据，进行关键字高亮
             if selected_strings and data:
                 # 使用新的Dash组件高亮函数
@@ -3310,8 +3484,88 @@ def create_temp_keyword_buttons(keywords):
     )
 
 
+# API端点：获取日志窗口
+@app.server.route('/api/get-log-window', methods=['POST'])
+def get_log_window():
+    """获取临时文件的指定行范围"""
+    try:
+        from flask import request, jsonify
+        import json as std_json
+        
+        print(f"[API端点] 收到获取日志窗口请求")
+        data = request.get_json()
+        print(f"[API端点] 请求数据: {data}")
+        
+        session_id = data.get('session_id')
+        start_line = int(data.get('start_line', 1))
+        end_line = int(data.get('end_line', 500))
+        
+        print(f"[API端点] 解析参数 - session_id: {session_id}, start_line: {start_line}, end_line: {end_line}")
+        
+        if not session_id:
+            print(f"[API端点] 错误: 缺少session_id")
+            return jsonify({'success': False, 'error': '缺少session_id'})
+        
+        # 获取临时文件路径
+        temp_file_path = get_temp_file_path(session_id)
+        print(f"[API端点] 临时文件路径: {temp_file_path}")
+        
+        if not os.path.exists(temp_file_path):
+            print(f"[API端点] 错误: 临时文件不存在: {temp_file_path}")
+            return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
+        
+        # 获取文件总行数
+        total_lines = get_file_line_count(temp_file_path)
+        print(f"[API端点] 文件总行数: {total_lines}")
+        
+        # 获取指定行范围
+        print(f"[API端点] 开始读取行范围: {start_line} - {end_line}")
+        content, encoding = get_file_lines_range(temp_file_path, start_line, end_line)
+        print(f"[API端点] 读取完成，内容长度: {len(content)}, 编码: {encoding}")
+        
+        # 使用标准JSON序列化，避免orjson问题
+        response_data = {
+            'success': True,
+            'content': content,
+            'start_line': start_line,
+            'end_line': end_line,
+            'total_lines': total_lines,
+            'encoding': encoding
+        }
+        print(f"[API端点] 返回成功响应，内容长度: {len(content)}")
+        
+        # 使用标准json模块序列化，然后返回
+        response = jsonify(response_data)
+        return response
+    except Exception as e:
+        print(f"[API端点] 发生异常: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+# API端点：滚动调试（打印中心行与窗口范围）
+@app.server.route('/api/scroll-debug', methods=['POST'])
+def scroll_debug():
+    try:
+        from flask import request, jsonify
+        data = request.get_json(silent=True) or {}
+        session_id = data.get('session_id')
+        center_line = data.get('center_line')
+        window_start = data.get('window_start')
+        window_end = data.get('window_end')
+        print(f"[前端滚动窗口][调试] session:{session_id} center:{center_line} window:[{window_start},{window_end}]")
+        return jsonify({'ok': True})
+    except Exception as e:
+        print(f"[前端滚动窗口][调试] 异常: {e}")
+        return jsonify({'ok': False})
+
 if __name__ == "__main__":
     import argparse
+    
+    # 确保必要的目录存在
+    ensure_temp_dir()
+    ensure_log_dir()
+    ensure_config_dir()
     
     # 解析命令行参数
     parser = argparse.ArgumentParser(description='Log Filter Application')
