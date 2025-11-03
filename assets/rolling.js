@@ -33,6 +33,20 @@
   function setup(div) {
     var sessionId = div.getAttribute('data-session-id') || parseSessionIdFromId(div.id);
     var windowSize = parseInt(div.getAttribute('data-window-size') || '500', 10);
+    var linesBefore = parseInt(div.getAttribute('data-lines-before') || '', 10);
+    var linesAfter = parseInt(div.getAttribute('data-lines-after') || '', 10);
+    var prefetchThreshold = parseInt(div.getAttribute('data-prefetch-threshold') || '', 10);
+
+    if (!isFinite(linesBefore)) {
+      linesBefore = Math.floor(windowSize / 2);
+    }
+    if (!isFinite(linesAfter)) {
+      var rest = windowSize - linesBefore - 1;
+      linesAfter = rest >= 0 ? rest : Math.max(0, Math.floor(windowSize / 2) - 1);
+    }
+    if (!isFinite(prefetchThreshold)) {
+      prefetchThreshold = Math.floor(windowSize / 4);
+    }
 
     var state = {
       isLoading: false,
@@ -103,14 +117,16 @@
         });
       } catch(e) {}
 
-      var margin = Math.floor(windowSize / 4);
+      var margin = prefetchThreshold;
       if (centerGlobal > state.endLine - margin) {
-        var ns = Math.max(1, centerGlobal - Math.floor(windowSize / 2));
-        var ne = ns + windowSize - 1;
+        var ns = Math.max(1, centerGlobal - linesBefore);
+        var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
+        if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
         loadRange(ns, ne, centerGlobal);
       } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
-        var ns2 = Math.max(1, centerGlobal - Math.floor(windowSize / 2));
-        var ne2 = ns2 + windowSize - 1;
+        var ns2 = Math.max(1, centerGlobal - linesBefore);
+        var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
+        if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
         loadRange(ns2, ne2, centerGlobal);
       }
     }, 120);

@@ -351,6 +351,50 @@ def has_default_config():
     default_config_path = get_default_config_path()
     return os.path.exists(default_config_path)
 
+def load_rolling_config():
+    """加载滚动窗口配置参数
+
+    优先从根目录的 settings.json 读取；若不存在则回退到 configs/rolling.json。
+
+    返回包含以下键的字典（若文件不存在或无效则返回默认值）：
+    - lines_before: 加载中心行之前的行数
+    - lines_after: 加载中心行之后的行数
+    - prefetch_threshold: 当距离窗口边缘小于该行数时触发新请求
+    """
+    try:
+        defaults = {
+            "lines_before": 250,           # 约等于原先500窗口的前半
+            "lines_after": 249,            # 约等于原先500窗口的后半
+            "prefetch_threshold": 125      # 约等于原先 windowSize/4
+        }
+
+        # 根目录 settings.json
+        root_settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+
+        cfg = None
+        if os.path.exists(root_settings_path):
+            with open(root_settings_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+
+        if cfg is None:
+            return defaults
+
+        lines_before = int(cfg.get("lines_before", defaults["lines_before"]))
+        lines_after = int(cfg.get("lines_after", defaults["lines_after"]))
+        prefetch_threshold = int(cfg.get("prefetch_threshold", defaults["prefetch_threshold"]))
+        return {
+            "lines_before": max(0, lines_before),
+            "lines_after": max(0, lines_after),
+            "prefetch_threshold": max(1, prefetch_threshold)
+        }
+    except Exception as e:
+        print(f"加载滚动配置失败: {e}")
+        return {
+            "lines_before": 250,
+            "lines_after": 249,
+            "prefetch_threshold": 125
+        }
+
 def get_log_path(log_filename):
     """获取日志文件的完整路径"""
     ensure_log_dir()
@@ -2463,9 +2507,11 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                     file_size = os.path.getsize(temp_file_path)
                     print(f"[滚动窗口] 成功保存临时文件，大小: {file_size} 字节")
                     
-                    # 先加载初始窗口内容
+                    # 先加载初始窗口内容（使用滚动配置）
                     print(f"[滚动窗口] 开始加载初始窗口内容")
-                    initial_content, initial_encoding = get_file_lines_range(temp_file_path, 1, min(500, line_count))
+                    rolling_cfg = load_rolling_config()
+                    window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
+                    initial_content, initial_encoding = get_file_lines_range(temp_file_path, 1, min(window_size, line_count))
                     print(f"[滚动窗口] 初始窗口内容加载完成，长度: {len(initial_content)}")
                     
                     # 返回滚动窗口显示组件
@@ -2478,7 +2524,10 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                             **{
                                 "data-session-id": session_id,
                                 "data-total-lines": line_count,
-                                "data-window-size": 500
+                                "data-window-size": window_size,
+                                "data-lines-before": rolling_cfg.get('lines_before', 250),
+                                "data-lines-after": rolling_cfg.get('lines_after', 249),
+                                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
                             }
                         ),
                         dcc.Store(id=f"temp-file-info-{session_id}", data={
