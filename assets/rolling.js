@@ -110,10 +110,20 @@
       );
     }
 
+    function isVisible(el) {
+      if (!el) return false;
+      var style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
+      if (!el.offsetParent && style.position !== 'fixed') return false;
+      return true;
+    }
+
     function updateStatusDisplay() {
       try {
         var el = document.getElementById('log-window-line-status');
         if (!el) return;
+        // Only the visible rolling instance should update the shared status
+        if (!isVisible(div)) return;
         var c = parseInt(state.centerLine || 0, 10) || 0;
         var t = parseInt(state.totalLines || 0, 10) || 0;
         if (c <= 0 || t <= 0) {
@@ -145,7 +155,11 @@
           var pre = nodes.pre;
           var topPad = nodes.topPad;
           var bottomPad = nodes.bottomPad;
-          pre.textContent = data.content || '';
+          if (data && data.is_html) {
+            pre.innerHTML = data.content || '';
+          } else {
+            pre.textContent = data.content || '';
+          }
 
           var lh = getLineHeight(pre);
           var viewportHeight = (scrollTarget === window) ? window.innerHeight : scrollTarget.clientHeight;
@@ -175,12 +189,19 @@
           }
           var offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
           if (scrollTarget === window) {
-            var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
-            window.scrollTo(0, Math.max(0, targetScrollY));
+            // 当文档内容高度不超过窗口高度时，不进行自动滚动
+            var docH = getDocScrollHeight();
+            if (docH > window.innerHeight + 1) {
+              var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
+              window.scrollTo(0, Math.max(0, targetScrollY));
+            }
           } else {
+            // 当容器内容高度不超过容器高度时，不进行自动滚动
             var preTop = preTopInContainer(pre, scrollTarget);
             var targetScrollTop = preTop + offsetWithinPre;
-            scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+            if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
+              scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+            }
           }
           var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
           state.centerLine = centerLogged || null;
@@ -232,7 +253,8 @@
         });
       } catch(e) {}
 
-      var margin = prefetchThreshold;
+      // 计算当前滚动容器高度信息
+      var margin = Math.min(prefetchThreshold, Math.floor(((state.endLine || 0) - (state.startLine || 0) + 1) / 3));
       var scrollHeightNow = (scrollTarget === window) ? (function(){ var de=document.documentElement, db=document.body; return Math.max(de?de.scrollHeight:0, db?db.scrollHeight:0); })() : scrollTarget.scrollHeight;
       var metrics = {
         scrollTop: currentScrollTop,
@@ -241,20 +263,26 @@
         distanceToBottom: Math.max(0, scrollHeightNow - (currentScrollTop + viewportHeight))
       };
 
-      if (centerGlobal > state.endLine - margin) {
-        var span1 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
-        var ratio1 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span1));
-        var ns = Math.max(1, centerGlobal - linesBefore);
-        var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
-        if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
-        loadRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
-      } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
-        var span2 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
-        var ratio2 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span2));
-        var ns2 = Math.max(1, centerGlobal - linesBefore);
-        var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
-        if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
-        loadRange(ns2, ne2, { centerLine: centerGlobal, ratio: ratio2 });
+      // 若已完整加载（已加载行数 >= 总行数），则不触发窗口切换，避免“小文件”视图里滑块被自动回拉
+      var loadedCountNow = Math.max(1, (state.endLine || 0) - (state.startLine || 0) + 1);
+      var isFullyLoadedNow = (state.totalLines > 0) && (loadedCountNow >= state.totalLines);
+
+      if (!isFullyLoadedNow && margin > 0) {
+        if (centerGlobal > state.endLine - margin) {
+          var span1 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
+          var ratio1 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span1));
+          var ns = Math.max(1, centerGlobal - linesBefore);
+          var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
+          if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
+          loadRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
+        } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
+          var span2 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
+          var ratio2 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span2));
+          var ns2 = Math.max(1, centerGlobal - linesBefore);
+          var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
+          if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
+          loadRange(ns2, ne2, { centerLine: centerGlobal, ratio: ratio2 });
+        }
       }
     }, 120);
 
@@ -286,6 +314,10 @@
     try { onScroll(); } catch (e) {}
     // initialize status once
     try { updateStatusDisplay(); } catch (e) {}
+    // Force-load initial window to enable server-side highlighting for the first view
+    try {
+      loadRange(state.startLine, state.endLine, { centerLine: Math.floor((state.startLine + state.endLine) / 2) });
+    } catch (e) {}
 
     // Expose simple registry for external controls (search/jump)
     try {

@@ -1,9 +1,22 @@
 // search_jump.js - wire keyword search and line jump controls to rolling window
 (function(){
+  function isVisible(el) {
+    if (!el) return false;
+    var style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
+    // also ensure it's in the layout tree
+    if (!el.offsetParent && style.position !== 'fixed') return false;
+    return true;
+  }
+
   function getActiveLogWindow() {
-    // pick the last added log-window if multiple
+    // Prefer the last VISIBLE log-window if multiple exist
     var nodes = document.querySelectorAll("div[id^='log-window-']");
     if (!nodes || nodes.length === 0) return null;
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      if (isVisible(nodes[i])) return nodes[i];
+    }
+    // fallback to the last one
     return nodes[nodes.length - 1];
   }
 

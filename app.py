@@ -134,6 +134,9 @@ class HighlightCache:
 # 全局高亮缓存实例
 highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
 
+# 会话高亮信息（供滚动窗口分片高亮使用）
+highlight_session_info = {}
+
 # 初始化 Dash 应用，使用 Bootstrap 主题
 app = dash.Dash(
     __name__, 
@@ -2072,8 +2075,13 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
         full_command = " | ".join(grep_parts)
     
     # 执行命令，传递选中的字符串和数据用于高亮
+    # 过滤结果页面需要基于grep后的临时文件进行滚动、跳转与搜索
     data = load_data()  # 加载当前数据
-    result_display = execute_command(full_command, all_strings, data)
+    try:
+        session_id = hashlib.md5(full_command.encode()).hexdigest()
+    except Exception:
+        session_id = None
+    result_display = execute_command(full_command, all_strings, data, save_to_temp=True, session_id=session_id)
     
     return full_command, result_display
 
@@ -2094,12 +2102,16 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
         for keyword in temp_keywords:
             all_strings.append(keyword)
     
-    # 执行命令，如果提供了选中的字符串，则进行高亮
+    # 执行命令：源文件页面的滚动、跳转与搜索基于原始日志生成的临时文件
+    try:
+        session_id = hashlib.md5(full_command.encode()).hexdigest()
+    except Exception:
+        session_id = None
     if all_strings:
         data = load_data()  # 加载当前数据
-        result_display = execute_command(full_command, all_strings, data)
+        result_display = execute_command(full_command, all_strings, data, save_to_temp=True, session_id=session_id)
     else:
-        result_display = execute_command(full_command)
+        result_display = execute_command(full_command, save_to_temp=True, session_id=session_id)
     
     return full_command, result_display
 
@@ -2568,6 +2580,47 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                         html.Div(id=f"rolling-bootstrap-{session_id}"),
                     ])
                     
+                    # 记录会话高亮信息，供滚动窗口分片渲染使用
+                    try:
+                        # 从数据中提取分类颜色映射
+                        keywords_to_highlight = []
+                        keyword_to_color = {}
+                        if selected_strings and data and isinstance(data, dict) and "categories" in data:
+                            categories = list(data["categories"].keys())
+                            if categories:
+                                category_colors = get_category_colors(categories)
+                                # 构建关键字到分类的映射
+                                keyword_to_category = {}
+                                for category, strings in data["categories"].items():
+                                    for s in strings:
+                                        keyword_to_category[s] = category
+                                # 挑选需要高亮的关键字
+                                for item in selected_strings:
+                                    if isinstance(item, dict):
+                                        stext = item.get("text")
+                                    else:
+                                        stext = item
+                                    if stext in keyword_to_category:
+                                        keywords_to_highlight.append(stext)
+                                # 限制最多20个关键字
+                                if len(keywords_to_highlight) > 20:
+                                    keywords_to_highlight = keywords_to_highlight[:20]
+                                # 生成颜色映射（统一白字）
+                                for kw in keywords_to_highlight:
+                                    cat = keyword_to_category.get(kw)
+                                    if cat in category_colors:
+                                        keyword_to_color[kw.lower()] = {
+                                            "bg": category_colors[cat],
+                                            "fg": "#ffffff"
+                                        }
+                        highlight_session_info[session_id] = {
+                            "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
+                            "colors": keyword_to_color
+                        }
+                        print(f"[滚动窗口] 已记录会话高亮信息, session: {session_id}, 关键字数: {len(highlight_session_info[session_id]['keywords'])}")
+                    except Exception as _e:
+                        print(f"[滚动窗口] 记录会话高亮信息失败: {_e}")
+
                     print(f"[滚动窗口] 滚动窗口组件已创建，session_id: {session_id}")
                     return result_display
                 except Exception as e:
@@ -3593,6 +3646,47 @@ def get_log_window():
         print(f"[API端点] 开始读取行范围: {start_line} - {end_line}")
         content, encoding = get_file_lines_range(temp_file_path, start_line, end_line)
         print(f"[API端点] 读取完成，内容长度: {len(content)}, 编码: {encoding}")
+
+        # 分片高亮（基于会话记录的关键字和颜色映射）
+        is_html = False
+        try:
+            info = highlight_session_info.get(session_id) if 'session_id' in locals() or 'session_id' in globals() else None
+            if not info:
+                # 直接从请求中取（更可靠）
+                info = highlight_session_info.get(data.get('session_id'))
+            if info and info.get('keywords'):
+                # 构建单个正则（按长度降序，避免子串先匹配）
+                parts = [re.escape(k) for k in info['keywords'] if isinstance(k, str) and k]
+                if parts:
+                    combined = '(' + '|'.join(parts) + ')'
+                    regex = re.compile(combined, re.IGNORECASE)
+
+                    def html_escape(s):
+                        return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+                    # 构造高亮后的HTML字符串
+                    out_segments = []
+                    for line in content.split('\n'):
+                        if not line:
+                            out_segments.append('\n')
+                            continue
+                        last = 0
+                        for m in regex.finditer(line):
+                            if m.start() > last:
+                                out_segments.append(html_escape(line[last:m.start()]))
+                            matched = m.group(0)
+                            color = info['colors'].get(matched.lower()) if isinstance(matched, str) else None
+                            bg = (color or {}).get('bg', '#ff8800')
+                            fg = (color or {}).get('fg', '#ffffff')
+                            out_segments.append(f"<span style=\"background-color:{bg};color:{fg};padding:2px 4px;border-radius:3px;font-weight:bold;\">{html_escape(matched)}</span>")
+                            last = m.end()
+                        if last < len(line):
+                            out_segments.append(html_escape(line[last:]))
+                        out_segments.append('\n')
+                    content = ''.join(out_segments)
+                    is_html = True
+        except Exception as _e:
+            print(f"[API端点] 分片高亮失败: {_e}")
         
         # 使用标准JSON序列化，避免orjson问题
         response_data = {
@@ -3601,7 +3695,8 @@ def get_log_window():
             'start_line': start_line,
             'end_line': end_line,
             'total_lines': total_lines,
-            'encoding': encoding
+            'encoding': encoding,
+            'is_html': is_html
         }
         print(f"[API端点] 返回成功响应，内容长度: {len(content)}")
         
