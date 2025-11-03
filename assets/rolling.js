@@ -30,6 +30,25 @@
     return rect.top + docScrollTop();
   }
 
+  function preTopInContainer(preEl, container) {
+    if (!container || container === window) {
+      return preTopInDocument(preEl);
+    }
+    var preRect = preEl.getBoundingClientRect();
+    var conRect = container.getBoundingClientRect();
+    return preRect.top - conRect.top + container.scrollTop;
+  }
+
+  function elTopInContainer(el, container) {
+    if (!container || container === window) {
+      var rect = el.getBoundingClientRect();
+      return rect.top + docScrollTop();
+    }
+    var elRect = el.getBoundingClientRect();
+    var conRect = container.getBoundingClientRect();
+    return elRect.top - conRect.top + container.scrollTop;
+  }
+
   function setup(div) {
     var sessionId = div.getAttribute('data-session-id') || parseSessionIdFromId(div.id);
     var windowSize = parseInt(div.getAttribute('data-window-size') || '500', 10);
@@ -57,7 +76,40 @@
 
     console.log('[前端滚动窗口][assets] 初始化:', { sessionId: sessionId, windowSize: windowSize, state: state });
 
-    function loadRange(startLine, endLine, anchorCenterLine) {
+    function ensureStructure() {
+      var topPad = div.querySelector('.pad-top');
+      var pre = div.querySelector('pre');
+      var bottomPad = div.querySelector('.pad-bottom');
+      var changed = false;
+      if (!topPad) { topPad = document.createElement('div'); topPad.className = 'pad-top'; topPad.style.height = '0px'; changed = true; }
+      if (!pre) { pre = document.createElement('pre'); pre.className = 'small'; changed = true; }
+      if (!bottomPad) { bottomPad = document.createElement('div'); bottomPad.className = 'pad-bottom'; bottomPad.style.height = '0px'; changed = true; }
+      if (changed) {
+        div.innerHTML = '';
+        div.appendChild(topPad);
+        div.appendChild(pre);
+        div.appendChild(bottomPad);
+      }
+      return { topPad: topPad, pre: pre, bottomPad: bottomPad };
+    }
+
+    // Determine the primary scroll target once per setup
+    var scrollTarget = (function(){
+      try {
+        var s = findScrollableAncestor(div);
+        return s || window;
+      } catch(e) { return window; }
+    })();
+
+    function getDocScrollHeight() {
+      var de = document.documentElement, db = document.body;
+      return Math.max(
+        de ? de.scrollHeight : 0,
+        db ? db.scrollHeight : 0
+      );
+    }
+
+    function loadRange(startLine, endLine, anchorArg) {
       if (state.isLoading) return;
       state.isLoading = true;
       var payload = { session_id: sessionId, start_line: startLine, end_line: endLine };
@@ -68,17 +120,53 @@
       .then(function(r){ return r.json(); })
       .then(function(data){
         if (data && data.success) {
+          var prevStart = state.startLine;
+          var prevEnd = state.endLine;
           state.startLine = data.start_line; state.endLine = data.end_line; state.totalLines = data.total_lines || state.totalLines;
 
-          var pre = div.querySelector('pre');
-          if (!pre) { pre = document.createElement('pre'); pre.className = 'small'; div.innerHTML = ''; div.appendChild(pre); }
+          var nodes = ensureStructure();
+          var pre = nodes.pre;
+          var topPad = nodes.topPad;
+          var bottomPad = nodes.bottomPad;
           pre.textContent = data.content || '';
 
           var lh = getLineHeight(pre);
-          var targetScrollY = preTopInDocument(pre) + (anchorCenterLine - data.start_line) * lh - (window.innerHeight / 2 - lh / 2);
-          window.scrollTo(0, Math.max(0, targetScrollY));
+          var viewportHeight = (scrollTarget === window) ? window.innerHeight : scrollTarget.clientHeight;
 
-          console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: anchorCenterLine, total: state.totalLines });
+          // Make scrollbar reflect only current window (virtualized within window)
+          topPad.style.height = '0px';
+          bottomPad.style.height = '0px';
+
+          // Anchor handling: prefer absolute center line; fallback to ratio within window
+          var opts = anchorArg;
+          var isOpts = opts && typeof opts === 'object' && (opts.mode || typeof opts.centerLine === 'number' || typeof opts.ratio === 'number');
+          var anchorCenterLine;
+          if (isOpts && typeof opts.centerLine === 'number' && isFinite(opts.centerLine)) {
+            var cl = Math.floor(opts.centerLine);
+            // clamp within new window just in case
+            var minL = (data.start_line || 1);
+            var maxL = (data.end_line || minL);
+            if (cl < minL) cl = minL;
+            if (cl > maxL) cl = maxL;
+            anchorCenterLine = cl;
+          } else if (isOpts && typeof opts.ratio === 'number') {
+            var spanNew = Math.max(1, (data.end_line || 0) - (data.start_line || 0));
+            var r = Math.max(0, Math.min(1, opts.ratio));
+            anchorCenterLine = Math.round((data.start_line || 1) + r * spanNew);
+          } else {
+            anchorCenterLine = (typeof anchorArg === 'number') ? anchorArg : (data.start_line + Math.floor((data.end_line - data.start_line + 1) / 2));
+          }
+          var offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
+          if (scrollTarget === window) {
+            var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
+            window.scrollTo(0, Math.max(0, targetScrollY));
+          } else {
+            var preTop = preTopInContainer(pre, scrollTarget);
+            var targetScrollTop = preTop + offsetWithinPre;
+            scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+          }
+          var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
+          console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: centerLogged, total: state.totalLines });
         } else {
           console.error('[前端滚动窗口][assets] 响应失败:', data && data.error);
         }
@@ -90,11 +178,17 @@
     var onScroll = debounce(function(){
       var pre = div.querySelector('pre'); if (!pre) return;
       var lh = getLineHeight(pre);
-      var preTop = preTopInDocument(pre);
-      var topPxInPre = Math.max(0, docScrollTop() - preTop);
-      var visibleLines = Math.max(1, Math.floor(window.innerHeight / lh));
-      var topLineInLoaded = Math.floor(topPxInPre / lh) + 1;
-      var centerInLoaded = topLineInLoaded + Math.floor(visibleLines / 2);
+
+      var currentScrollTop = (scrollTarget === window) ? docScrollTop() : scrollTarget.scrollTop;
+      var viewportHeight = (scrollTarget === window) ? window.innerHeight : scrollTarget.clientHeight;
+
+      // Compute center strictly within the currently loaded window (pre)
+      var preTop = (scrollTarget === window) ? preTopInDocument(pre) : preTopInContainer(pre, scrollTarget);
+      var topPxInPre = Math.max(0, currentScrollTop - preTop);
+      var visibleLines = Math.max(1, Math.floor(viewportHeight / lh));
+      var loadedLineCount = Math.max(1, (state.endLine || 0) - (state.startLine || 0) + 1);
+      var topLineInLoaded = Math.min(loadedLineCount, Math.max(1, Math.floor(topPxInPre / lh) + 1));
+      var centerInLoaded = Math.min(loadedLineCount, Math.max(1, topLineInLoaded + Math.floor(visibleLines / 2)));
       var centerGlobal = state.startLine + centerInLoaded - 1;
 
       console.log('[前端滚动窗口][assets] 滚动检测', { centerGlobal: centerGlobal, start: state.startLine, end: state.endLine, visibleLines: visibleLines, lh: lh });
@@ -108,7 +202,7 @@
             center_line: centerGlobal,
             window_start: state.startLine,
             window_end: state.endLine,
-            doc_scroll_top: docScrollTop(),
+            doc_scroll_top: currentScrollTop,
             pre_top_in_doc: preTop,
             top_px_in_pre: topPxInPre,
             visible_lines: visibleLines,
@@ -118,16 +212,28 @@
       } catch(e) {}
 
       var margin = prefetchThreshold;
+      var scrollHeightNow = (scrollTarget === window) ? (function(){ var de=document.documentElement, db=document.body; return Math.max(de?de.scrollHeight:0, db?db.scrollHeight:0); })() : scrollTarget.scrollHeight;
+      var metrics = {
+        scrollTop: currentScrollTop,
+        clientHeight: viewportHeight,
+        scrollHeight: scrollHeightNow,
+        distanceToBottom: Math.max(0, scrollHeightNow - (currentScrollTop + viewportHeight))
+      };
+
       if (centerGlobal > state.endLine - margin) {
+        var span1 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
+        var ratio1 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span1));
         var ns = Math.max(1, centerGlobal - linesBefore);
         var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
         if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
-        loadRange(ns, ne, centerGlobal);
+        loadRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
       } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
+        var span2 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
+        var ratio2 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span2));
         var ns2 = Math.max(1, centerGlobal - linesBefore);
         var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
         if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
-        loadRange(ns2, ne2, centerGlobal);
+        loadRange(ns2, ne2, { centerLine: centerGlobal, ratio: ratio2 });
       }
     }, 120);
 
@@ -150,10 +256,9 @@
     document.documentElement && document.documentElement.addEventListener('scroll', onScroll, { passive: true });
     document.body && document.body.addEventListener('scroll', onScroll, { passive: true });
     div.addEventListener('scroll', onScroll, { passive: true });
-    var scrollable = findScrollableAncestor(div);
-    if (scrollable) {
-      scrollable.addEventListener('scroll', onScroll, { passive: true });
-      console.log('[前端滚动窗口][assets] 已检测滚动容器:', scrollable); 
+    if (scrollTarget && scrollTarget !== window) {
+      scrollTarget.addEventListener('scroll', onScroll, { passive: true });
+      console.log('[前端滚动窗口][assets] 已检测滚动容器:', scrollTarget);
     }
 
     // Fire once to seed values
