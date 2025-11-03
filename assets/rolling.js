@@ -71,7 +71,8 @@
       isLoading: false,
       totalLines: parseInt(div.getAttribute('data-total-lines') || '0', 10) || 0,
       startLine: 1,
-      endLine: Math.min(windowSize, parseInt(div.getAttribute('data-total-lines') || '0', 10) || windowSize)
+      endLine: Math.min(windowSize, parseInt(div.getAttribute('data-total-lines') || '0', 10) || windowSize),
+      centerLine: null
     };
 
     console.log('[前端滚动窗口][assets] 初始化:', { sessionId: sessionId, windowSize: windowSize, state: state });
@@ -107,6 +108,22 @@
         de ? de.scrollHeight : 0,
         db ? db.scrollHeight : 0
       );
+    }
+
+    function updateStatusDisplay() {
+      try {
+        var el = document.getElementById('log-window-line-status');
+        if (!el) return;
+        var c = parseInt(state.centerLine || 0, 10) || 0;
+        var t = parseInt(state.totalLines || 0, 10) || 0;
+        if (c <= 0 || t <= 0) {
+          el.textContent = '( - / - / -% )';
+        } else {
+          var pct = Math.max(0, Math.min(100, (c / t) * 100));
+          var pctText = pct.toFixed(1) + '%';
+          el.textContent = '(' + c + ' / ' + t + ' / ' + pctText + ')';
+        }
+      } catch (e) {}
     }
 
     function loadRange(startLine, endLine, anchorArg) {
@@ -166,7 +183,9 @@
             scrollTarget.scrollTop = Math.max(0, targetScrollTop);
           }
           var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
+          state.centerLine = centerLogged || null;
           console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: centerLogged, total: state.totalLines });
+          updateStatusDisplay();
         } else {
           console.error('[前端滚动窗口][assets] 响应失败:', data && data.error);
         }
@@ -192,6 +211,8 @@
       var centerGlobal = state.startLine + centerInLoaded - 1;
 
       console.log('[前端滚动窗口][assets] 滚动检测', { centerGlobal: centerGlobal, start: state.startLine, end: state.endLine, visibleLines: visibleLines, lh: lh });
+      state.centerLine = centerGlobal;
+      updateStatusDisplay();
 
       // 后端调试打印
       try {
@@ -263,6 +284,31 @@
 
     // Fire once to seed values
     try { onScroll(); } catch (e) {}
+    // initialize status once
+    try { updateStatusDisplay(); } catch (e) {}
+
+    // Expose simple registry for external controls (search/jump)
+    try {
+      window.__rollingRegistry = window.__rollingRegistry || {};
+      window.__rollingRegistry[sessionId] = {
+        // Jump to make targetLine the visual center (within available bounds)
+        jumpToLine: function(targetLine) {
+          var tl = parseInt(targetLine, 10);
+          if (!isFinite(tl)) return;
+          if (tl < 1) tl = 1;
+          var total = state.totalLines || (state.endLine || 0);
+          if (total && tl > total) tl = total;
+          var ns = Math.max(1, tl - linesBefore);
+          var ne = Math.min(total || (ns + linesBefore + linesAfter), tl + linesAfter);
+          if (ne < ns) ne = ns + linesBefore + linesAfter;
+          loadRange(ns, ne, { centerLine: tl });
+        },
+        // Current loaded window state (copy)
+        getState: function() { return { startLine: state.startLine, endLine: state.endLine, totalLines: state.totalLines, isLoading: state.isLoading }; },
+        // Rolling parameters
+        getConfig: function() { return { linesBefore: linesBefore, linesAfter: linesAfter, prefetchThreshold: prefetchThreshold }; }
+      };
+    } catch(e) { console.warn('[前端滚动窗口][assets] 注册外部控制失败:', e); }
   }
 
   function bootstrap() {

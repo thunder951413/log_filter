@@ -610,17 +610,39 @@ app.layout = html.Div([
                                             ])
                                         ], width=6)
                                     ], className="mt-2 mb-3"),
-                                    # 显示模式切换开关
-                                    dbc.RadioItems(
-                                        id="display-mode",
-                                        options=[
-                                            {"label": "过滤结果", "value": "filtered"},
-                                            {"label": "源文件", "value": "source"},
-                                            {"label": "高亮显示", "value": "highlight"}
-                                        ],
-                                        value="filtered",
-                                        inline=True
-                                    )
+                                    # 显示模式切换开关 + 右侧工具（关键字搜索、行跳转）
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.RadioItems(
+                                                id="display-mode",
+                                                options=[
+                                                    {"label": "过滤结果", "value": "filtered"},
+                                                    {"label": "源文件", "value": "source"},
+                                                    {"label": "高亮显示", "value": "highlight"}
+                                                ],
+                                                value="filtered",
+                                                inline=True
+                                            )
+                                        ], width=5),
+                                        dbc.Col([
+                                            html.Div([
+                                                html.Span("( - / - / - )", id="log-window-line-status", className="text-muted")
+                                            ], className="text-center")
+                                        ], width=2),
+                                        dbc.Col([
+                                            html.Div([
+                                                dbc.InputGroup([
+                                                    dbc.Button("查找上一个", id="global-search-prev-btn", color="secondary"),
+                                                    dbc.Input(id="global-search-input", type="text", placeholder="搜索关键字...", debounce=True),
+                                                    dbc.Button("查找/下一个", id="global-search-btn", color="info")
+                                                ], size="sm", className="me-2", style={"maxWidth": "420px"}),
+                                                dbc.InputGroup([
+                                                    dbc.Input(id="jump-line-input", type="number", placeholder="行号", min=1, step=1),
+                                                    dbc.Button("跳转", id="jump-line-btn", color="primary")
+                                                ], size="sm", style={"maxWidth": "220px"})
+                                            ], className="d-flex justify-content-end align-items-center gap-2")
+                                        ], width=5)
+                                    ])
                                 ], width=12)
                             ], className="mb-3"),
                             html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
@@ -3590,6 +3612,132 @@ def get_log_window():
         print(f"[API端点] 发生异常: {e}")
         import traceback
         traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+# API端点：从指定行开始向下查找关键字（基于会话临时文件）
+@app.server.route('/api/search-next', methods=['POST'])
+def search_next():
+    try:
+        from flask import request, jsonify
+        data = request.get_json() or {}
+
+        session_id = data.get('session_id')
+        keyword = (data.get('keyword') or '').strip()
+        start_line = int(data.get('from_line') or 1)
+        case_sensitive = bool(data.get('case_sensitive', False))
+
+        if not session_id:
+            return jsonify({'success': False, 'error': '缺少session_id'})
+        if not keyword:
+            return jsonify({'success': False, 'error': '缺少关键字'})
+
+        temp_file_path = get_temp_file_path(session_id)
+        if not os.path.exists(temp_file_path):
+            return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
+
+        total_lines = get_file_line_count(temp_file_path)
+        if start_line < 1:
+            start_line = 1
+        if start_line > total_lines:
+            # 起始位置超过末尾，直接返回未找到
+            return jsonify({'success': True, 'match_line': None, 'total_lines': total_lines})
+
+        # 行扫描查找
+        match_line = None
+        try:
+            # 尝试以utf-8读取，失败则回退latin-1
+            try_encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+            opened = False
+            for enc in try_encodings:
+                try:
+                    f = open(temp_file_path, 'r', encoding=enc, errors='replace')
+                    opened = True
+                    break
+                except Exception:
+                    continue
+            if not opened:
+                f = open(temp_file_path, 'r', encoding='latin-1', errors='replace')
+
+            with f:
+                for idx, line in enumerate(f, start=1):
+                    if idx < start_line:
+                        continue
+                    if case_sensitive:
+                        if keyword in line:
+                            match_line = idx
+                            break
+                    else:
+                        if keyword.lower() in line.lower():
+                            match_line = idx
+                            break
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'搜索失败: {str(e)}'})
+
+        return jsonify({
+            'success': True,
+            'match_line': match_line,
+            'total_lines': total_lines
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# API端点：从指定行开始向上查找关键字（基于会话临时文件）
+@app.server.route('/api/search-prev', methods=['POST'])
+def search_prev():
+    try:
+        from flask import request, jsonify
+        data = request.get_json() or {}
+
+        session_id = data.get('session_id')
+        keyword = (data.get('keyword') or '').strip()
+        # from_line 语义：从该行之上开始找（不包含该行），因此遍历到 from_line-1
+        from_line = int(data.get('from_line') or 1)
+        case_sensitive = bool(data.get('case_sensitive', False))
+
+        if not session_id:
+            return jsonify({'success': False, 'error': '缺少session_id'})
+        if not keyword:
+            return jsonify({'success': False, 'error': '缺少关键字'})
+
+        temp_file_path = get_temp_file_path(session_id)
+        if not os.path.exists(temp_file_path):
+            return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
+
+        total_lines = get_file_line_count(temp_file_path)
+        if from_line <= 1:
+            # 顶部以上没有内容
+            return jsonify({'success': True, 'match_line': None, 'total_lines': total_lines})
+
+        match_line = None
+        try:
+            try_encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+            opened = False
+            for enc in try_encodings:
+                try:
+                    f = open(temp_file_path, 'r', encoding=enc, errors='replace')
+                    opened = True
+                    break
+                except Exception:
+                    continue
+            if not opened:
+                f = open(temp_file_path, 'r', encoding='latin-1', errors='replace')
+
+            with f:
+                # 顺序遍历并记录最后一个不超过 from_line-1 的匹配
+                for idx, line in enumerate(f, start=1):
+                    if idx >= from_line:
+                        break
+                    if case_sensitive:
+                        if keyword in line:
+                            match_line = idx
+                    else:
+                        if keyword.lower() in line.lower():
+                            match_line = idx
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'搜索失败: {str(e)}'})
+
+        return jsonify({'success': True, 'match_line': match_line, 'total_lines': total_lines})
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # API端点：滚动调试（打印中心行与窗口范围）
