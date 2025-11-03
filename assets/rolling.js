@@ -3,6 +3,8 @@
 
 (function () {
   var OBSERVER = null;
+  // Persist last known center line per session across DOM re-renders (e.g., tab/mode switches)
+  window.__savedCentersBySession = window.__savedCentersBySession || {};
 
   function debounce(fn, wait) {
     var t; return function () { clearTimeout(t); var args = arguments, self = this; t = setTimeout(function(){ fn.apply(self, args); }, wait); };
@@ -187,7 +189,15 @@
           } else {
             anchorCenterLine = (typeof anchorArg === 'number') ? anchorArg : (data.start_line + Math.floor((data.end_line - data.start_line + 1) / 2));
           }
-          var offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
+          // Compute offset: support 'top' mode (place anchor line at top), otherwise center by default
+          var offsetWithinPre;
+          if (isOpts && opts.mode === 'top') {
+            // place the anchor line at the very top of the viewport within the pre element
+            offsetWithinPre = (anchorCenterLine - data.start_line) * lh;
+          } else {
+            // center mode (default): place the anchor line at the center of the viewport
+            offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
+          }
           if (scrollTarget === window) {
             // 当文档内容高度不超过窗口高度时，不进行自动滚动
             var docH = getDocScrollHeight();
@@ -205,6 +215,8 @@
           }
           var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
           state.centerLine = centerLogged || null;
+          // Persist current center line for this session
+          try { window.__savedCentersBySession[sessionId] = state.centerLine; } catch(e) {}
           console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: centerLogged, total: state.totalLines });
           updateStatusDisplay();
         } else {
@@ -233,6 +245,8 @@
 
       console.log('[前端滚动窗口][assets] 滚动检测', { centerGlobal: centerGlobal, start: state.startLine, end: state.endLine, visibleLines: visibleLines, lh: lh });
       state.centerLine = centerGlobal;
+      // Persist current center line for this session
+      try { window.__savedCentersBySession[sessionId] = centerGlobal; } catch(e) {}
       updateStatusDisplay();
 
       // 后端调试打印
@@ -314,9 +328,15 @@
     try { onScroll(); } catch (e) {}
     // initialize status once
     try { updateStatusDisplay(); } catch (e) {}
-    // Force-load initial window to enable server-side highlighting for the first view
+    // Force-load initial window:
+    // - On first view (no saved center), place scrollbar at the very top (line 1)
+    // - When revisiting the same session, restore to the previously saved center line
     try {
-      loadRange(state.startLine, state.endLine, { centerLine: Math.floor((state.startLine + state.endLine) / 2) });
+      var savedCenters = window.__savedCentersBySession || {};
+      var saved = savedCenters[sessionId];
+      var initialCenter = (typeof saved === 'number' && isFinite(saved)) ? Math.max(1, Math.floor(saved)) : 1;
+      var initialMode = (typeof saved === 'number' && isFinite(saved)) ? 'center' : 'top';
+      loadRange(state.startLine, state.endLine, { centerLine: initialCenter, mode: initialMode });
     } catch (e) {}
 
     // Expose simple registry for external controls (search/jump)
