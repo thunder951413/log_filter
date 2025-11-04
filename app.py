@@ -2614,6 +2614,20 @@ def build_flows_display(selected_log_file):
         if not paired_defs and not seq_defs:
             return html.P("未找到流程配置（configs/flows.json），请先配置 paired 或 sequences", className="text-muted text-center")
 
+        # 为不同流程名称分配不同颜色
+        flow_names = []
+        for p in paired_defs:
+            n = str((p or {}).get('name') or '').strip()
+            if n:
+                flow_names.append(n)
+        for s in seq_defs:
+            n = str((s or {}).get('name') or '').strip()
+            if n:
+                flow_names.append(n)
+        # 去重保持顺序
+        flow_names = list(dict.fromkeys(flow_names))
+        flow_colors = get_category_colors(flow_names)
+
         log_path = get_log_path(selected_log_file)
         if not os.path.exists(log_path):
             return html.P(f"日志文件不存在: {selected_log_file}", className="text-danger text-center")
@@ -2754,7 +2768,7 @@ def build_flows_display(selected_log_file):
         if not out_lines:
             return html.P("未匹配到流程相关记录", className="text-muted text-center")
 
-        # 按行渲染并为未匹配/缺失的流程加颜色
+        # 按行渲染：为未匹配/缺失项加红色，为不同流程添加专属颜色标识
         line_components = []
         for ln in out_lines:
             is_error = ln.strip().startswith('! ')
@@ -2766,6 +2780,27 @@ def build_flows_display(selected_log_file):
             if is_error:
                 # Bootstrap danger 红色系
                 style.update({'color': '#d9534f', 'fontWeight': 'bold'})
+            else:
+                # 解析流程名称以应用对应颜色
+                flow_name = None
+                try:
+                    stripped = ln.lstrip()
+                    if stripped:
+                        marker = stripped[0]
+                        body = stripped[2:] if len(stripped) > 2 else ''
+                        if marker in ['+', '-']:
+                            # "+ {name} START | ..." 或 "- {name} END | ..."
+                            flow_name = body.split(' ', 1)[0] if body else None
+                        elif marker == '*':
+                            # "* {name} [i/n] step | ..."
+                            flow_name = body.split(' [', 1)[0] if body else None
+                except Exception:
+                    flow_name = None
+
+                if flow_name and flow_name in flow_colors:
+                    # 使用左侧彩色边框标识不同流程
+                    style.update({'borderLeft': f"4px solid {flow_colors[flow_name]}", 'paddingLeft': '6px'})
+
             line_components.append(html.Div(ln, style=style))
 
         return html.Div(line_components)
