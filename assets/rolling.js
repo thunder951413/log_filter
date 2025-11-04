@@ -288,6 +288,7 @@
           var ns = Math.max(1, centerGlobal - linesBefore);
           var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
           if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
+          // 保持底部滚动体验，默认以居中锚定
           loadRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
         } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
           var span2 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
@@ -295,7 +296,13 @@
           var ns2 = Math.max(1, centerGlobal - linesBefore);
           var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
           if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
-          loadRange(ns2, ne2, { centerLine: centerGlobal, ratio: ratio2 });
+          // 当用户处于容器顶部附近时，使用 'top' 模式对齐，避免自动回到底部
+          var nearTopByContainer = currentScrollTop <= 2;
+          var nearTopByPre = topPxInPre <= Math.max(1, Math.floor(lh / 2));
+          var anchorOpts = nearTopByContainer || nearTopByPre
+            ? { centerLine: centerGlobal, ratio: ratio2, mode: 'top' }
+            : { centerLine: centerGlobal, ratio: ratio2 };
+          loadRange(ns2, ne2, anchorOpts);
         }
       }
     }, 120);

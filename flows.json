@@ -1,0 +1,30 @@
+{
+  "paired": [
+    {
+      "name": "播放流程",
+      "start": "DtvkitTvInput: player.play",
+      "end": "DTV_LOG : <Glue> request : Player.stop"
+    }
+  ],
+  "sequences": [
+    {
+      "name": "CAM_PROFILE",
+      "steps": [
+        "CAM_T_PROFILE_ENQ",
+        "CAM_T_PROFILE_REPLY",
+        "CAM_T_PROFILE_CHANGE",
+        "CAM_T_PROFILE_ENQ",
+        "CAM_T_PROFILE_REPLY"
+      ]
+    },
+    {
+      "name": "CAM_PIN",
+      "steps": [
+        "STB_CINotifyPinEvent",
+        "STB_CiCcSendPinPlayback",
+        "STB_CINotifyPinReply",
+        "STB_CiHandlePinEvent"
+      ]
+    }
+  ]
+}

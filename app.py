@@ -155,6 +155,8 @@ except:
 
 # 数据存储文件路径
 DATA_FILE = 'string_data.json'
+ANNOTATIONS_FILE = 'keyword_annotations.json'
+FLOWS_CONFIG_FILE = 'flows.json'
 
 # 获取所有配置文件
 CONFIG_DIR = 'configs'
@@ -180,6 +182,33 @@ def ensure_log_dir():
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
 
+def get_annotations_path():
+    """获取关键字注释文件的完整路径"""
+    return os.path.join(os.path.dirname(DATA_FILE), ANNOTATIONS_FILE)
+
+def load_annotations():
+    """加载关键字注释映射 {keyword: note}"""
+    try:
+        annotations_path = get_annotations_path()
+        if os.path.exists(annotations_path):
+            with open(annotations_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        return {}
+    except Exception as e:
+        print(f"加载关键字注释失败: {e}")
+        return {}
+
+def save_annotations(annotations_map):
+    """保存关键字注释映射到文件"""
+    try:
+        annotations_path = get_annotations_path()
+        with open(annotations_path, 'w', encoding='utf-8') as f:
+            json.dump(annotations_map or {}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存关键字注释失败: {e}")
+
 def get_config_files():
     """获取configs目录下的所有配置文件（不包含.json后缀）"""
     ensure_config_dir()
@@ -204,6 +233,44 @@ def get_config_path(config_name):
     """获取配置文件的完整路径"""
     ensure_config_dir()
     return os.path.join(CONFIG_DIR, f"{config_name}.json")
+
+def get_flows_config_path():
+    """获取流程配置文件的完整路径"""
+    ensure_config_dir()
+    return os.path.join("", FLOWS_CONFIG_FILE)
+
+def load_flows_config():
+    """加载流程配置，支持两种类型：
+    - paired: [{"name": str, "start": str, "end": str}]
+    - sequences: [{"name": str, "steps": [str, ...]}]
+    若文件不存在或格式错误，返回空配置。
+    """
+    try:
+        path = get_flows_config_path()
+        if not os.path.exists(path):
+            return {"paired": [], "sequences": []}
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            paired = data.get('paired') if isinstance(data, dict) else []
+            sequences = data.get('sequences') if isinstance(data, dict) else []
+            if not isinstance(paired, list):
+                paired = []
+            if not isinstance(sequences, list):
+                sequences = []
+            return {"paired": paired, "sequences": sequences}
+    except Exception as e:
+        print(f"加载流程配置失败: {e}")
+        return {"paired": [], "sequences": []}
+
+def save_flows_config(flows):
+    """保存流程配置到文件"""
+    try:
+        ensure_config_dir()
+        path = get_flows_config_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(flows or {"paired": [], "sequences": []}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存流程配置失败: {e}")
 
 def get_default_config_path():
     """获取默认配置文件的完整路径"""
@@ -415,6 +482,17 @@ def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def get_all_keywords_from_data(data):
+    """从数据对象中提取所有关键字列表"""
+    keywords = []
+    if isinstance(data, dict) and "categories" in data:
+        for _, strings in data["categories"].items():
+            for s in strings:
+                if isinstance(s, str):
+                    keywords.append(s)
+    # 去重并按字母排序（不区分大小写）
+    return sorted(list(dict.fromkeys(keywords)), key=lambda x: x.lower())
+
 # 保存用户选择状态
 def save_user_selections(selected_log_file, selected_strings, selected_config_files=None):
     # 加载当前的选择状态以保留其他字段
@@ -489,7 +567,8 @@ app.layout = html.Div([
                 dbc.Tabs([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
                     dbc.Tab(label="配置管理", tab_id="tab-2"),
-                    dbc.Tab(label="日志管理", tab_id="tab-3")
+                    dbc.Tab(label="日志管理", tab_id="tab-3"),
+                    dbc.Tab(label="关键字注释", tab_id="tab-4")
                 ], id="main-tabs", active_tab="tab-1")
             ], width=12)
         ], className="mb-4"),
@@ -621,7 +700,9 @@ app.layout = html.Div([
                                                 options=[
                                                     {"label": "过滤结果", "value": "filtered"},
                                                     {"label": "源文件", "value": "source"},
-                                                    {"label": "高亮显示", "value": "highlight"}
+                                                    {"label": "高亮显示", "value": "highlight"},
+                                                    {"label": "注释", "value": "annotation"},
+                                                    {"label": "流程视图", "value": "flows"}
                                                 ],
                                                 value="filtered",
                                                 inline=True
@@ -806,6 +887,159 @@ app.layout = html.Div([
             ], className="mb-4"),
         ], style={"display": "none"}),
         
+        # Tab4内容 - 关键字注释
+        html.Div(id="tab-4-content", children=[
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.H5("关键字注释", className="mb-0")
+                        ]),
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("关键字:"),
+                                    dbc.Input(
+                                        id="annotation-keyword-input",
+                                        type="text",
+                                        placeholder="输入关键字..."
+                                    )
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Label("注释内容:"),
+                                    dbc.Input(
+                                        id="annotation-text-input",
+                                        type="text",
+                                        placeholder="为该关键字添加注释..."
+                                    )
+                                ], width=6),
+                                dbc.Col([
+                                    dbc.Label("操作:", className="d-block"),
+                                    dbc.Button("保存注释", id="annotation-save-btn", color="primary", className="w-100 mb-2")
+                                ], width=2)
+                            ], className="mt-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Div(id="keyword-annotations-list", className="border rounded p-3 mt-3", style={"maxHeight": "300px", "overflowY": "auto"})
+                                ], width=12)
+                            ]),
+
+                            html.Hr(className="mt-4 mb-4"),
+
+                            html.H5("流程关键字设置", className="mb-3"),
+
+                            # 配对流程设置
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Card([
+                                        dbc.CardHeader([html.Span("配对关键字（起始/结束）")]),
+                                        dbc.CardBody([
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("流程名称:"),
+                                                    dbc.Input(id="paired-name", type="text", placeholder="如: 播放流程")
+                                                ], width=3),
+                                                dbc.Col([
+                                                    dbc.Label("开始关键字:"),
+                                                    dbc.Input(id="paired-start", type="text", placeholder="如: StartPlayback")
+                                                ], width=4),
+                                                dbc.Col([
+                                                    dbc.Label("结束关键字:"),
+                                                    dbc.Input(id="paired-end", type="text", placeholder="如: StopPlayback")
+                                                ], width=4),
+                                                dbc.Col([
+                                                    dbc.Label("操作:", className="d-block"),
+                                                    dbc.Button("添加", id="paired-add-btn", color="primary", className="w-100")
+                                                ], width=1)
+                                            ], className="g-2"),
+                                            html.Div(id="paired-list-container", className="border rounded p-3 mt-3", style={"maxHeight": "240px", "overflowY": "auto"})
+                                        ])
+                                    ])
+                                ], width=12)
+                            ], className="mb-4"),
+
+                            # 序列流程设置
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Card([
+                                        dbc.CardHeader([html.Span("序列关键字（1 -> 2 -> 3）")]),
+                                        dbc.CardBody([
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("流程名称:"),
+                                                    dbc.Input(id="seq-name", type="text", placeholder="如: 开机流程")
+                                                ], width=3),
+                                                dbc.Col([
+                                                    dbc.Label("步骤（使用 -> 或 换行 分隔）:"),
+                                                    dbc.Textarea(id="seq-steps-text", placeholder="步骤1 -> 步骤2 -> 步骤3\n或每行一个步骤", style={"height": "80px"})
+                                                ], width=8),
+                                                dbc.Col([
+                                                    dbc.Label("操作:", className="d-block"),
+                                                    dbc.Button("添加", id="seq-add-btn", color="success", className="w-100")
+                                                ], width=1)
+                                            ], className="g-2"),
+                                            html.Div(id="sequences-list-container", className="border rounded p-3 mt-3", style={"maxHeight": "240px", "overflowY": "auto"})
+                                        ])
+                                    ])
+                                ], width=12)
+                            ]),
+
+                            html.Hr(className="mt-4 mb-4"),
+
+                            # 正则生成器
+                            dbc.Card([
+                                dbc.CardHeader([html.Span("正则生成器")]),
+                                dbc.CardBody([
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("输入关键字（空格或换行分隔）:"),
+                                            dbc.Textarea(id="regex-input-keywords", placeholder="例如: STB_CINotifyPinEvent slot program", style={"height": "80px"})
+                                        ], width=12)
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("生成模式:"),
+                                            dbc.RadioItems(
+                                                id="regex-mode",
+                                                options=[
+                                                    {"label": "同时包含（lookahead）", "value": "and_lookahead"},
+                                                    {"label": "任一包含（OR）", "value": "or"},
+                                                    {"label": "按顺序包含（token1.*token2.*…）", "value": "ordered_lookahead"}
+                                                ],
+                                                value="and_lookahead",
+                                                inline=True
+                                            )
+                                        ], width=12)
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Checklist(
+                                                id="regex-options",
+                                                options=[
+                                                    {"label": "添加 re: 前缀", "value": "prefix"},
+                                                    {"label": "对关键字进行转义", "value": "escape"}
+                                                ],
+                                                value=["escape"],
+                                                inline=True
+                                            )
+                                        ], width=12)
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Button("生成", id="regex-generate-btn", color="primary")
+                                        ], width="auto"),
+                                        dbc.Col([
+                                            dbc.Input(id="regex-output", type="text", readonly=True, placeholder="生成的正则将在此显示")
+                                        ], width=True)
+                                    ])
+                                ])
+                            ])
+                        ])
+                    ])
+                ], width=12)
+            ], className="mb-4")
+        ], style={"display": "none"}),
+        
         # Tab3内容 - 日志管理
         html.Div(id="tab-3-content", children=[
             dbc.Row([
@@ -947,6 +1181,8 @@ app.layout = html.Div([
         dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
         dcc.Store(id='selected-config-files', data=[]),  # 存储选中的配置文件列表（支持多选）
         dcc.Store(id='temp-keywords-store', data=[]),  # 存储临时关键字列表
+        dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
+        dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
         
     ], fluid=True)
 ])
@@ -1950,6 +2186,111 @@ def toggle_filter_loading(n_clicks, current_style):
         return {"display": "inline-block", "marginLeft": "5px"}, "处理中...", True
     return current_style, "过滤", False
 
+# 关键字注释控件：保存注释
+@app.callback(
+    Output("keyword-annotations-store", "data", allow_duplicate=True),
+    [Input("annotation-save-btn", "n_clicks")],
+    [State("annotation-keyword-input", "value"),
+     State("annotation-text-input", "value"),
+     State("keyword-annotations-store", "data")],
+    prevent_initial_call=True
+)
+def save_keyword_annotation(n_clicks, keyword, note, annotations_map):
+    if not n_clicks:
+        return dash.no_update
+    if not keyword:
+        try:
+            # 使用Toast提示
+            import dash
+            dash.clientside_callback  # 占位，避免未使用报警
+        except Exception:
+            pass
+        return dash.no_update
+    note_text = (note or "").strip()
+    annotations_map = annotations_map or {}
+    key_str = str(keyword)
+
+    # 若注释内容为空，则删除已有关键字注释
+    if note_text == "":
+        if key_str in annotations_map:
+            del annotations_map[key_str]
+        save_annotations(annotations_map)
+        try:
+            # Toast（仅打印日志占位）
+            print(f"[注释] 已删除: {key_str}")
+        except Exception:
+            pass
+        return annotations_map
+
+    # 否则保存/更新注释
+    annotations_map[key_str] = note_text
+    save_annotations(annotations_map)
+    try:
+        # Toast（仅打印日志占位）
+        print(f"[注释] 已保存: {key_str} -> {note_text}")
+    except Exception:
+        pass
+    return annotations_map
+
+# 关键字注释控件：列表行删除
+@app.callback(
+    Output("keyword-annotations-store", "data", allow_duplicate=True),
+    [Input({"type": "annotation-del", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "annotation-del", "index": dash.ALL}, "id"),
+     State("keyword-annotations-store", "data")],
+    prevent_initial_call=True
+)
+def delete_keyword_annotation_row(n_clicks, button_ids, annotations_map):
+    if not n_clicks or not any(n_clicks):
+        return dash.no_update
+    annotations_map = annotations_map or {}
+    # 找到被点击的按钮
+    for idx, clicks in enumerate(n_clicks):
+        if clicks and idx < len(button_ids):
+            btn_id = button_ids[idx]
+            # index 即为关键字
+            kw = btn_id.get("index") if isinstance(btn_id, dict) else None
+            if kw and kw in annotations_map:
+                del annotations_map[kw]
+                save_annotations(annotations_map)
+                try:
+                    print(f"[注释] 已删除: {kw}")
+                except Exception:
+                    pass
+                break
+    return annotations_map
+
+# 关键字注释控件：显示列表
+@app.callback(
+    Output("keyword-annotations-list", "children"),
+    [Input("keyword-annotations-store", "data")]
+)
+def render_keyword_annotations_list(annotations_map):
+    annotations_map = annotations_map or {}
+    if not annotations_map:
+        return html.P("暂无注释", className="text-muted")
+    rows = []
+    for kw, note in sorted(annotations_map.items(), key=lambda kv: kv[0].lower()):
+        rows.append(html.Tr([
+            html.Td(html.Code(kw, className="small")),
+            html.Td(note or "", className="small"),
+            html.Td(
+                dbc.Button(
+                    "删除",
+                    id={"type": "annotation-del", "index": kw},
+                    color="danger",
+                    outline=True,
+                    size="sm"
+                ),
+                style={"width": "1%", "whiteSpace": "nowrap"}
+            )
+        ]))
+    table = dbc.Table([
+        html.Thead(html.Tr([html.Th("关键字"), html.Th("注释"), html.Th("操作")])) ,
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", striped=True, className="mb-0")
+    return table
+
 # 生成并执行过滤命令的回调
 @app.callback(
     [Output("log-filter-results", "children"),
@@ -1963,13 +2304,14 @@ def toggle_filter_loading(n_clicks, current_style):
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
-     State("main-tabs", "active_tab")],  # 添加当前激活的tab状态
+     State("main-tabs", "active_tab"),  # 添加当前激活的tab状态
+     State("keyword-annotations-store", "data")],
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
+def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keywords, selected_log_file, active_tab, annotations_map):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     # 获取触发回调的组件ID
     ctx = dash.callback_context
@@ -1987,6 +2329,10 @@ def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keyw
     
     # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
     source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
+    # 注释显示模式：用所有注释关键字匹配日志并展示注释
+    annotation_component = build_annotation_extract_display_by_matching(selected_log_file, annotations_map)
+    # 流程视图：基于流程配置构建缩进视图
+    flows_component = build_flows_display(selected_log_file)
     
     # 根据显示模式返回结果
     if display_mode == "source":
@@ -2000,8 +2346,16 @@ def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keyw
         else:
             # 如果没有highlight配置，显示提示信息
             return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+    elif display_mode == "annotation":
+        # 注释模式：主区展示匹配得到的注释
+        return annotation_component, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+    elif display_mode == "flows":
+        # 流程视图：展示括号缩进流程
+        return flows_component, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
     else:
         return filtered_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+
+ 
 
 def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     """执行过滤逻辑，包含临时关键字"""
@@ -2114,6 +2468,536 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
         result_display = execute_command(full_command, save_to_temp=True, session_id=session_id)
     
     return full_command, result_display
+
+def _run_command_capture_text(full_command):
+    """执行命令并返回解码后的文本（最佳努力解码）"""
+    try:
+        result = subprocess.run(full_command, shell=True, capture_output=True, text=False, timeout=30)
+        output_bytes = result.stdout if result.returncode == 0 else b""
+        if not output_bytes:
+            return ""
+        for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']:
+            try:
+                return output_bytes.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return output_bytes.decode('latin-1', errors='replace')
+    except Exception as e:
+        print(f"提取注释执行命令失败: {e}")
+        return ""
+
+def _extract_notes_from_text(text, annotations_map):
+    """基于注释映射从文本中按行提取注释列表：若注释为空，回退显示关键字本身"""
+    if not text or not annotations_map:
+        return []
+    # 使用全部关键字；若注释为空则使用关键字本身
+    keyword_to_note = {}
+    for k, v in (annotations_map or {}).items():
+        if not str(k):
+            continue
+        note_text = v if (v is not None and str(v) != "") else str(k)
+        keyword_to_note[str(k)] = str(note_text)
+    if not keyword_to_note:
+        return []
+    # 关键字按长度降序，优先匹配长关键字
+    sorted_keywords = sorted(keyword_to_note.keys(), key=len, reverse=True)
+    notes = []
+    for line in text.split('\n'):
+        line_str = line.strip()
+        if not line_str:
+            continue
+        matched_note = None
+        for kw in sorted_keywords:
+            if kw in line_str:
+                matched_note = keyword_to_note.get(kw, kw)
+                break
+        if matched_note is not None:
+            notes.append(matched_note)
+    return notes
+
+def build_annotation_match_command(selected_log_file, annotations_map):
+    """构建使用所有注释关键字匹配日志的命令"""
+    if not selected_log_file:
+        return ""
+    log_path = get_log_path(selected_log_file)
+    keywords = [str(k) for k in (annotations_map or {}).keys() if str(k)]
+    if not keywords:
+        return f"cat {log_path} | grep -E ''"  # 空匹配，后续会得到空文本
+    # 转义并组合为一个 -E 模式
+    escaped = [re.escape(k) for k in keywords]
+    pattern = escaped[0] if len(escaped) == 1 else f"({'|'.join(escaped)})"
+    return f"grep -E '{pattern}' {log_path}"
+
+def build_annotation_extract_display_by_matching(selected_log_file, annotations_map):
+    """使用所有注释关键字匹配日志并显示对应注释列表"""
+    if not selected_log_file:
+        return html.P("请选择日志文件", className="text-danger text-center")
+    if not annotations_map:
+        return html.P("未设置关键字注释", className="text-muted")
+    cmd = build_annotation_match_command(selected_log_file, annotations_map)
+    text = _run_command_capture_text(cmd)
+    if not text:
+        return html.P("没有匹配到任何日志行", className="text-muted")
+    notes = _extract_notes_from_text(text, annotations_map)
+    if not notes:
+        return html.P("未匹配到注释", className="text-muted")
+    content = "\n".join(notes)
+    return html.Pre(content, className="small")
+
+def _flow_keyword_matches(line: str, keyword) -> bool:
+    """流程关键字匹配：支持字符串、正则、AND 组合。
+    支持格式：
+      - 普通字符串：子串匹配（不区分大小写）
+      - "re:..."：正则 search（不区分大小写）
+      - "A && B && C"：同一行需要同时包含所有项（不区分大小写）
+      - "all: A B C"：同上，空格分隔多个项
+      - 对象 {"regex": "..."} 或 {"allOf": ["A","B",...]}
+    """
+    try:
+        if not keyword:
+            return False
+        s = line or ""
+        # dict 形式
+        if isinstance(keyword, dict):
+            if 'regex' in keyword and isinstance(keyword['regex'], str):
+                pattern = keyword['regex']
+                try:
+                    return re.search(pattern, s, re.IGNORECASE) is not None
+                except Exception:
+                    return False
+            if 'allOf' in keyword and isinstance(keyword['allOf'], list):
+                terms = [str(t).strip().lower() for t in keyword['allOf'] if str(t).strip()]
+                ls = s.lower()
+                return all(t in ls for t in terms)
+            if 'text' in keyword and isinstance(keyword['text'], str):
+                return keyword['text'].lower() in s.lower()
+            return False
+
+        # 字符串形式
+        ks = str(keyword).strip()
+        if not ks:
+            return False
+        # 正则：前缀 re:
+        if ks.startswith('re:'):
+            pattern = ks[3:].strip()
+            try:
+                return re.search(pattern, s, re.IGNORECASE) is not None
+            except Exception:
+                return False
+        # AND：使用 && 连接
+        if '&&' in ks:
+            parts = [p.strip().lower() for p in ks.split('&&') if p.strip()]
+            ls = s.lower()
+            return all(p in ls for p in parts)
+        # AND：使用 all: 前缀 + 空格分隔
+        if ks.lower().startswith('all:'):
+            rest = ks[4:].strip()
+            parts = [p.strip().lower() for p in re.split(r"\s+", rest) if p.strip()]
+            ls = s.lower()
+            return all(p in ls for p in parts)
+
+        # 默认：子串匹配
+        return ks.lower() in s.lower()
+    except Exception:
+        return False
+
+def build_flows_display(selected_log_file):
+    """基于流程配置构建括号缩进的流程视图"""
+    try:
+        if not selected_log_file:
+            return html.P("请选择日志文件", className="text-danger text-center")
+
+        cfg = load_flows_config()
+        paired_defs = cfg.get('paired', []) or []
+        seq_defs = cfg.get('sequences', []) or []
+
+        if not paired_defs and not seq_defs:
+            return html.P("未找到流程配置（configs/flows.json），请先配置 paired 或 sequences", className="text-muted text-center")
+
+        log_path = get_log_path(selected_log_file)
+        if not os.path.exists(log_path):
+            return html.P(f"日志文件不存在: {selected_log_file}", className="text-danger text-center")
+
+        # 读取日志文本（尝试多种编码）
+        def read_text(path):
+            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+            for enc in encodings:
+                try:
+                    with open(path, 'r', encoding=enc, errors='replace') as f:
+                        return f.readlines()
+                except Exception:
+                    continue
+            with open(path, 'r', encoding='latin-1', errors='replace') as f:
+                return f.readlines()
+
+        lines = read_text(log_path)
+
+        # 辅助：仅去除时间戳前缀（保留标签/级别等字符前缀）
+        prefix_patterns = [
+            # 仅时间戳（YYYY-MM-DD 或 MM-DD + 时间）
+            r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\s+',
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+',
+            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+',
+            r'^\d{2}:\d{2}:\d{2}\.\d{3}\s+',
+            r'^\d{2}:\d{2}:\d{2}\s+',
+            # 括号/方括号形式的纯时间戳
+            r'^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s+',
+            r'^\[\d{10,13}\]\s+'
+        ]
+
+        def strip_prefix(s: str) -> str:
+            for p in prefix_patterns:
+                m = re.match(p, s)
+                if m:
+                    return s[m.end():].rstrip('\n')
+            return s.rstrip('\n')
+
+        # 配对流程：栈管理
+        stack = []  # 每项: {name, end, start_line}
+
+        # 序列流程：每个定义维护当前索引
+        seq_states = {}
+        for seq in seq_defs:
+            name = str(seq.get('name') or '').strip()
+            steps = seq.get('steps') or []
+            if not name or not isinstance(steps, list) or not steps:
+                continue
+            seq_states[name] = {
+                'steps': steps,
+                'idx': 0
+            }
+
+        out_lines = []
+
+        for raw in lines:
+            line = raw.rstrip('\n')
+            show_line = strip_prefix(line)
+            # 序列/配对匹配：优先对去前缀后的可读内容匹配，未命中则回退到原始整行
+            def _matches(keyword):
+                return _flow_keyword_matches(show_line, keyword) or _flow_keyword_matches(line, keyword)
+            if not show_line:
+                continue
+
+            # 1) 处理配对型流程（先检查end，再检查start）
+            if paired_defs:
+                # 结束关键词
+                for p in paired_defs:
+                    name = str(p.get('name') or '').strip()
+                    end_kw = str(p.get('end') or '').strip()
+                    if not name or not end_kw:
+                        continue
+                    if end_kw and _matches(end_kw):
+                        matched_index = None
+                        for i in range(len(stack) - 1, -1, -1):
+                            if stack[i]['name'] == name:
+                                matched_index = i
+                                break
+                        if matched_index is None:
+                            out_lines.append(f"! 未匹配的结束: {name} | {show_line}")
+                        else:
+                            for j in range(len(stack) - 1, matched_index, -1):
+                                miss_name = stack[j]['name']
+                                indent = '  ' * j
+                                out_lines.append(f"{indent}! {miss_name} 缺少结束")
+                                stack.pop()
+                            level = matched_index
+                            indent = '  ' * level
+                            out_lines.append(f"{indent}- {name} END | {show_line}")
+                            stack.pop()
+
+                # 开始关键词
+                for p in paired_defs:
+                    name = str(p.get('name') or '').strip()
+                    start_kw = str(p.get('start') or '').strip()
+                    if not name or not start_kw:
+                        continue
+                    if start_kw and _matches(start_kw):
+                        level = len(stack)
+                        indent = '  ' * level
+                        out_lines.append(f"{indent}+ {name} START | {show_line}")
+                        stack.append({'name': name, 'end': str(p.get('end') or '').strip(), 'start_line': show_line})
+
+            # 2) 处理序列型流程
+            if seq_states:
+                for name, state in seq_states.items():
+                    steps = state['steps']
+                    idx = state['idx']
+                    if 0 <= idx < len(steps):
+                        expected = str(steps[idx])
+                        if expected and _matches(expected):
+                            indent = '  ' * idx
+                            out_lines.append(f"{indent}* {name} [{idx+1}/{len(steps)}] {expected} | {show_line}")
+                            state['idx'] += 1
+                            continue
+                    first = str(steps[0]) if steps else ''
+                    if first and _matches(first) and idx > 0:
+                        missing = steps[idx:]
+                        if missing:
+                            indent = '  ' * idx
+                            out_lines.append(f"{indent}! {name} 缺少: {' -> '.join(missing)}")
+                        out_lines.append(f"* {name} [1/{len(steps)}] {first} | {show_line}")
+                        state['idx'] = 1
+
+        # 文件结束后的收尾
+        for i, item in enumerate(stack):
+            indent = '  ' * i
+            out_lines.append(f"{indent}! {item['name']} 缺少结束")
+
+        for name, state in seq_states.items():
+            idx = state['idx']
+            steps = state['steps']
+            if 0 < idx < len(steps):
+                missing = steps[idx:]
+                indent = '  ' * idx
+                out_lines.append(f"{indent}! {name} 缺少: {' -> '.join(missing)}")
+
+        if not out_lines:
+            return html.P("未匹配到流程相关记录", className="text-muted text-center")
+
+        # 按行渲染并为未匹配/缺失的流程加颜色
+        line_components = []
+        for ln in out_lines:
+            is_error = ln.strip().startswith('! ')
+            style = {
+                'whiteSpace': 'pre',
+                'fontFamily': 'monospace',
+                'fontSize': '12px'
+            }
+            if is_error:
+                # Bootstrap danger 红色系
+                style.update({'color': '#d9534f', 'fontWeight': 'bold'})
+            line_components.append(html.Div(ln, style=style))
+
+        return html.Div(line_components)
+    except Exception as e:
+        print(f"构建流程视图失败: {e}")
+        return html.P(f"构建流程视图失败: {e}", className="text-danger text-center")
+
+
+# ---------- 流程关键字设置 回调 ----------
+
+def _render_paired_list(flows):
+    flows = flows or {"paired": [], "sequences": []}
+    paired = flows.get('paired') or []
+    if not paired:
+        return html.P("暂无配对关键字", className="text-muted mb-0")
+    rows = []
+    for i, item in enumerate(paired):
+        name = str((item or {}).get('name') or '')
+        start = str((item or {}).get('start') or '')
+        end = str((item or {}).get('end') or '')
+        rows.append(
+            html.Tr([
+                html.Td(html.Code(name, className="small")),
+                html.Td(html.Code(start, className="small")),
+                html.Td(html.Code(end, className="small")),
+                html.Td(
+                    dbc.Button("删除", id={"type": "paired-del", "index": i}, color="danger", size="sm")
+                )
+            ])
+        )
+    return dbc.Table([
+        html.Thead(html.Tr([html.Th("名称"), html.Th("开始"), html.Th("结束"), html.Th("操作")])),
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", striped=True, className="mb-0")
+
+
+def _render_sequences_list(flows):
+    flows = flows or {"paired": [], "sequences": []}
+    sequences = flows.get('sequences') or []
+    if not sequences:
+        return html.P("暂无序列关键字", className="text-muted mb-0")
+    rows = []
+    for i, item in enumerate(sequences):
+        name = str((item or {}).get('name') or '')
+        steps = (item or {}).get('steps') or []
+        steps_text = ' -> '.join([str(s) for s in steps])
+        rows.append(
+            html.Tr([
+                html.Td(html.Code(name, className="small")),
+                html.Td(html.Div(steps_text, className="small", style={"whiteSpace": "pre-wrap"})),
+                html.Td(
+                    dbc.Button("删除", id={"type": "seq-del", "index": i}, color="danger", size="sm")
+                )
+            ])
+        )
+    return dbc.Table([
+        html.Thead(html.Tr([html.Th("名称"), html.Th("步骤"), html.Th("操作")])),
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", striped=True, className="mb-0")
+
+
+@app.callback(
+    Output("paired-list-container", "children"),
+    [Input("flows-config-store", "data")]
+)
+def render_paired_list(flows):
+    return _render_paired_list(flows)
+
+
+@app.callback(
+    Output("sequences-list-container", "children"),
+    [Input("flows-config-store", "data")]
+)
+def render_sequences_list(flows):
+    return _render_sequences_list(flows)
+
+
+def _parse_steps(text: str):
+    if not text:
+        return []
+    # 支持 '->'、'→'、中文逗号、英文逗号、换行
+    parts = re.split(r"\n|->|→|，|,", text)
+    steps = [p.strip() for p in parts if p and p.strip()]
+    return steps
+
+
+@app.callback(
+    Output("flows-config-store", "data", allow_duplicate=True),
+    Output("paired-name", "value", allow_duplicate=True),
+    Output("paired-start", "value", allow_duplicate=True),
+    Output("paired-end", "value", allow_duplicate=True),
+    [Input("paired-add-btn", "n_clicks")],
+    [State("paired-name", "value"), State("paired-start", "value"), State("paired-end", "value"), State("flows-config-store", "data")],
+    prevent_initial_call=True
+)
+def add_paired(n_clicks, name, start_kw, end_kw, flows):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    name = (name or '').strip()
+    start_kw = (start_kw or '').strip()
+    end_kw = (end_kw or '').strip()
+    if not name or not start_kw or not end_kw:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    flows = flows or {"paired": [], "sequences": []}
+    paired = flows.get('paired') or []
+    paired.append({"name": name, "start": start_kw, "end": end_kw})
+    flows['paired'] = paired
+    save_flows_config(flows)
+    return flows, "", "", ""
+
+
+@app.callback(
+    Output("flows-config-store", "data", allow_duplicate=True),
+    [Input({"type": "paired-del", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "paired-del", "index": dash.ALL}, "id"), State("flows-config-store", "data")],
+    prevent_initial_call=True
+)
+def delete_paired(n_clicks, ids, flows):
+    if not n_clicks or not ids:
+        return dash.no_update
+    # 找到被点击的按钮索引
+    clicked_idx = None
+    for i, c in enumerate(n_clicks):
+        if c:
+            clicked_idx = i
+            break
+    if clicked_idx is None:
+        return dash.no_update
+    idx_value = ids[clicked_idx].get('index') if isinstance(ids[clicked_idx], dict) else None
+    if idx_value is None:
+        return dash.no_update
+    flows = flows or {"paired": [], "sequences": []}
+    paired = flows.get('paired') or []
+    if 0 <= idx_value < len(paired):
+        paired.pop(idx_value)
+        flows['paired'] = paired
+        save_flows_config(flows)
+        return flows
+    return dash.no_update
+
+
+@app.callback(
+    Output("flows-config-store", "data", allow_duplicate=True),
+    Output("seq-name", "value", allow_duplicate=True),
+    Output("seq-steps-text", "value", allow_duplicate=True),
+    [Input("seq-add-btn", "n_clicks")],
+    [State("seq-name", "value"), State("seq-steps-text", "value"), State("flows-config-store", "data")],
+    prevent_initial_call=True
+)
+def add_sequence(n_clicks, name, steps_text, flows):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update
+    name = (name or '').strip()
+    steps = _parse_steps(steps_text or '')
+    if not name or not steps:
+        return dash.no_update, dash.no_update, dash.no_update
+    flows = flows or {"paired": [], "sequences": []}
+    sequences = flows.get('sequences') or []
+    sequences.append({"name": name, "steps": steps})
+    flows['sequences'] = sequences
+    save_flows_config(flows)
+    return flows, "", ""
+
+
+@app.callback(
+    Output("flows-config-store", "data", allow_duplicate=True),
+    [Input({"type": "seq-del", "index": dash.ALL}, "n_clicks")],
+    [State({"type": "seq-del", "index": dash.ALL}, "id"), State("flows-config-store", "data")],
+    prevent_initial_call=True
+)
+def delete_sequence(n_clicks, ids, flows):
+    if not n_clicks or not ids:
+        return dash.no_update
+    clicked_idx = None
+    for i, c in enumerate(n_clicks):
+        if c:
+            clicked_idx = i
+            break
+    if clicked_idx is None:
+        return dash.no_update
+    idx_value = ids[clicked_idx].get('index') if isinstance(ids[clicked_idx], dict) else None
+    if idx_value is None:
+        return dash.no_update
+    flows = flows or {"paired": [], "sequences": []}
+    sequences = flows.get('sequences') or []
+    if 0 <= idx_value < len(sequences):
+        sequences.pop(idx_value)
+        flows['sequences'] = sequences
+        save_flows_config(flows)
+        return flows
+    return dash.no_update
+
+
+# ---------- 正则生成器 回调 ----------
+
+@app.callback(
+    Output("regex-output", "value"),
+    [Input("regex-generate-btn", "n_clicks")],
+    [State("regex-input-keywords", "value"), State("regex-mode", "value"), State("regex-options", "value")],
+    prevent_initial_call=True
+)
+def generate_regex(n_clicks, raw_keywords, mode, options):
+    try:
+        if not n_clicks:
+            return dash.no_update
+        text = (raw_keywords or "").strip()
+        if not text:
+            return ""
+        # 分词（空格或换行分隔）
+        parts = [p.strip() for p in re.split(r"\s+", text) if p and p.strip()]
+        if not parts:
+            return ""
+        add_prefix = isinstance(options, list) and ("prefix" in options)
+        do_escape = not isinstance(options, list) or ("escape" in options)
+        tokens = [re.escape(p) if do_escape else p for p in parts]
+
+        pattern = ""
+        if mode == "or":
+            # (a|b|c)
+            pattern = "(" + "|".join(tokens) + ")"
+        elif mode == "ordered_lookahead":
+            # a.*b.*c （单行匹配）
+            pattern = ".*".join(tokens)
+        else:
+            # and_lookahead: (?=.*a)(?=.*b)(?=.*c)
+            pattern = "".join([f"(?=.*{t})" for t in tokens])
+
+        result = f"re:{pattern}" if add_prefix else pattern
+        return result
+    except Exception as e:
+        print(f"生成正则失败: {e}")
+        return ""
 
 def get_category_colors(categories):
     """为每个分类生成等间距的独特颜色"""
@@ -2694,20 +3578,23 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
 @app.callback(
     [Output("tab-1-content", "style"),
      Output("tab-2-content", "style"),
-     Output("tab-3-content", "style")],
+     Output("tab-3-content", "style"),
+     Output("tab-4-content", "style")],
     [Input("main-tabs", "active_tab")]
 )
 def toggle_tab_visibility(active_tab):
     """切换标签页的显示/隐藏，而不是重新渲染内容，以保留状态"""
     if active_tab == "tab-1":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-2":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-3":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
+    elif active_tab == "tab-4":
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
     
     # 默认显示tab-1
-    return {"display": "block"}, {"display": "none"}, {"display": "none"}
+    return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
 
 # 日志管理tab的回调函数
 
