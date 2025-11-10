@@ -1,0 +1,10 @@
+{
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyURI",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply"
+    ],
+    "filter": []
+  }
+}

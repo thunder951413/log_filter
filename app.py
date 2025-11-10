@@ -468,6 +468,10 @@ def load_rolling_config():
 def get_log_path(log_filename):
     """获取日志文件的完整路径"""
     ensure_log_dir()
+    # 确保文件名是字符串类型，并正确处理空格
+    if not isinstance(log_filename, str):
+        log_filename = str(log_filename)
+    # 使用os.path.join正确处理路径，包括文件名中的空格
     return os.path.join(LOG_DIR, log_filename)
 
 # 加载已保存的数据
@@ -2399,9 +2403,9 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
             keep_patterns.append(escaped_s)
         
         if len(keep_patterns) == 1:
-            grep_parts.append(f"grep -E '{keep_patterns[0]}' {log_path}")
+            grep_parts.append(f"grep -E '{keep_patterns[0]}' \"{log_path}\"")
         else:
-            grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' {log_path}")
+            grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' \"{log_path}\"")
     
     if filter_strings:
         # 过滤字符串的grep模式
@@ -2419,11 +2423,11 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
         if grep_parts:
             grep_parts.append(f"grep -v -E '{filter_pattern}'")
         else:
-            grep_parts.append(f"grep -v -E '{filter_pattern}' {log_path}")
+            grep_parts.append(f"grep -v -E '{filter_pattern}' \"{log_path}\"")
     
     # 如果没有选择任何字符串，直接显示文件内容
     if not grep_parts:
-        full_command = f"cat {log_path}"
+        full_command = f"cat \"{log_path}\""
     else:
         # 组合grep命令
         full_command = " | ".join(grep_parts)
@@ -2445,7 +2449,7 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
-    full_command = f"cat {log_path}"
+    full_command = f"cat \"{log_path}\""
     
     # 合并选中的字符串和临时关键字
     all_strings = []
@@ -2522,11 +2526,11 @@ def build_annotation_match_command(selected_log_file, annotations_map):
     log_path = get_log_path(selected_log_file)
     keywords = [str(k) for k in (annotations_map or {}).keys() if str(k)]
     if not keywords:
-        return f"cat {log_path} | grep -E ''"  # 空匹配，后续会得到空文本
+        return f"cat \"{log_path}\" | grep -E ''"  # 空匹配，后续会得到空文本
     # 转义并组合为一个 -E 模式
     escaped = [re.escape(k) for k in keywords]
     pattern = escaped[0] if len(escaped) == 1 else f"({'|'.join(escaped)})"
-    return f"grep -E '{pattern}' {log_path}"
+    return f"grep -E '{pattern}' \"{log_path}\""
 
 def build_annotation_extract_display_by_matching(selected_log_file, annotations_map):
     """使用所有注释关键字匹配日志并显示对应注释列表"""
@@ -3656,6 +3660,9 @@ def handle_file_upload(contents, filename, last_modified):
         decoded = base64.b64decode(content_string)
         
         # 保存文件到logs目录
+        # 确保文件名是字符串类型，并正确处理空格
+        if not isinstance(filename, str):
+            filename = str(filename)
         file_path = os.path.join(LOG_DIR, filename)
         with open(file_path, 'wb') as f:
             f.write(decoded)
@@ -3666,6 +3673,9 @@ def handle_file_upload(contents, filename, last_modified):
         # 创建文件列表显示
         file_list = []
         for file in log_files:
+            # 确保文件名是字符串类型，并正确处理空格
+            if not isinstance(file, str):
+                file = str(file)
             file_path = os.path.join(LOG_DIR, file)
             file_size = os.path.getsize(file_path)
             file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
@@ -3716,6 +3726,9 @@ def show_file_info(selected_file):
         return html.P("请选择一个文件查看详细信息", className="text-muted")
     
     try:
+        # 确保文件名是字符串类型，并正确处理空格
+        if not isinstance(selected_file, str):
+            selected_file = str(selected_file)
         file_path = os.path.join(LOG_DIR, selected_file)
         
         if not os.path.exists(file_path):
@@ -3787,6 +3800,9 @@ def delete_log_file(n_clicks, selected_file):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     try:
+        # 确保文件名是字符串类型，并正确处理空格
+        if not isinstance(selected_file, str):
+            selected_file = str(selected_file)
         file_path = os.path.join(LOG_DIR, selected_file)
         
         if os.path.exists(file_path):
@@ -3798,6 +3814,9 @@ def delete_log_file(n_clicks, selected_file):
             # 创建文件列表显示
             file_list = []
             for file in log_files:
+                # 确保文件名是字符串类型，并正确处理空格
+                if not isinstance(file, str):
+                    file = str(file)
                 file_path = os.path.join(LOG_DIR, file)
                 file_size = os.path.getsize(file_path)
                 file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
@@ -3837,6 +3856,9 @@ def initialize_file_list(active_tab):
         # 创建文件列表显示
         file_list = []
         for file in log_files:
+            # 确保文件名是字符串类型，并正确处理空格
+            if not isinstance(file, str):
+                file = str(file)
             file_path = os.path.join(LOG_DIR, file)
             file_size = os.path.getsize(file_path)
             file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')

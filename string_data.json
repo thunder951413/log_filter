@@ -85,7 +85,8 @@
       "STB_CINotifyPinReply",
       "STB_CiHandlePinEvent",
       "STB_CiCcSendPinPlayback",
-      "STB_CiCcSendPinPlayback"
+      "STB_CiCcSendPinPlayback",
+      "STB_CINotifyURI"
     ],
     "CI_PIN": [
       "STB_CINotifyPinEvent",

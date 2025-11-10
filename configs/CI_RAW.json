@@ -4,5 +4,23 @@
       "DTV_LOG : <CI-Plus>"
     ],
     "filter": []
+  },
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiHandlePinEvent",
+      "STB_CiCcSendPinPlayback",
+      "STB_CiCcNotifyModuleRemove",
+      "STB_CiCcNotifyModuleInsert",
+      "STB_CINotifyURI"
+    ],
+    "filter": []
+  },
+  "BIO_EVENT": {
+    "keep": [
+      "<Glue> SignalHandler"
+    ],
+    "filter": []
   }
 }
