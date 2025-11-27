@@ -1,0 +1,10 @@
+{
+  "demux": {
+    "keep": [
+      "STB_DMXSetDemuxSource",
+      "DMX_SET_HW_SOURCE",
+      "STB_CIRouteTS"
+    ],
+    "filter": []
+  }
+}

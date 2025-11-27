@@ -218,8 +218,12 @@ def get_config_files():
             if file.endswith('.json'):
                 config_files.append(file[:-5])  # 去掉.json后缀
     return sorted(config_files)
+# 从环境变量获取 URL 前缀
+url_base = os.environ.get('DASH_URL_BASE_PATHNAME', '/')
+
 
 def get_log_files():
+    url_base_pathname=url_base,
     """获取logs目录中的所有文本文件列表"""
     ensure_log_dir()
     log_files = []
@@ -1271,7 +1275,6 @@ def restore_previous_selections(data_store_data, active_tab, log_file_options):
     is_valid_trigger = False
     if ctx.triggered:
         trigger_id = ctx.triggered[0]["prop_id"]
-        # 如果是data-store的数据更新或tab切换，则认为是有效的触发
         if trigger_id == "data-store.data" and data_store_data is not None:
             is_valid_trigger = True
         elif trigger_id == "main-tabs.active_tab" and active_tab:

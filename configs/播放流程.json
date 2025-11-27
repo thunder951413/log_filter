@@ -1,0 +1,56 @@
+{
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyURI",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiCcNotifyModuleRemove",
+      "STB_CiCcNotifyModuleInsert",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiHandlePinEvent",
+      "STB_CiCcSendPinPlayback",
+      "STB_CINotifyURI",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CiCcNotifyModuleRemove",
+      "STB_CiCcNotifyModuleInsert"
+    ],
+    "filter": []
+  },
+  "STBPVR": {
+    "keep": [
+      "------------------>URI",
+      "------------------>LICENCE",
+      "------------------>PIN",
+      "WriteExtendedInfo",
+      "WriteCIPlusInfo",
+      "------------------>URI",
+      "------------------>LICENCE",
+      "------------------>PIN",
+      "WriteExtendedInfo",
+      "WriteCIPlusInfo"
+    ],
+    "filter": []
+  },
+  "PlayerInterface": {
+    "keep": [
+      "Player.play",
+      "Player.stop"
+    ],
+    "filter": []
+  },
+  "demux": {
+    "keep": [
+      "STB_CIRouteTS"
+    ],
+    "filter": []
+  },
+  "CIPlus": {
+    "keep": [
+      "AcquireCISlot",
+      "ReleaseCISlotFromPath"
+    ],
+    "filter": []
+  }
+}

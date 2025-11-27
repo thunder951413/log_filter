@@ -103,6 +103,21 @@
     ],
     "deadbeaf": [
       "deadbeaf"
+    ],
+    "TCL": [
+      "sita.ci_plus",
+      "sita.thal",
+      "aml_rawci",
+      "pcmcia_cam_is_card_insert status",
+      "pcmcia_state1 pcmcia_state_old",
+      "fpp_pcmcia_ready_signal",
+      "ciecp_cc_get_auth_status",
+      "ciecp_cc_notify_service_change",
+      "ciecp_cc_get_ccp_state",
+      "ciecp_desc_set_key",
+      "tdesc_ciplus_set_key",
+      "ci_send_ca_pmt",
+      "product_info"
     ]
   }
 }

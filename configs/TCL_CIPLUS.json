@@ -1,0 +1,27 @@
+{
+  "TCL": {
+    "keep": [
+      "sita.ci_plus",
+      "sita.thal",
+      "aml_rawci",
+      "ciecp_cc_get_auth_status",
+      "ciecp_cc_notify_service_change",
+      "ciecp_cc_get_ccp_state",
+      "ci_send_ca_pmt",
+      "tdesc_ciplus_set_key",
+      "ciecp_desc_set_key",
+      "product_info"
+    ],
+    "filter": [
+      "pcmcia_cam_is_card_insert status",
+      "pcmcia_state1 pcmcia_state_old",
+      "fpp_pcmcia_ready_signal"
+    ]
+  },
+  "deadbeaf": {
+    "keep": [
+      "deadbeaf"
+    ],
+    "filter": []
+  }
+}
