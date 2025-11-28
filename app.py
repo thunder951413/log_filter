@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import dash
-from dash import dcc, html, Input, Output, State
+from dash import dcc, html, Input, Output, State, ALL, MATCH, callback_context
 import dash_bootstrap_components as dbc
 import plotly.express as px
 import pandas as pd
@@ -550,6 +550,74 @@ def load_user_selections():
         "last_updated": ""
     }
 
+def _format_size(size_bytes):
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+def _create_file_list_table(log_files):
+    if not log_files:
+        return html.Div("暂无上传的文件", className="text-muted text-center p-3")
+    
+    rows = []
+    for file in log_files:
+        # Ensure file name is string and handle spaces
+        if not isinstance(file, str):
+            file = str(file)
+            
+        file_path = os.path.join(LOG_DIR, file)
+        if not os.path.exists(file_path):
+            continue
+            
+        file_size = os.path.getsize(file_path)
+        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        rows.append(html.Tr([
+            html.Td(file, className="align-middle"),
+            html.Td(_format_size(file_size), className="align-middle"),
+            html.Td(file_mtime, className="align-middle"),
+            html.Td(
+                [
+                    dbc.Button(
+                        "重命名", 
+                        id={"type": "rename-file-btn", "index": file}, 
+                        color="secondary", 
+                        size="sm",
+                        outline=True,
+                        className="me-2"
+                    ),
+                    dbc.Button(
+                        "删除", 
+                        id={"type": "delete-file-btn", "index": file}, 
+                        color="danger", 
+                        size="sm",
+                        outline=True
+                    )
+                ], 
+                className="align-middle"
+            )
+        ]))
+    
+    return dbc.Table(
+        [
+            html.Thead(html.Tr([
+                html.Th("文件名"), 
+                html.Th("大小"), 
+                html.Th("修改时间"), 
+                html.Th("操作", style={"width": "180px"})
+            ])),
+            html.Tbody(rows)
+        ],
+        hover=True,
+        striped=True,
+        bordered=True,
+        responsive=True,
+        className="mb-0"
+    )
+
 # 初始数据
 data = load_data()
 
@@ -1057,81 +1125,70 @@ app.layout = html.Div([
         
         # Tab3内容 - 日志管理
         html.Div(id="tab-3-content", children=[
-            dbc.Row([
-                dbc.Col([
-                    html.H4("日志管理", className="mb-4"),
-                    
-                    # 文件上传区域
-                    dbc.Card([
-                        dbc.CardHeader([
-                            html.H5("日志文件上传", className="mb-0")
-                        ]),
-                        dbc.CardBody([
-                            html.P("上传日志文件到logs目录，支持.txt和.log格式的文件。", className="text-muted mb-3"),
-                            
-                            # 文件上传组件
-                            dcc.Upload(
-                                id='upload-log-file',
-                                children=html.Div([
-                                    html.I(className="bi bi-cloud-upload me-2"),
-                                    '拖拽文件到此处或点击选择文件'
-                                ]),
-                                style={
-                                    'width': '100%',
-                                    'height': '100px',
-                                    'lineHeight': '100px',
-                                    'borderWidth': '2px',
-                                    'borderStyle': 'dashed',
-                                    'borderRadius': '5px',
-                                    'textAlign': 'center',
-                                    'cursor': 'pointer',
-                                    'borderColor': '#6c757d',
-                                    'color': '#6c757d'
-                                },
-                                multiple=False,
-                                accept='.txt,.log'
-                            ),
-                            
-                            # 上传状态显示
-                            html.Div(id='upload-status', className="mt-3"),
-                            
-                            # 已上传文件列表
-                            html.Hr(),
-                            html.H6("已上传的文件", className="mt-3"),
-                            html.Div(id='uploaded-files-list', className="mt-2")
-                        ])
-                    ], className="mb-4"),
-                    
-                    # 文件管理区域
-                    dbc.Card([
-                        dbc.CardHeader([
-                            html.H5("日志文件管理", className="mb-0")
-                        ]),
-                        dbc.CardBody([
-                            html.P("管理已上传的日志文件。", className="text-muted mb-3"),
-                            
-                            # 文件列表和操作
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("选择日志文件:"),
-                                    dcc.Dropdown(
-                                        id="log-file-manager-selector",
-                                        placeholder="选择要管理的文件...",
-                                        clearable=True
-                                    )
-                                ], width=8),
-                                dbc.Col([
-                                    dbc.Label("操作:", className="d-block"),
-                                    dbc.Button("删除文件", id="delete-log-file-btn", color="danger", className="w-100")
-                                ], width=4)
-                            ], className="mb-3"),
-                            
-                            # 文件信息显示
-                            html.Div(id='file-info-display', className="mt-3")
-                        ])
+            dbc.Container([
+                dbc.Row([
+                    dbc.Col([
+                        html.H4("日志管理", className="mb-4"),
                     ])
-                ], width=12)
-            ], className="mb-4")
+                ]),
+                
+                # 文件上传区域
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.Div([
+                                    html.I(className="bi bi-cloud-upload me-2"),
+                                    html.Span("日志文件上传")
+                                ], className="d-flex align-items-center")
+                            ]),
+                            dbc.CardBody([
+                                dcc.Upload(
+                                    id='upload-log-file',
+                                    children=html.Div([
+                                        html.I(className="bi bi-upload me-2", style={"fontSize": "1.5rem"}),
+                                        html.Span('拖拽文件到此处或点击选择文件', className="fw-bold")
+                                    ], className="d-flex flex-column align-items-center justify-content-center"),
+                                    style={
+                                        'width': '100%',
+                                        'height': '120px',
+                                        'lineHeight': '60px',
+                                        'borderWidth': '2px',
+                                        'borderStyle': 'dashed',
+                                        'borderRadius': '10px',
+                                        'textAlign': 'center',
+                                        'cursor': 'pointer',
+                                        'borderColor': '#dee2e6',
+                                        'backgroundColor': '#f8f9fa',
+                                        'transition': 'all 0.3s'
+                                    },
+                                    className="upload-area mb-3",
+                                    multiple=False,
+                                    accept='.txt,.log'
+                                ),
+                                html.Div(id='upload-status', className="text-center small")
+                            ])
+                        ], className="mb-4 shadow-sm")
+                    ], width=12)
+                ]),
+                
+                # 文件列表区域
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.Div([
+                                    html.I(className="bi bi-list-ul me-2"),
+                                    html.Span("已上传的文件")
+                                ], className="d-flex align-items-center")
+                            ]),
+                            dbc.CardBody([
+                                html.Div(id='uploaded-files-list', className="table-responsive")
+                            ], className="p-0")
+                        ], className="shadow-sm")
+                    ], width=12)
+                ])
+            ], fluid=True, className="p-0")
         ], style={"display": "none"}),
         
         # 抽屉组件 - 移到主布局中，确保所有tab都能访问
@@ -1198,6 +1255,28 @@ app.layout = html.Div([
         dcc.Store(id='temp-keywords-store', data=[]),  # 存储临时关键字列表
         dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
         dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
+        dcc.Store(id='rename-target-file', data=''),  # 存储待重命名的文件
+        
+        # 重命名文件模态框
+        dbc.Modal(
+            [
+                dbc.ModalHeader(dbc.ModalTitle("重命名文件")),
+                dbc.ModalBody(
+                    [
+                        dbc.Label("新文件名:"),
+                        dbc.Input(id="rename-file-input", type="text"),
+                    ]
+                ),
+                dbc.ModalFooter(
+                    [
+                        dbc.Button("取消", id="rename-file-cancel-btn", className="ms-auto", outline=True),
+                        dbc.Button("确认", id="rename-file-confirm-btn", color="primary", className="ms-2"),
+                    ]
+                ),
+            ],
+            id="rename-file-modal",
+            is_open=False,
+        ),
         
     ], fluid=True)
 ])
@@ -1880,7 +1959,7 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
     
     # 清除选择
     if ctx.triggered and is_user_interaction:
-        button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        button_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
         
         # 检查是否是清除选择按钮触发的
         if "clear-selection-btn" in button_id:
@@ -1893,7 +1972,7 @@ def select_string(select_clicks, clear_clicks, selected_strings, data, string_ty
     
     # 选择字符串
     if ctx.triggered and ctx.triggered[0]["value"] and is_user_interaction:
-        button_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        button_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
         
         # 检查是否是选择字符串按钮触发的
         if "select-string-btn" in button_id:
@@ -1982,7 +2061,7 @@ def show_config_status(select_clicks, clear_clicks, data, selected_strings, acti
     if not ctx.triggered:
         return dash.no_update
 
-    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    trigger_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
     
     # 选择字符串状态
     if "select-string-btn" in trigger_id:
@@ -2151,7 +2230,7 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
         return selected_strings
     
     # 获取触发回调的按钮ID
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    triggered_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
     
     # 检查是否是selected-string-btn触发的
     if "selected-string-btn" in triggered_id:
@@ -3657,8 +3736,7 @@ def toggle_tab_visibility(active_tab):
 # 文件上传处理
 @app.callback(
     [Output('upload-status', 'children'),
-     Output('uploaded-files-list', 'children'),
-     Output('log-file-manager-selector', 'options', allow_duplicate=True)],
+     Output('uploaded-files-list', 'children')],
     [Input('upload-log-file', 'contents')],
     [State('upload-log-file', 'filename'),
      State('upload-log-file', 'last_modified')],
@@ -3666,7 +3744,7 @@ def toggle_tab_visibility(active_tab):
 )
 def handle_file_upload(contents, filename, last_modified):
     if contents is None:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update
     
     try:
         # 确保logs目录存在
@@ -3686,179 +3764,58 @@ def handle_file_upload(contents, filename, last_modified):
         
         # 更新文件列表
         log_files = get_log_files()
-        
-        # 创建文件列表显示
-        file_list = []
-        for file in log_files:
-            # 确保文件名是字符串类型，并正确处理空格
-            if not isinstance(file, str):
-                file = str(file)
-            file_path = os.path.join(LOG_DIR, file)
-            file_size = os.path.getsize(file_path)
-            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-            
-            file_list.append(html.Div([
-                dbc.Row([
-                    dbc.Col([html.Strong(file)], width=6),
-                    dbc.Col([f"大小: {file_size} 字节"], width=3),
-                    dbc.Col([f"修改时间: {file_mtime}"], width=3)
-                ], className="border-bottom py-2")
-            ]))
-        
-        if not file_list:
-            file_list = [html.P("暂无上传的文件", className="text-muted")]
-        
-        # 更新文件管理器选择器选项
-        options = [{'label': file, 'value': file} for file in log_files]
+        file_list_table = _create_file_list_table(log_files)
         
         # 返回成功状态
         status = dbc.Alert(f"文件 '{filename}' 已成功上传到logs目录！", color="success", dismissable=True)
-        return status, file_list, options
+        return status, file_list_table
         
     except Exception as e:
         error_status = dbc.Alert(f"文件上传失败: {str(e)}", color="danger", dismissable=True)
-        return error_status, dash.no_update, dash.no_update
-
-# 更新文件管理器选择器选项
-@app.callback(
-    Output('log-file-manager-selector', 'options', allow_duplicate=True),
-    [Input('main-tabs', 'active_tab')],
-    prevent_initial_call='initial_duplicate'
-)
-def update_file_manager_options(active_tab):
-    if active_tab == "tab-3":
-        log_files = get_log_files()
-        options = [{'label': file, 'value': file} for file in log_files]
-        return options
-    return dash.no_update
-
-# 显示文件信息
-@app.callback(
-    Output('file-info-display', 'children'),
-    [Input('log-file-manager-selector', 'value')],
-    prevent_initial_call=True
-)
-def show_file_info(selected_file):
-    if selected_file is None:
-        return html.P("请选择一个文件查看详细信息", className="text-muted")
-    
-    try:
-        # 确保文件名是字符串类型，并正确处理空格
-        if not isinstance(selected_file, str):
-            selected_file = str(selected_file)
-        file_path = os.path.join(LOG_DIR, selected_file)
-        
-        if not os.path.exists(file_path):
-            return dbc.Alert("文件不存在", color="warning")
-        
-        # 获取文件信息
-        file_size = os.path.getsize(file_path)
-        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-        file_ctime = datetime.fromtimestamp(os.path.getctime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 读取文件行数（只读取前几行预览）
-        line_count = 0
-        preview_lines = []
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                for i, line in enumerate(f):
-                    line_count += 1
-                    if i < 5:  # 只显示前5行作为预览
-                        preview_lines.append(line.strip())
-        except:
-            line_count = "无法读取"
-        
-        return dbc.Card([
-            dbc.CardHeader([html.H6("文件详细信息", className="mb-0")]),
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col([html.Strong("文件名:")], width=3),
-                    dbc.Col([selected_file], width=9)
-                ], className="mb-2"),
-                dbc.Row([
-                    dbc.Col([html.Strong("文件大小:")], width=3),
-                    dbc.Col([f"{file_size} 字节"], width=9)
-                ], className="mb-2"),
-                dbc.Row([
-                    dbc.Col([html.Strong("修改时间:")], width=3),
-                    dbc.Col([file_mtime], width=9)
-                ], className="mb-2"),
-                dbc.Row([
-                    dbc.Col([html.Strong("创建时间:")], width=3),
-                    dbc.Col([file_ctime], width=9)
-                ], className="mb-2"),
-                dbc.Row([
-                    dbc.Col([html.Strong("行数:")], width=3),
-                    dbc.Col([str(line_count) if isinstance(line_count, int) else line_count], width=9)
-                ], className="mb-3"),
-                html.Hr(),
-                html.H6("文件内容预览:", className="mb-2"),
-                html.Div([
-                    html.Pre(line, className="mb-1 text-muted small") for line in preview_lines
-                ], style={"maxHeight": "150px", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "borderRadius": "5px"})
-            ])
-        ])
-        
-    except Exception as e:
-        return dbc.Alert(f"获取文件信息失败: {str(e)}", color="danger")
+        return error_status, dash.no_update
 
 # 删除文件操作
 @app.callback(
-    [Output('log-file-manager-selector', 'value', allow_duplicate=True),
-     Output('uploaded-files-list', 'children', allow_duplicate=True),
-     Output('file-info-display', 'children', allow_duplicate=True),
-     Output('log-file-manager-selector', 'options', allow_duplicate=True)],
-    [Input('delete-log-file-btn', 'n_clicks')],
-    [State('log-file-manager-selector', 'value')],
+    Output('uploaded-files-list', 'children', allow_duplicate=True),
+    [Input({'type': 'delete-file-btn', 'index': ALL}, 'n_clicks')],
     prevent_initial_call=True
 )
-def delete_log_file(n_clicks, selected_file):
-    if n_clicks is None or selected_file is None:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+def delete_log_file(n_clicks):
+    # Determine which button was clicked
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    # If all n_clicks are None or 0, return
+    if all(x is None for x in n_clicks):
+        return dash.no_update
+        
+    # Get the button ID
+    # Use rsplit to split from the right, ensuring we only split off the property name (n_clicks)
+    # This handles cases where the filename in the ID contains dots
+    button_id_str = ctx.triggered[0]['prop_id'].rsplit('.', 1)[0]
     
     try:
+        button_id_dict = json.loads(button_id_str)
+        filename = button_id_dict['index']
+        
         # 确保文件名是字符串类型，并正确处理空格
-        if not isinstance(selected_file, str):
-            selected_file = str(selected_file)
-        file_path = os.path.join(LOG_DIR, selected_file)
+        if not isinstance(filename, str):
+            filename = str(filename)
+            
+        file_path = os.path.join(LOG_DIR, filename)
         
         if os.path.exists(file_path):
             os.remove(file_path)
             
-            # 更新文件列表
-            log_files = get_log_files()
-            
-            # 创建文件列表显示
-            file_list = []
-            for file in log_files:
-                # 确保文件名是字符串类型，并正确处理空格
-                if not isinstance(file, str):
-                    file = str(file)
-                file_path = os.path.join(LOG_DIR, file)
-                file_size = os.path.getsize(file_path)
-                file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-                
-                file_list.append(html.Div([
-                    dbc.Row([
-                        dbc.Col([html.Strong(file)], width=6),
-                        dbc.Col([f"大小: {file_size} 字节"], width=3),
-                        dbc.Col([f"修改时间: {file_mtime}"], width=3)
-                    ], className="border-bottom py-2")
-                ]))
-            
-            if not file_list:
-                file_list = [html.P("暂无上传的文件", className="text-muted")]
-            
-            # 更新文件管理器选择器选项
-            options = [{'label': file, 'value': file} for file in log_files]
-            
-            # 清空选择器和文件信息显示
-            return None, file_list, html.P("文件已从logs目录删除", className="text-success"), options
-        else:
-            return dash.no_update, dash.no_update, dbc.Alert("文件不存在", color="warning"), dash.no_update
+        # 更新文件列表
+        log_files = get_log_files()
+        return _create_file_list_table(log_files)
             
     except Exception as e:
-        return dash.no_update, dash.no_update, dbc.Alert(f"删除文件失败: {str(e)}", color="danger"), dash.no_update
+        # 如果出错，暂不处理，或者返回原列表
+        print(f"Delete error: {e}")
+        return dash.no_update
 
 # 页面加载时初始化文件列表
 @app.callback(
@@ -3869,31 +3826,112 @@ def delete_log_file(n_clicks, selected_file):
 def initialize_file_list(active_tab):
     if active_tab == "tab-3":
         log_files = get_log_files()
-        
-        # 创建文件列表显示
-        file_list = []
-        for file in log_files:
-            # 确保文件名是字符串类型，并正确处理空格
-            if not isinstance(file, str):
-                file = str(file)
-            file_path = os.path.join(LOG_DIR, file)
-            file_size = os.path.getsize(file_path)
-            file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
-            
-            file_list.append(html.Div([
-                dbc.Row([
-                    dbc.Col([html.Strong(file)], width=6),
-                    dbc.Col([f"大小: {file_size} 字节"], width=3),
-                    dbc.Col([f"修改时间: {file_mtime}"], width=3)
-                ], className="border-bottom py-2")
-            ]))
-        
-        if not file_list:
-            file_list = [html.P("暂无上传的文件", className="text-muted")]
-        
-        return file_list
+        return _create_file_list_table(log_files)
     
     return dash.no_update
+
+# 重命名文件回调：打开模态框和取消
+@app.callback(
+    [Output("rename-file-modal", "is_open", allow_duplicate=True),
+     Output("rename-target-file", "data"),
+     Output("rename-file-input", "value")],
+    [Input({"type": "rename-file-btn", "index": ALL}, "n_clicks"),
+     Input("rename-file-cancel-btn", "n_clicks")],
+    [State("rename-file-modal", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_rename_modal(rename_clicks, cancel_click, is_open):
+    ctx = callback_context
+    if not ctx.triggered:
+        return is_open, dash.no_update, dash.no_update
+        
+    # Check if the trigger value is valid (not None)
+    # This prevents the modal from opening when components are re-rendered (value is None)
+    trigger_value = ctx.triggered[0].get("value")
+    if trigger_value is None:
+        return is_open, dash.no_update, dash.no_update
+        
+    # Use rsplit to split from the right, ensuring we only split off the property name (n_clicks)
+    # This handles cases where the filename in the ID contains dots
+    trigger_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
+    
+    # 检查是否是重命名按钮点击
+    if "rename-file-btn" in trigger_id:
+        try:
+            button_id_dict = json.loads(trigger_id)
+            filename = button_id_dict['index']
+            return True, filename, filename
+        except Exception as e:
+            return is_open, dash.no_update, dash.no_update
+            
+    # 取消按钮点击，关闭模态框
+    if "rename-file-cancel-btn" in trigger_id:
+        return False, dash.no_update, dash.no_update
+        
+    return is_open, dash.no_update, dash.no_update
+
+# 执行重命名操作
+@app.callback(
+    [Output('uploaded-files-list', 'children', allow_duplicate=True),
+     Output('toast-container', 'children', allow_duplicate=True),
+     Output("rename-file-modal", "is_open", allow_duplicate=True)],
+    [Input("rename-file-confirm-btn", "n_clicks")],
+    [State("rename-target-file", "data"),
+     State("rename-file-input", "value")],
+    prevent_initial_call=True
+)
+def execute_rename(n_clicks, target_filename, new_filename):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update
+        
+    if not target_filename or not new_filename:
+        return dash.no_update, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('文件名不能为空', 'warning');
+            }}
+        """), True
+        
+    # 如果文件名没有变化
+    if target_filename == new_filename:
+        return dash.no_update, dash.no_update, False
+        
+    try:
+        old_path = os.path.join(LOG_DIR, target_filename)
+        new_path = os.path.join(LOG_DIR, new_filename)
+        
+        # 检查原文件是否存在
+        if not os.path.exists(old_path):
+             return dash.no_update, html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('原文件不存在', 'error');
+                }}
+            """), False # 关闭模态框，因为原文件都没了
+            
+        # 检查新文件名是否已存在
+        if os.path.exists(new_path):
+            return dash.no_update, html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('文件名 {new_filename} 已存在', 'error');
+                }}
+            """), True # 保持打开，让用户修改
+            
+        # 重命名文件
+        os.rename(old_path, new_path)
+        
+        # 更新文件列表
+        log_files = get_log_files()
+        return _create_file_list_table(log_files), html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('文件已重命名为 {new_filename}', 'success');
+            }}
+        """), False # 成功，关闭模态框
+        
+    except Exception as e:
+        return dash.no_update, html.Script(f"""
+            if (typeof window.showToast === 'function') {{
+                window.showToast('重命名失败: {str(e)}', 'error');
+            }}
+        """), True
 
 # 更新配置文件选择器选项
 @app.callback(
@@ -4236,7 +4274,7 @@ def handle_config_file_selection(config_btn_clicks, clear_click, current_selecti
     if ctx.triggered and 'config-file-btn' in ctx.triggered[0]['prop_id']:
         # 获取被点击的按钮的index（即配置文件名）
         prop_id = ctx.triggered[0]['prop_id']
-        config_file = prop_id.split('.')[0].split('"index":"')[1].split('"')[0]
+        config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
         
         # 如果配置文件已经在选中列表中，则移除它（取消选择）
         if config_file in current_selection:
@@ -4469,7 +4507,7 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
             return dash.no_update
             
         # 提取被点击的关键字
-        keyword = prop_id.split('.')[0].split('"index":"')[1].split('"')[0]
+        keyword = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
         print(f"要删除的关键字: '{keyword}'")
         
         # 从关键字列表中移除被点击的关键字
@@ -4503,7 +4541,7 @@ def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, acti
         return dash.no_update
     
     # 获取触发回调的组件ID
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    triggered_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
     
     # 只有当临时关键字变化时才显示提示信息
     # 配置文件选择变化时不自动更新显示，保持当前过滤结果
