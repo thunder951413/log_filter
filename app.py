@@ -700,27 +700,35 @@ app.layout = html.Div([
                                             ])
                                         ], width=6)
                                     ], className="mt-2 mb-3"),
-                                    # 显示模式切换开关 + 右侧工具（关键字搜索、行跳转）
+                                    # 显示模式切换 Tabs
                                     dbc.Row([
                                         dbc.Col([
-                                            dbc.RadioItems(
-                                                id="display-mode",
-                                                options=[
-                                                    {"label": "过滤结果", "value": "filtered"},
-                                                    {"label": "源文件", "value": "source"},
-                                                    {"label": "高亮显示", "value": "highlight"},
-                                                    {"label": "注释", "value": "annotation"},
-                                                    {"label": "流程视图", "value": "flows"}
-                                                ],
-                                                value="filtered",
-                                                inline=True
-                                            )
-                                        ], width=5),
+                                            dbc.Tabs([
+                                                dbc.Tab(label="过滤结果", tab_id="filtered", children=[
+                                                    html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                ]),
+                                                dbc.Tab(label="源文件", tab_id="source", children=[
+                                                    html.Div(id="log-source-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                ]),
+                                                dbc.Tab(label="高亮显示", tab_id="highlight", children=[
+                                                    html.Div(id="log-highlight-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                ]),
+                                                dbc.Tab(label="注释", tab_id="annotation", children=[
+                                                    html.Div(id="log-annotation-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                ]),
+                                                dbc.Tab(label="流程视图", tab_id="flows", children=[
+                                                    html.Div(id="log-flows-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                ])
+                                            ], id="display-mode-tabs", active_tab="filtered")
+                                        ], width=12)
+                                    ], className="mb-2"),
+                                    # 右侧工具（关键字搜索、行跳转）
+                                    dbc.Row([
                                         dbc.Col([
                                             html.Div([
                                                 html.Span("( - / - / - )", id="log-window-line-status", className="text-muted")
                                             ], className="text-center")
-                                        ], width=2),
+                                        ], width=3),
                                         dbc.Col([
                                             html.Div([
                                                 dbc.InputGroup([
@@ -733,11 +741,10 @@ app.layout = html.Div([
                                                     dbc.Button("跳转", id="jump-line-btn", color="primary")
                                                 ], size="sm", style={"maxWidth": "220px"})
                                             ], className="d-flex justify-content-end align-items-center gap-2")
-                                        ], width=5)
+                                        ], width=9)
                                     ])
                                 ], width=12)
                             ], className="mb-3"),
-                            html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                         ])
                     ])
                 ], width=12)
@@ -2292,75 +2299,82 @@ def render_keyword_annotations_list(annotations_map):
                 style={"width": "1%", "whiteSpace": "nowrap"}
             )
         ]))
-    table = dbc.Table([
-        html.Thead(html.Tr([html.Th("关键字"), html.Th("注释"), html.Th("操作")])) ,
-        html.Tbody(rows)
-    ], bordered=True, hover=True, size="sm", striped=True, className="mb-0")
+    
+    table_header = html.Thead(html.Tr([html.Th("关键字"), html.Th("注释"), html.Th("操作")]))
+    table_body = html.Tbody(rows)
+    
+    table = dbc.Table(
+        [table_header, table_body], 
+        bordered=True, 
+        hover=True, 
+        size="sm", 
+        striped=True, 
+        className="mb-0"
+    )
     return table
 
-# 生成并执行过滤命令的回调
+# 生成并执行过滤命令的回调 - 仅处理过滤结果
 @app.callback(
     [Output("log-filter-results", "children"),
      Output("filtered-result-store", "data"),
-     Output("source-result-store", "data"),
      Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
      Output("filter-btn-text", "children", allow_duplicate=True),
      Output("execute-filter-btn", "disabled", allow_duplicate=True)],
-    [Input("execute-filter-btn", "n_clicks"),
-     Input("display-mode", "value")],
+    [Input("execute-filter-btn", "n_clicks")],
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
-     State("main-tabs", "active_tab"),  # 添加当前激活的tab状态
-     State("keyword-annotations-store", "data")],
+     State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, display_mode, filter_tab_strings, temp_keywords, selected_log_file, active_tab, annotations_map):
+def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
-    if active_tab != "tab-1":
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    
-    # 获取触发回调的组件ID
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return "", "", "", {"display": "none", "marginLeft": "5px"}, "过滤", False
-    
-    triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
-    
-    # 如果是显示模式切换，但还没有执行过滤操作
-    if triggered_id == "display-mode" and n_clicks == 0:
-        return html.P("请先执行过滤操作", className="text-info text-center"), "", "", {"display": "none", "marginLeft": "5px"}, "过滤", False
+    if active_tab != "tab-1" or not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
     
     # 执行过滤命令，包含临时关键字
     filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
     
-    # 执行源文件命令，传递选中的字符串和临时关键字用于高亮
+    return filtered_result, filtered_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+
+
+# 选择文件后加载其他Tab内容
+@app.callback(
+    [Output("log-source-results", "children"),
+     Output("log-highlight-results", "children"),
+     Output("log-annotation-results", "children"),
+     Output("log-flows-results", "children"),
+     Output("source-result-store", "data"),
+     Output("log-filter-results", "children", allow_duplicate=True)],
+    [Input("log-file-selector", "value")],
+    [State("filter-tab-strings-store", "data"),
+     State("temp-keywords-store", "data"),
+     State("keyword-annotations-store", "data"),
+     State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp_keywords, annotations_map, active_tab):
+    if not selected_log_file:
+        return "", "", "", "", "", ""
+        
+    # 执行源文件逻辑
     source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
-    # 注释显示模式：用所有注释关键字匹配日志并展示注释
+    
+    # 高亮模式
+    highlight_result = ""
+    highlight_strings = load_highlight_config()
+    if highlight_strings:
+        _, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
+    else:
+        highlight_result = html.P("未找到highlight配置文件或配置为空", className="text-warning text-center")
+        
+    # 注释模式
     annotation_component = build_annotation_extract_display_by_matching(selected_log_file, annotations_map)
-    # 流程视图：基于流程配置构建缩进视图
+    
+    # 流程视图
     flows_component = build_flows_display(selected_log_file)
     
-    # 根据显示模式返回结果
-    if display_mode == "source":
-        return source_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
-    elif display_mode == "highlight":
-        # 高亮模式：使用highlight配置执行过滤命令
-        highlight_strings = load_highlight_config()
-        if highlight_strings:
-            highlight_command, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
-            return highlight_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
-        else:
-            # 如果没有highlight配置，显示提示信息
-            return html.P("未找到highlight配置文件或配置为空", className="text-warning text-center"), filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
-    elif display_mode == "annotation":
-        # 注释模式：主区展示匹配得到的注释
-        return annotation_component, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
-    elif display_mode == "flows":
-        # 流程视图：展示括号缩进流程
-        return flows_component, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
-    else:
-        return filtered_result, filtered_result, source_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+    return source_result, highlight_result, annotation_component, flows_component, source_result, html.P("请点击'过滤'按钮查看结果", className="text-info text-center")
 
  
 
@@ -4469,16 +4483,16 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
     return dash.no_update
 
 # 临时关键字变化时自动更新右侧显示结果（已禁用自动过滤，改为手动触发）
+# 临时关键字变化时自动更新右侧显示结果（已禁用自动过滤，改为手动触发）
 @app.callback(
     Output("log-filter-results", "children", allow_duplicate=True),
     [Input("temp-keywords-store", "data"),
-     Input("filter-tab-strings-store", "data"),
-     Input("log-file-selector", "value"),
-     Input("display-mode", "value")],
-    [State("main-tabs", "active_tab")],
+     Input("filter-tab-strings-store", "data")],
+    [State("main-tabs", "active_tab"),
+     State("log-file-selector", "value")],
     prevent_initial_call=True
 )
-def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, selected_log_file, display_mode, active_tab):
+def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, active_tab, selected_log_file):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update
@@ -4509,7 +4523,7 @@ def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, sele
         # 临时关键字变化时显示提示信息
         return html.P("临时关键字已更新，请点击'生成'按钮执行过滤", className="text-success text-center")
     
-    # 对于其他触发源（如配置文件选择、日志文件选择、显示模式切换），保持当前显示不变
+    # 对于其他触发源（如配置文件选择），保持当前显示不变
     return dash.no_update
 
 def get_temp_keywords_store():

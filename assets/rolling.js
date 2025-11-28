@@ -312,7 +312,7 @@
       while (node && limit-- > 0) {
         var style = window.getComputedStyle(node);
         var overflowY = style.overflowY;
-        if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+        if (overflowY === 'auto' || overflowY === 'scroll') {
           return node;
         }
         node = node.parentElement;
