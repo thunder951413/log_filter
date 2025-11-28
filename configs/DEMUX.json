@@ -1,9 +1,27 @@
 {
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyURI",
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply",
+      "STB_CINotifyCCKey"
+    ],
+    "filter": []
+  },
+  "PlayerInterface": {
+    "keep": [
+      "Player.play",
+      "Player.stop"
+    ],
+    "filter": []
+  },
   "demux": {
     "keep": [
       "STB_DMXSetDemuxSource",
       "DMX_SET_HW_SOURCE",
-      "STB_CIRouteTS"
+      "STB_CiKeysApply",
+      "ApplyKey",
+      "STB_EVENT_CI_KEYS_CHANGED"
     ],
     "filter": []
   }

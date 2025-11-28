@@ -13,7 +13,8 @@
       "STB_CiCcSendPinPlayback",
       "STB_CiCcNotifyModuleRemove",
       "STB_CiCcNotifyModuleInsert",
-      "STB_CINotifyURI"
+      "STB_CINotifyURI",
+      "STB_CINotifyCCKey"
     ],
     "filter": []
   },

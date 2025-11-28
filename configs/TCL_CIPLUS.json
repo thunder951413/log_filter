@@ -10,12 +10,15 @@
       "ci_send_ca_pmt",
       "tdesc_ciplus_set_key",
       "ciecp_desc_set_key",
-      "product_info"
+      "product_info",
+      ">>>>>>>>>>>>>>>>>>>>>>>>>>",
+      "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
     ],
     "filter": [
       "pcmcia_cam_is_card_insert status",
       "pcmcia_state1 pcmcia_state_old",
-      "fpp_pcmcia_ready_signal"
+      "fpp_pcmcia_ready_signal",
+      "pcmcia_state_old0"
     ]
   },
   "deadbeaf": {

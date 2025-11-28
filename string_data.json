@@ -18,7 +18,10 @@
       "DMX_SET_HW_SOURCE",
       "DMX_SET_INPUT",
       "STB_DMXChangeDecodePIDs",
-      "ca_set_key"
+      "ca_set_key",
+      "STB_CiKeysApply",
+      "ApplyKey",
+      "STB_EVENT_CI_KEYS_CHANGED"
     ],
     "pvr": [
       "STB_PVRStartPlaying",
@@ -86,7 +89,8 @@
       "STB_CiHandlePinEvent",
       "STB_CiCcSendPinPlayback",
       "STB_CiCcSendPinPlayback",
-      "STB_CINotifyURI"
+      "STB_CINotifyURI",
+      "STB_CINotifyCCKey"
     ],
     "CI_PIN": [
       "STB_CINotifyPinEvent",
@@ -117,7 +121,10 @@
       "ciecp_desc_set_key",
       "tdesc_ciplus_set_key",
       "ci_send_ca_pmt",
-      "product_info"
+      "product_info",
+      ">>>>>>>>>>>>>>>>>>>>>>>>>>",
+      "pcmcia_state_old0",
+      "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
     ]
   }
 }
