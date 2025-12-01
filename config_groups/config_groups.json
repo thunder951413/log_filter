@@ -1,0 +1,17 @@
+{
+  "COMMON": [
+    "CI_CARD",
+    "CI_ITEMS",
+    "CI_PIN",
+    "CI_RAW",
+    "DEMUX",
+    "PVR",
+    "highlight",
+    "播放流程",
+    "BIO_EVENT"
+  ],
+  "TCL": [
+    "A",
+    "TCL_CIPLUS"
+  ]
+}

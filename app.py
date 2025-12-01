@@ -177,6 +177,42 @@ def ensure_config_dir():
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
 
+# 配置文件组目录
+CONFIG_GROUPS_DIR = 'config_groups'
+
+def ensure_config_groups_dir():
+    """确保配置文件组目录存在"""
+    if not os.path.exists(CONFIG_GROUPS_DIR):
+        os.makedirs(CONFIG_GROUPS_DIR)
+
+def get_config_groups_path():
+    """获取配置文件组定义的路径"""
+    ensure_config_groups_dir()
+    return os.path.join(CONFIG_GROUPS_DIR, "config_groups.json")
+
+def load_config_groups():
+    """加载配置文件组定义"""
+    path = get_config_groups_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"加载配置文件组失败: {e}")
+        return {}
+
+def save_config_groups(groups):
+    """保存配置文件组定义"""
+    path = get_config_groups_path()
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(groups, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"保存配置文件组失败: {e}")
+        return False
+
 def ensure_log_dir():
     """确保日志目录存在"""
     if not os.path.exists(LOG_DIR):
@@ -628,6 +664,7 @@ ensure_config_dir()
 app.layout = html.Div([
     # Toast通知容器
     html.Div(id="toast-container", className="toast-container"),
+    dcc.Store(id="group-selected-files-store", data=[]),
     
     dbc.Container([
         # 状态提示 - 隐藏原始状态栏，使用toast通知
@@ -653,7 +690,7 @@ app.layout = html.Div([
         html.Div(id="tab-1-content", children=[
             # 右上角固定按钮区域
             html.Div([
-                dbc.ButtonGroup([
+                html.Div([
                     dbc.Button(
                         "📁 日志文件", 
                         id="log-file-drawer-toggle", 
@@ -661,13 +698,22 @@ app.layout = html.Div([
                         size="sm",
                         className="me-2"
                     ),
+                    html.Div([
+                        dcc.Dropdown(
+                            id="log-filter-config-group-selector",
+                            placeholder="配置文件组",
+                            value="COMMON",
+                            style={"width": "120px", "fontSize": "12px", "textAlign": "left"},
+                            clearable=True
+                        )
+                    ], className="d-inline-block me-2 align-middle"),
                     dbc.Button(
                         "🔍 临时关键字", 
                         id="temp-keyword-drawer-toggle", 
                         color="secondary", 
                         size="sm"
                     )
-                ], className="position-fixed", style={"top": "20px", "right": "20px", "zIndex": 1000}),
+                ], className="position-fixed d-flex align-items-center", style={"top": "20px", "right": "20px", "zIndex": 1000}),
                 # 当前选择的日志文件名显示区域（悬空显示在按钮下方）
                 html.Div([
                     html.Div(
@@ -882,6 +928,7 @@ app.layout = html.Div([
                 ], width=12)
             ], className="mb-4"),
             
+
             # 配置文件管理选项
             dbc.Row([
                 dbc.Col([
@@ -963,6 +1010,67 @@ app.layout = html.Div([
                                 ], className="mt-3")
                             ]),
                             id="config-management-collapse",
+                            is_open=True
+                        )
+                    ])
+                ], width=12)
+            ], className="mb-4"),
+            
+            # 配置文件组管理选项
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader([
+                            html.Button(
+                                [html.I(className="bi bi-chevron-down me-2"), "配置文件组管理"],
+                                id="config-groups-management-toggle",
+                                className="btn btn-link text-decoration-none w-100 text-start"
+                            )
+                        ]),
+                        dbc.Collapse(
+                            dbc.CardBody([
+                                # 配置文件组选择和配置文件多选
+                                dbc.Row([
+                                    # 可用的配置文件（多选）
+                                    dbc.Col([
+                                        html.H4("可用的配置文件", className="card-title"),
+                                        html.Div(id="available-configs-for-group", className="border rounded p-2 d-flex flex-wrap gap-2", style={"maxHeight": "300px", "overflowY": "auto"})
+                                    ], width=12)
+                                ]),
+                                
+                                # 创建/管理配置文件组
+                                html.Hr(),
+                                html.H4("创建/管理配置文件组", className="mt-4 mb-3"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("配置文件组名称:"),
+                                        dbc.Input(
+                                            id="config-group-name-input",
+                                            type="text",
+                                            placeholder="输入配置文件组名称",
+                                            className="mb-2"
+                                        )
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("选择配置文件组:"),
+                                        dcc.Dropdown(
+                                            id="config-group-selector",
+                                            placeholder="选择要加载或删除的配置文件组...",
+                                            clearable=True
+                                        )
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("操作:", className="d-block"),
+                                        dbc.Button("保存组", id="save-config-group-btn", color="primary", className="w-100 mb-2"),
+                                        dbc.Button("加载组", id="load-config-group-btn", color="success", className="w-100 mb-2")
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Label("管理:", className="d-block"),
+                                        dbc.Button("删除组", id="delete-config-group-btn", color="danger", className="w-100")
+                                    ], width=3)
+                                ], className="mt-3")
+                            ]),
+                            id="config-groups-management-collapse",
                             is_open=True
                         )
                     ])
@@ -4211,19 +4319,36 @@ def save_configuration(n_clicks, config_name_input, config_file_selector, select
 @app.callback(
     Output('config-files-container', 'children'),
     [Input('main-tabs', 'active_tab'),
-     Input('selected-config-files', 'data')],
+     Input('selected-config-files', 'data'),
+     Input('log-filter-config-group-selector', 'value')],
     prevent_initial_call='initial_duplicate'
 )
-def update_config_files_display(active_tab, selected_config_files):
+def update_config_files_display(active_tab, selected_config_files, selected_group):
     if active_tab == "tab-1":
-        config_files = get_config_files()
+        all_config_files = get_config_files()
         
-        if not config_files:
-            return html.P("暂无配置文件，请在配置管理页面创建配置文件", className="text-muted text-center")
+        # 根据选择的配置文件组过滤显示
+        files_to_display = all_config_files
+        if selected_group:
+            config_groups = load_config_groups()
+            if selected_group in config_groups:
+                group_files = config_groups[selected_group]
+                # 保持原始排序，但只保留组内文件
+                files_to_display = [f for f in all_config_files if f in group_files]
+                
+                # 如果组内没有有效文件
+                if not files_to_display:
+                    return html.P(f"配置组 {selected_group} 中没有可用的配置文件", className="text-muted text-center")
+        
+        if not files_to_display:
+            # 如果本来就没有配置文件
+            if not all_config_files:
+                return html.P("暂无配置文件，请在配置管理页面创建配置文件", className="text-muted text-center")
+            return html.Div() # 应该不会执行到这里，除非过滤结果为空且非组原因
         
         # 创建配置文件按钮列表
         config_buttons = []
-        for config_file in config_files:
+        for config_file in files_to_display:
             # 检查当前配置文件是否被选中（支持多选）
             is_selected = config_file in selected_config_files
             
@@ -4849,6 +4974,240 @@ def scroll_debug():
     except Exception as e:
         print(f"[前端滚动窗口][调试] 异常: {e}")
         return jsonify({'ok': False})
+
+
+# -----------------------------------------------------------------------------
+# 配置文件组管理相关回调
+# -----------------------------------------------------------------------------
+
+# 控制配置文件组管理区域折叠/展开
+@app.callback(
+    Output("config-groups-management-collapse", "is_open"),
+    [Input("config-groups-management-toggle", "n_clicks")],
+    [State("config-groups-management-collapse", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_config_groups_management(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
+
+# 更新配置文件组管理界面的数据
+@app.callback(
+    [Output("available-configs-for-group", "children"),
+     Output("config-group-selector", "options")],
+    [Input("config-groups-management-collapse", "is_open"),
+     Input("save-config-group-btn", "n_clicks"),
+     Input("delete-config-group-btn", "n_clicks"),
+     Input("group-selected-files-store", "data"),
+     Input("config-file-selector", "options")],
+    prevent_initial_call=True
+)
+def update_config_group_management_ui(is_open, _save_clicks, _delete_clicks, selected_files, config_file_options):
+    # 如果是折叠状态且不是由保存/删除触发的（即只是为了更新UI），则不更新
+    # 但如果是刚打开（is_open=True），则需要更新
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        trigger_id = "unknown"
+    else:
+        trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if trigger_id == "config-groups-management-collapse" and not is_open:
+        return dash.no_update, dash.no_update
+        
+    # 优先从下拉框选项中获取配置文件列表，以保持一致性
+    if config_file_options:
+        config_files = [opt['value'] for opt in config_file_options]
+    else:
+        # 回退到从磁盘读取
+        config_files = get_config_files()
+    
+    # 获取所有配置文件组
+    config_groups = load_config_groups()
+    
+    # 过滤掉 config_groups 自身（如果它被错误地识别为配置文件）
+    if "config_groups" in config_files:
+        config_files.remove("config_groups")
+        
+    # 1. 生成可用的配置文件列表 (Button List)
+    buttons_list = []
+    selected_files = selected_files or []
+    
+    for config_file in config_files:
+        is_selected = config_file in selected_files
+        buttons_list.append(
+            dbc.Button(
+                config_file,
+                id={"type": "group-config-file-btn", "index": config_file},
+                color="primary" if is_selected else "outline-primary",
+                size="sm",
+                className="m-1",
+                style={"whiteSpace": "nowrap", "flexShrink": 0}
+            )
+        )
+        
+    # 2. 更新下拉框选项
+    dropdown_options = [{'label': name, 'value': name} for name in config_groups.keys()]
+    
+    return buttons_list, dropdown_options
+
+# 处理配置文件组管理中的配置文件选择（支持多选）
+@app.callback(
+    Output("group-selected-files-store", "data"),
+    [Input({"type": "group-config-file-btn", "index": dash.ALL}, "n_clicks")],
+    [State("group-selected-files-store", "data")],
+    prevent_initial_call=True
+)
+def handle_group_config_file_selection(n_clicks_list, current_selection):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+        
+    # 获取被点击的按钮的index（即配置文件名）
+    prop_id = ctx.triggered[0]['prop_id']
+    if 'group-config-file-btn' not in prop_id:
+        return dash.no_update
+        
+    config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
+    
+    current_selection = current_selection or []
+    
+    # 如果配置文件已经在选中列表中，则移除它（取消选择）
+    if config_file in current_selection:
+        current_selection.remove(config_file)
+    else:
+        # 否则添加到选中列表中
+        current_selection.append(config_file)
+        
+    return current_selection
+
+# 当选择配置文件组时，自动填充选中的文件和组名（用于编辑/查看）
+@app.callback(
+    [Output("group-selected-files-store", "data", allow_duplicate=True),
+     Output("config-group-name-input", "value", allow_duplicate=True)],
+    [Input("config-group-selector", "value")],
+    prevent_initial_call=True
+)
+def load_group_for_editing(group_name):
+    if not group_name:
+        return [], ""
+    
+    config_groups = load_config_groups()
+    if group_name in config_groups:
+        return config_groups[group_name], group_name
+    
+    return [], ""
+
+# 保存配置文件组
+@app.callback(
+    [Output("config-group-name-input", "value", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("save-config-group-btn", "n_clicks")],
+    [State("config-group-name-input", "value"),
+     State("group-selected-files-store", "data")],
+    prevent_initial_call=True
+)
+def save_new_config_group(n_clicks, group_name, selected_files):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+        
+    if not group_name or not group_name.strip():
+        return dash.no_update, html.Script("if(window.showToast) window.showToast('请输入配置文件组名称', 'warning');")
+        
+    if not selected_files:
+        return dash.no_update, html.Script("if(window.showToast) window.showToast('请至少选择一个配置文件', 'warning');")
+        
+    config_groups = load_config_groups()
+    
+    config_groups[group_name.strip()] = selected_files
+    
+    if save_config_groups(config_groups):
+        return "", html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 保存成功', 'success');")
+    else:
+        return dash.no_update, html.Script(f"if(window.showToast) window.showToast('保存失败', 'error');")
+
+# 删除配置文件组
+@app.callback(
+    [Output("config-group-selector", "value"),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("delete-config-group-btn", "n_clicks")],
+    [State("config-group-selector", "value")],
+    prevent_initial_call=True
+)
+def delete_config_group(n_clicks, group_name):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+        
+    if not group_name:
+        return dash.no_update, html.Script("if(window.showToast) window.showToast('请选择要删除的配置文件组', 'warning');")
+        
+    config_groups = load_config_groups()
+    if group_name in config_groups:
+        del config_groups[group_name]
+        if save_config_groups(config_groups):
+            return None, html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 已删除', 'success');")
+        else:
+            return dash.no_update, html.Script("if(window.showToast) window.showToast('删除失败', 'error');")
+    
+    return dash.no_update, html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
+
+# 加载配置文件组 (批量加载配置文件)
+@app.callback(
+    [Output("selected-config-files", "data", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("load-config-group-btn", "n_clicks")],
+    [State("config-group-selector", "value")],
+    prevent_initial_call=True
+)
+def load_config_group_files(n_clicks, group_name):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+        
+    if not group_name:
+        return dash.no_update, html.Script("if(window.showToast) window.showToast('请选择要加载的配置文件组', 'warning');")
+        
+    config_groups = load_config_groups()
+    if group_name in config_groups:
+        files_to_load = config_groups[group_name]
+        return files_to_load, html.Script(f"if(window.showToast) window.showToast('正在加载组 \"{group_name}\" 中的 {len(files_to_load)} 个配置文件...', 'info');")
+        
+    return dash.no_update, html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
+
+# -----------------------------------------------------------------------------
+# 日志过滤Tab中的配置文件组下拉菜单回调
+# -----------------------------------------------------------------------------
+
+# 更新日志过滤Tab中的配置文件组下拉菜单选项
+@app.callback(
+    Output('log-filter-config-group-selector', 'options'),
+    [Input('main-tabs', 'active_tab'),
+     Input('save-config-group-btn', 'n_clicks'),
+     Input('delete-config-group-btn', 'n_clicks')]
+)
+def update_log_filter_group_selector(active_tab, save_clicks, delete_clicks):
+    # 只要Tab切换或组发生变化，就重新加载选项
+    config_groups = load_config_groups()
+    return [{'label': name, 'value': name} for name in config_groups.keys()]
+
+# 处理日志过滤Tab中的配置文件组选择
+@app.callback(
+    [Output("selected-config-files", "data", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("log-filter-config-group-selector", "value")],
+    prevent_initial_call='initial_duplicate'
+)
+def apply_config_group_selection(group_name):
+    if not group_name:
+        # 如果清空选择，可以选择清空配置文件，或者什么都不做
+        # 这里选择什么都不做，让用户手动清除
+        return dash.no_update, dash.no_update
+        
+    config_groups = load_config_groups()
+    if group_name in config_groups:
+        files_to_load = config_groups[group_name]
+        return files_to_load, html.Script(f"if(window.showToast) window.showToast('已加载组 \"{group_name}\"', 'success');")
+        
+    return dash.no_update, html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
 
 if __name__ == "__main__":
     import argparse
