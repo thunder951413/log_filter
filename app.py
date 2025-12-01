@@ -691,13 +691,15 @@ app.layout = html.Div([
             # 右上角固定按钮区域
             html.Div([
                 html.Div([
-                    dbc.Button(
-                        "📁 日志文件", 
-                        id="log-file-drawer-toggle", 
-                        color="primary", 
-                        size="sm",
-                        className="me-2"
-                    ),
+                    html.Div([
+                        dcc.Dropdown(
+                            id="log-file-selector",
+                            placeholder="选择日志文件...",
+                            options=[],
+                            clearable=False,
+                            style={"width": "250px", "fontSize": "12px", "textAlign": "left"}
+                        )
+                    ], className="d-inline-block me-2 align-middle"),
                     html.Div([
                         dcc.Dropdown(
                             id="log-filter-config-group-selector",
@@ -712,78 +714,32 @@ app.layout = html.Div([
                         id="temp-keyword-drawer-toggle", 
                         color="secondary", 
                         size="sm"
-                    )
-                ], className="position-fixed d-flex align-items-center", style={"top": "20px", "right": "20px", "zIndex": 1000}),
-                # 当前选择的日志文件名显示区域（悬空显示在按钮下方）
-                html.Div([
-                    html.Div(
-                        id="current-log-file-display",
-                        className="border rounded p-2 bg-light text-center",
-                        style={
-                            "position": "fixed",
-                            "top": "70px",
-                            "right": "20px",
-                            "zIndex": 999,
-                            "minWidth": "200px",
-                            "maxWidth": "300px",
-                            "fontSize": "12px",
-                            "boxShadow": "0 2px 10px rgba(0,0,0,0.1)",
-                            "borderRadius": "8px",
-                            "backgroundColor": "rgba(248, 249, 250, 0.95)",
-                            "backdropFilter": "blur(5px)"
-                        }
-                    )
-                ])
-            ]),
-            
-            # 日志文件选择器 Drawer
-            dbc.Offcanvas([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4("日志文件选择", className="card-title"),
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Label("选择日志文件:"),
-                                dcc.Dropdown(
-                                    id="log-file-selector",
-                                    placeholder="从logs目录选择文件...",
-                                    options=[],
-                                    clearable=False
-                                )
-                            ], width=12)
+                    ),
+                    dbc.Popover([
+                        dbc.PopoverHeader("添加临时关键字"),
+                        dbc.PopoverBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Input(id="temp-keyword-text", placeholder="输入关键字...", size="sm"),
+                                ], width=8, className="pe-1"),
+                                dbc.Col([
+                                    dbc.Button("添加", id="temp-keyword-add-btn", color="primary", size="sm", className="w-100")
+                                ], width=4, className="ps-1")
+                            ], className="g-0 align-items-center")
                         ])
-                    ])
-                ])
-            ], id="log-file-drawer", title="日志文件选择", placement="end", is_open=False, style={"width": "50%"}),
+                    ],
+                    id="temp-keyword-popover",
+                    target="temp-keyword-drawer-toggle",
+                    trigger="legacy",
+                    placement="bottom",
+                    style={"maxWidth": "300px"}
+                    )
+                ], className="d-flex align-items-center justify-content-end"),
+                
+                # 临时关键字显示区域
+                html.Div(id="temp-keywords-display", className="mt-2 d-flex flex-wrap justify-content-end gap-1")
+            ], className="position-fixed", style={"top": "20px", "right": "20px", "zIndex": 1000, "maxWidth": "600px"}),
             
-            # 临时关键字 Drawer
-            dbc.Offcanvas([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4("临时关键字", className="card-title"),
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Label("添加临时关键字:"),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Input(
-                                            id="temp-keyword-text",
-                                            type="text",
-                                            placeholder="输入临时关键字..."
-                                        )
-                                    ], width=6),
-                                    dbc.Col([
-                                        dbc.Button("添加", id="temp-keyword-add-btn", color="primary", style={"width": "auto", "minWidth": "60px"})
-                                    ], width=6)
-                                ], className="mb-2"),
-                                # 将已输入的关键字移动到输入框下方
-                                dbc.Label("已输入的关键字:", className="mt-3"),
-                                html.Div(id="temp-keywords-display", className="border rounded p-2", style={"minHeight": "50px", "backgroundColor": "#f8f9fa"})
-                            ], width=12)
-                        ])
-                    ])
-                ])
-            ], id="temp-keyword-drawer", title="临时关键字", placement="end", is_open=False, style={"width": "50%"}),
 
             # 日志过滤结果
             dbc.Row([
@@ -1426,29 +1382,6 @@ def restore_string_type_from_store(active_tab, store_value):
         return store_value
     return dash.no_update
 
-# 控制日志文件选择器drawer的打开/关闭
-@app.callback(
-    Output("log-file-drawer", "is_open"),
-    [Input("log-file-drawer-toggle", "n_clicks")],
-    [State("log-file-drawer", "is_open")],
-    prevent_initial_call=True
-)
-def toggle_log_file_drawer(n_clicks, is_open):
-    if n_clicks:
-        return not is_open
-    return is_open
-
-# 控制临时关键字drawer的打开/关闭
-@app.callback(
-    Output("temp-keyword-drawer", "is_open"),
-    [Input("temp-keyword-drawer-toggle", "n_clicks")],
-    [State("temp-keyword-drawer", "is_open")],
-    prevent_initial_call=True
-)
-def toggle_temp_keyword_drawer(n_clicks, is_open):
-    if n_clicks:
-        return not is_open
-    return is_open
 
 # 页面加载时自动恢复之前的选择
 @app.callback(
@@ -2017,26 +1950,6 @@ def save_log_file_selection(selected_file, selected_strings, active_tab):
         save_user_selections(selected_file, selected_strings)
     
     return selected_file if selected_file else ""
-
-# 更新当前选择的日志文件名显示
-@app.callback(
-    Output("current-log-file-display", "children"),
-    [Input("selected-log-file", "data"),
-     Input("main-tabs", "active_tab")],
-    prevent_initial_call=True
-)
-def update_current_log_file_display(selected_file, active_tab):
-    # 只有在日志过滤tab激活时才显示
-    if active_tab != "tab-1":
-        return html.Div("当前未选择日志文件", className="text-muted")
-    
-    if selected_file and selected_file != "":
-        return html.Div([
-            html.Small("当前选择的日志文件:", className="d-block text-muted mb-1"),
-            html.Strong(selected_file, className="text-primary")
-        ])
-    else:
-        return html.Div("请选择日志文件", className="text-muted")
 
 # 选择字符串回调
 @app.callback(
@@ -3302,8 +3215,19 @@ def highlight_keywords(text, selected_strings, data):
         else:
             string_text = item
         
+        # 如果关键字在分类中，或者是临时关键字（不在任何分类中但被选中）
         if string_text in keyword_to_category:
             keywords_to_highlight.append(string_text)
+        else:
+            # 这是一个临时关键字，给它分配一个默认颜色（例如使用"error"分类的颜色，或者随机颜色）
+            # 这里我们简单地将其添加到需要高亮的列表中，并在后面处理颜色
+            keywords_to_highlight.append(string_text)
+            # 为临时关键字添加默认分类映射，以便后续查找颜色
+            # 使用"Temp"作为临时关键字的分类，如果不存在则使用默认颜色
+            if "Temp" not in category_colors:
+                 # 如果没有Temp分类，使用第一个可用分类的颜色，或者默认颜色
+                 category_colors["Temp"] = "#ffc107" # 默认黄色
+            keyword_to_category[string_text] = "Temp"
     
     if not keywords_to_highlight:
         return text
@@ -3727,8 +3651,18 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                                         stext = item.get("text")
                                     else:
                                         stext = item
+                                    
+                                    # 如果是已知分类的关键字
                                     if stext in keyword_to_category:
                                         keywords_to_highlight.append(stext)
+                                    else:
+                                        # 临时关键字，添加到高亮列表并分配默认颜色
+                                        keywords_to_highlight.append(stext)
+                                        # 确保临时关键字有颜色映射
+                                        if "Temp" not in category_colors:
+                                            category_colors["Temp"] = "#ffc107"  # 默认黄色
+                                        keyword_to_category[stext] = "Temp"
+
                                 # 限制最多20个关键字
                                 if len(keywords_to_highlight) > 20:
                                     keywords_to_highlight = keywords_to_highlight[:20]
@@ -4541,12 +4475,13 @@ def update_temp_keywords_display(keywords):
 # 添加临时关键字
 @app.callback(
     Output('temp-keywords-store', 'data'),
-    [Input('temp-keyword-add-btn', 'n_clicks')],
+    [Input('temp-keyword-add-btn', 'n_clicks'),
+     Input('temp-keyword-text', 'n_submit')],
     [State('temp-keyword-text', 'value'),
      State('temp-keywords-store', 'data')],
     prevent_initial_call=True
 )
-def add_temp_keyword(n_clicks, keyword_text, existing_keywords):
+def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
     print(f"=== 添加临时关键字回调被触发 ===")
     print(f"n_clicks: {n_clicks}")
     print(f"keyword_text: '{keyword_text}'")
@@ -4567,12 +4502,9 @@ def add_temp_keyword(n_clicks, keyword_text, existing_keywords):
     prop_id = ctx.triggered[0]['prop_id']
     print(f"触发ID: {prop_id}")
     
-    if 'temp-keyword-add-btn' not in prop_id:
-        print("不是添加按钮点击事件，返回无更新")
-        return dash.no_update
-        
-    if n_clicks is None:
-        print("按钮未被点击，返回无更新")
+    # 检查是否是添加触发
+    if 'temp-keyword-add-btn' not in prop_id and 'temp-keyword-text' not in prop_id:
+        print("不是添加事件，返回无更新")
         return dash.no_update
         
     if keyword_text and keyword_text.strip():
@@ -4708,8 +4640,8 @@ def create_temp_keyword_buttons(keywords):
     print(f"列表长度: {len(keywords) if keywords else 0}")
     
     if not keywords:
-        print("关键字列表为空，返回提示信息")
-        return html.P("未输入临时关键字", className="text-muted")
+        print("关键字列表为空，返回空内容")
+        return None
     
     keyword_buttons = []
     for keyword in keywords:
@@ -4727,8 +4659,8 @@ def create_temp_keyword_buttons(keywords):
     # 使用d-flex和flex-wrap实现多列布局
     return html.Div(
         keyword_buttons,
-        className="d-flex flex-wrap gap-2",
-        style={"minHeight": "50px"}
+        className="d-flex flex-wrap gap-1 justify-content-end",
+        style={"width": "100%"}
     )
 
 

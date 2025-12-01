@@ -11,7 +11,8 @@
     "BIO_EVENT"
   ],
   "TCL": [
-    "A",
-    "TCL_CIPLUS"
+    "TCL_CIPLUS",
+    "CI_CARD",
+    "CI_ITEMS"
   ]
 }
