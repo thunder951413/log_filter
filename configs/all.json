@@ -37,7 +37,20 @@
   },
   "STBCICC": {
     "keep": [
-      "STBCICC"
+      "STBCICC",
+      "STBCICA"
+    ],
+    "filter": []
+  },
+  "DTV_LOG": {
+    "keep": [
+      "AP_SI"
+    ],
+    "filter": []
+  },
+  "CIPlusRaw": {
+    "keep": [
+      "DTV_LOG : <CI-Plus>"
     ],
     "filter": []
   }

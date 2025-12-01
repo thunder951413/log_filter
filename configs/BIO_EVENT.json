@@ -4,5 +4,11 @@
       "<Glue> SignalHandler"
     ],
     "filter": []
+  },
+  "DTVKIT_EVENT": {
+    "keep": [
+      "DTVKIT_EVENT"
+    ],
+    "filter": []
   }
 }

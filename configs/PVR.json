@@ -38,7 +38,8 @@
       "STB_PVRRecordStart",
       "STB_PVRRecordChangePids",
       "StopPlaying",
-      "STB_PVRPlaybackNotifyTime"
+      "STB_PVRPlaybackNotifyTime",
+      "CONTENT_PROTECTED"
     ],
     "filter": []
   }

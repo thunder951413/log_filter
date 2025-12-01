@@ -34,8 +34,8 @@
       "STB_PVRGetRetentionlimitTimeStamp",
       "STB_PVRPlaybackNotifyTime",
       "StopPlaying",
-      "STB_PVRStartPlaying",
-      "AM_DVR_PLAYER_EVENT_PROGRESS"
+      "AM_DVR_PLAYER_EVENT_PROGRESS",
+      "CONTENT_PROTECTED"
     ],
     "error": [
       "backtrace",
@@ -59,7 +59,8 @@
     ],
     "DTV_LOG": [
       "DTV_LOG",
-      "STBPVRPR_AMLMP"
+      "STBPVRPR_AMLMP",
+      "AP_SI"
     ],
     "dtvkitserver": [
       "IPC",
@@ -80,17 +81,12 @@
       "STB_CiCcSetRecordOperatingMode",
       "UnpackUri",
       "STB_CiCcSendRecordStop",
-      "STB_CiHandlePinEvent",
       "STB_CINotifyRecordStartStatus",
       "STB_CiCcNotifyModuleInsert",
       "STB_CiCcNotifyModuleRemove",
-      "STB_CINotifyPinEvent",
-      "STB_CINotifyPinReply",
-      "STB_CiHandlePinEvent",
-      "STB_CiCcSendPinPlayback",
-      "STB_CiCcSendPinPlayback",
       "STB_CINotifyURI",
-      "STB_CINotifyCCKey"
+      "STB_CINotifyCCKey",
+      "STBCICA"
     ],
     "CI_PIN": [
       "STB_CINotifyPinEvent",
@@ -125,6 +121,9 @@
       ">>>>>>>>>>>>>>>>>>>>>>>>>>",
       "pcmcia_state_old0",
       "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+    ],
+    "DTVKIT_EVENT": [
+      "DTVKIT_EVENT"
     ]
   }
 }

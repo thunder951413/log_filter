@@ -704,7 +704,6 @@ app.layout = html.Div([
                         dcc.Dropdown(
                             id="log-filter-config-group-selector",
                             placeholder="配置文件组",
-                            value="COMMON",
                             style={"width": "120px", "fontSize": "12px", "textAlign": "left"},
                             clearable=True
                         )
@@ -929,7 +928,8 @@ app.layout = html.Div([
                                                 inline=True
                                             )
                                         ]),
-                                        html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"})
+                                        html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"}),
+                                        html.Div(id="duplicate-strings-container", className="mt-3")
                                     ], width=6)
                                 ]),
                                 
@@ -1392,38 +1392,7 @@ def restore_string_type_from_store(active_tab, store_value):
     prevent_initial_call='initial_duplicate'  # 允许初始调用
 )
 def restore_previous_selections(data_store_data, active_tab, log_file_options):
-    # 只有在tab-1（日志过滤tab）激活时才处理回调
-    if active_tab != "tab-1":
-        return dash.no_update
-    
-    ctx = dash.callback_context
-    
-    # 检查是否是页面加载时的初始调用或tab切换
-    is_valid_trigger = False
-    if ctx.triggered:
-        trigger_id = ctx.triggered[0]["prop_id"]
-        if trigger_id == "data-store.data" and data_store_data is not None:
-            is_valid_trigger = True
-        elif trigger_id == "main-tabs.active_tab" and active_tab:
-            is_valid_trigger = True
-    
-    # 只在有效触发时执行恢复
-    if is_valid_trigger:
-        # 从文件加载用户选择状态
-        user_selections = load_user_selections()
-        selected_log_file = user_selections.get("selected_log_file", "")
-        
-        # 恢复日志文件选择
-        if selected_log_file and log_file_options:
-            # 检查之前选择的文件是否仍然存在
-            for option in log_file_options:
-                if option["value"] == selected_log_file:
-                    return selected_log_file
-        
-        # 如果没有找到匹配的日志文件，返回空字符串
-        return ""
-    
-    # 如果不是有效触发，保持当前状态不变
+    # 用户要求去掉启动时自动恢复，直接返回不更新
     return dash.no_update
 
 # 页面加载时恢复字符串选择
@@ -1435,91 +1404,8 @@ def restore_previous_selections(data_store_data, active_tab, log_file_options):
     prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
 )
 def restore_string_selections(selected_log_file, active_tab, data_store_data):
-    ctx = dash.callback_context
-    
-    # 检查是否是页面加载时的初始调用
-    is_initial_load = False
-    if ctx.triggered:
-        trigger_id = ctx.triggered[0]["prop_id"]
-        if trigger_id == "data-store.data" and data_store_data is not None:
-            is_initial_load = True
-    
-    # 页面加载时或任何tab激活时都尝试恢复字符串选择
-    if is_initial_load or active_tab:
-        # 从文件加载用户选择状态
-        user_selections = load_user_selections()
-        
-        # 检查是否有保存的字符串数据
-        selected_strings = user_selections.get("selected_strings", [])
-        
-        # 检查是否有保存的配置文件数据
-        selected_config_files = user_selections.get("selected_config_files", [])
-        
-        # 如果有保存的字符串数据，直接返回
-        if selected_strings:
-            # 检查对应的日志文件是否存在
-            saved_log_file = user_selections.get("selected_log_file", "")
-            if saved_log_file:
-                log_path = get_log_path(saved_log_file)
-                if os.path.exists(log_path):
-                    return selected_strings
-            else:
-                # 如果没有保存的日志文件，但保存了字符串，也返回字符串
-                return selected_strings
-        
-        # 如果有保存的配置文件数据，尝试加载配置文件
-        if selected_config_files:
-            loaded_strings = []
-            for config_file in selected_config_files:
-                config_path = get_config_path(config_file)
-                if os.path.exists(config_path):
-                    try:
-                        with open(config_path, 'r', encoding='utf-8') as f:
-                            saved_selections = json.load(f)
-                        
-                        # 从保存的选择中提取所有字符串
-                        for category, content in saved_selections.items():
-                            if isinstance(content, dict):
-                                # 处理保留字符串
-                                if "keep" in content:
-                                    for string_text in content["keep"]:
-                                        loaded_strings.append({
-                                            "text": string_text,
-                                            "type": "keep"
-                                        })
-                                
-                                # 处理过滤字符串
-                                if "filter" in content:
-                                    for string_text in content["filter"]:
-                                        loaded_strings.append({
-                                            "text": string_text,
-                                            "type": "filter"
-                                        })
-                            else:
-                                # 处理旧格式的配置文件
-                                for string_text in content:
-                                    loaded_strings.append({
-                                        "text": string_text,
-                                        "type": "keep"  # 默认为保留字符串
-                                    })
-                    except Exception as e:
-                        print(f"加载配置文件 {config_file} 时出错: {e}")
-            
-            if loaded_strings:
-                # 保存到用户选择状态
-                save_user_selections(selected_log_file, loaded_strings)
-                return loaded_strings
-        
-        # 如果没有保存的字符串数据或配置文件，尝试从默认配置文件加载
-        if has_default_config():
-            default_strings = load_default_config()
-            if default_strings:
-                # 保存到用户选择状态
-                save_user_selections(selected_log_file, default_strings)
-                return default_strings
-    
-    # 如果都没有，返回空列表
-    return []
+    # 用户要求去掉启动时自动恢复，直接返回不更新
+    return dash.no_update
 
 # 页面加载时恢复配置文件选择
 @app.callback(
@@ -1529,41 +1415,7 @@ def restore_string_selections(selected_log_file, active_tab, data_store_data):
     prevent_initial_call='initial_duplicate'  # 使用特殊值允许初始调用和重复输出
 )
 def restore_config_selections(data_store_data, active_tab):
-    ctx = dash.callback_context
-    
-    # 检查是否是页面加载时的初始调用或tab切换
-    is_valid_trigger = False
-    if ctx.triggered:
-        trigger_id = ctx.triggered[0]["prop_id"]
-        # 如果是data-store的数据更新或tab切换，则认为是有效的触发
-        if trigger_id == "data-store.data" and data_store_data is not None:
-            is_valid_trigger = True
-        elif trigger_id == "main-tabs.active_tab" and active_tab:
-            is_valid_trigger = True
-    
-    # 只在有效触发时执行恢复
-    if is_valid_trigger:
-        # 从文件加载用户选择状态
-        user_selections = load_user_selections()
-        
-        # 检查是否有保存的配置文件数据
-        selected_config_files = user_selections.get("selected_config_files", [])
-        
-        # 如果有保存的配置文件数据，检查配置文件是否仍然存在
-        if selected_config_files:
-            valid_config_files = []
-            for config_file in selected_config_files:
-                config_path = get_config_path(config_file)
-                if os.path.exists(config_path):
-                    valid_config_files.append(config_file)
-            
-            # 返回有效的配置文件列表
-            return valid_config_files
-        
-        # 如果没有保存的配置文件数据，返回空列表
-        return []
-    
-    # 如果不是有效触发，保持当前状态不变
+    # 用户要求去掉启动时自动恢复，直接返回不更新
     return dash.no_update
 
 # 控制配置文件管理区域折叠/展开的回调
@@ -1862,7 +1714,8 @@ def delete_keyword_string(n_clicks, button_ids, selected_category, data):
 # 更新已保存字符串显示
 @app.callback(
     [Output("saved-strings-container", "children"),
-     Output("category-filter", "options")],
+     Output("category-filter", "options"),
+     Output("duplicate-strings-container", "children")],
     [Input("data-store", "data"),
      Input("category-filter", "value"),
      Input("string-type-store", "data"),  # 使用store代替radio
@@ -1873,15 +1726,47 @@ def delete_keyword_string(n_clicks, button_ids, selected_category, data):
 def update_saved_strings(data, selected_category, string_type, selected_strings, active_tab):
     # 只有在配置管理tab激活时才处理回调
     if active_tab != "tab-2":
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     
     if not data or "categories" not in data:
-        return [], [{"label": "所有分类", "value": "all"}]
+        return [], [{"label": "所有分类", "value": "all"}], []
     
     # 更新分类选项
     category_options = [{"label": "所有分类", "value": "all"}] + \
                       [{"label": cat, "value": cat} for cat in data["categories"].keys()]
     
+    # 计算重复关键字
+    string_counts = {}
+    for cat, strings in data["categories"].items():
+        for s in strings:
+            if s in string_counts:
+                string_counts[s].append(cat)
+            else:
+                string_counts[s] = [cat]
+    
+    duplicates = {s: cats for s, cats in string_counts.items() if len(cats) > 1}
+    
+    duplicate_elements = []
+    if duplicates:
+        duplicate_elements.append(html.H6("完全一致的关键字 (重复出现)", className="text-danger mt-3 mb-2"))
+        dup_buttons = []
+        # 排序以保持稳定显示
+        for s in sorted(duplicates.keys()):
+            cats = duplicates[s]
+            dup_buttons.append(
+                dbc.Button(
+                    s,
+                    id={"type": "duplicate-string-btn", "index": f"dup-{s}"},
+                    color="danger",
+                    outline=True,
+                    size="sm",
+                    className="m-1",
+                    title=f"出现在分类: {', '.join(cats)}",
+                    disabled=True  # 暂时禁用点击，只作为展示
+                )
+            )
+        duplicate_elements.append(html.Div(dup_buttons, className="d-flex flex-wrap gap-2"))
+
     # 根据选择的分类过滤字符串
     if selected_category == "all":
         filtered_categories = data["categories"]
@@ -1915,7 +1800,7 @@ def update_saved_strings(data, selected_category, string_type, selected_strings,
     if not string_elements:
         string_elements = [html.P("没有找到字符串", className="text-muted")]
     
-    return string_elements, category_options
+    return string_elements, category_options, duplicate_elements
 
 # 更新日志文件选择器选项
 @app.callback(
@@ -3193,25 +3078,49 @@ def highlight_keywords(text, selected_strings, data):
     if not selected_strings or not data or "categories" not in data:
         return text
     
-    # 获取所有分类
-    categories = list(data["categories"].keys())
-    if not categories:
+    # 获取所有分类（包括来自配置文件的分类）
+    categories = set(data["categories"].keys())
+    
+    # 从selected_strings中提取额外的分类
+    for item in selected_strings:
+        if isinstance(item, dict) and "category" in item:
+            categories.add(item["category"])
+            
+    categories = list(categories)
+    # 排序以保持颜色稳定性
+    categories.sort()
+    
+    if not categories and not selected_strings:
         return text
     
     # 为每个分类分配颜色
     category_colors = get_category_colors(categories)
+    # 添加重复关键字的颜色（偏红色）
+    category_colors["Duplicate"] = "#d63031"
     
     # 构建关键字到分类的映射
     keyword_to_category = {}
     for category, strings in data["categories"].items():
         for string in strings:
             keyword_to_category[string] = category
-    
+            
+    # 从selected_strings中更新映射
+    for item in selected_strings:
+        if isinstance(item, dict):
+            string_text = item["text"]
+            if "category" in item:
+                keyword_to_category[string_text] = item["category"]
+        else:
+            string_text = item
+            
     # 从选中的字符串中提取需要高亮的关键字
     keywords_to_highlight = []
     for item in selected_strings:
         if isinstance(item, dict):
             string_text = item["text"]
+            # 检查是否为重复关键字
+            if item.get("count", 1) > 1:
+                keyword_to_category[string_text] = "Duplicate"
         else:
             string_text = item
         
@@ -3287,27 +3196,57 @@ def highlight_keywords_dash(text, selected_strings, data):
         print(f"高亮处理（大文件简化）: {end_time - start_time:.3f}秒，文本大小: {text_size} 字节")
         return result
     
-    # 获取所有分类
-    categories = list(data["categories"].keys())
-    if not categories:
+    # 获取所有分类（包括来自配置文件的分类）
+    categories = set(data["categories"].keys())
+    
+    # 从selected_strings中提取额外的分类
+    for item in selected_strings:
+        if isinstance(item, dict) and "category" in item:
+            categories.add(item["category"])
+            
+    categories = list(categories)
+    # 排序以保持颜色稳定性
+    categories.sort()
+
+    if not categories and not selected_strings:
         return html.Pre(text, className="small")
     
     # 为每个分类分配颜色
     category_colors = get_category_colors(categories)
+    # 添加重复关键字的颜色（偏红色）
+    category_colors["Duplicate"] = "#d63031"
     
     # 构建关键字到分类的映射
     keyword_to_category = {}
     for category, strings in data["categories"].items():
         for string in strings:
             keyword_to_category[string] = category
-    
+            
+    # 从selected_strings中更新映射
+    for item in selected_strings:
+        if isinstance(item, dict):
+            string_text = item["text"]
+            if "category" in item:
+                keyword_to_category[string_text] = item["category"]
+        else:
+            string_text = item
+            
     # 从选中的字符串中提取需要高亮的关键字
     keywords_to_highlight = []
     for item in selected_strings:
         if isinstance(item, dict):
             string_text = item["text"]
+            # 检查是否为重复关键字
+            if item.get("count", 1) > 1:
+                keyword_to_category[string_text] = "Duplicate"
         else:
             string_text = item
+        
+        # 临时关键字处理（如果在配置中未找到）
+        if string_text not in keyword_to_category:
+             if "Temp" not in category_colors:
+                 category_colors["Temp"] = "#ffc107" # 默认黄色
+             keyword_to_category[string_text] = "Temp"
         
         if string_text in keyword_to_category:
             keywords_to_highlight.append(string_text)
@@ -4310,17 +4249,30 @@ def update_config_files_display(active_tab, selected_config_files, selected_grou
 @app.callback(
     Output('selected-config-files', 'data'),
     [Input({"type": "config-file-btn", "index": dash.ALL}, 'n_clicks'),
-     Input('clear-config-selection-btn', 'n_clicks')],
+     Input('clear-config-selection-btn', 'n_clicks'),
+     Input('log-filter-config-group-selector', 'value')],
     [State('selected-config-files', 'data'),
      State('main-tabs', 'active_tab')],
     prevent_initial_call=True
 )
-def handle_config_file_selection(config_btn_clicks, clear_click, current_selection, active_tab):
+def handle_config_file_selection(config_btn_clicks, clear_click, selected_group, current_selection, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1":
         return dash.no_update
         
     ctx = dash.callback_context
+    
+    # 如果是配置组选择触发
+    if ctx.triggered and ctx.triggered[0]['prop_id'] == 'log-filter-config-group-selector.value':
+        # 当切换配置组时，清空当前的选择
+        # 用户反馈：在选择配置组的时候，所有配置默认是非选中状态
+        
+        # 保存配置文件选择状态（只保存配置文件名称，不加载内容，但保留日志文件选择）
+        current_selections = load_user_selections()
+        save_user_selections(current_selections.get("selected_log_file", ""), [], selected_config_files=[])
+        
+        return []
+
     
     # 如果点击了清除按钮
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'clear-config-selection-btn.n_clicks':
@@ -4382,7 +4334,14 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
         return dash.no_update, dash.no_update, dash.no_update
     
     try:
-        loaded_strings = []
+        # 使用字典跟踪关键字在不同文件中的出现情况
+        # key: keyword_text, value: set of filenames
+        keyword_file_map = {}
+        # 跟踪关键字类型
+        keyword_type_map = {}
+        # 跟踪关键字分类
+        global_keyword_category_map = {}
+        
         loaded_configs = []
         
         for selected_config_file in selected_config_files:
@@ -4399,33 +4358,61 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             with open(config_path, 'r', encoding='utf-8') as f:
                 saved_selections = json.load(f)
             
+            # 从该文件中提取所有关键字
+            file_keywords = set()
+            # 跟踪关键字的分类
+            keyword_category_map_local = {}
+            
             # 从保存的选择中提取所有字符串
             for category, content in saved_selections.items():
                 if isinstance(content, dict):
                     # 处理保留字符串
                     if "keep" in content:
                         for string_text in content["keep"]:
-                            loaded_strings.append({
-                                "text": string_text,
-                                "type": "keep"
-                            })
+                            file_keywords.add((string_text, "keep"))
+                            if string_text not in keyword_category_map_local:
+                                keyword_category_map_local[string_text] = category
                     
                     # 处理过滤字符串
                     if "filter" in content:
                         for string_text in content["filter"]:
-                            loaded_strings.append({
-                                "text": string_text,
-                                "type": "filter"
-                            })
+                            file_keywords.add((string_text, "filter"))
+                            if string_text not in keyword_category_map_local:
+                                keyword_category_map_local[string_text] = category
                 else:
                     # 处理旧格式的配置文件
                     for string_text in content:
-                        loaded_strings.append({
-                            "text": string_text,
-                            "type": "keep"  # 默认为保留字符串
-                        })
+                        file_keywords.add((string_text, "keep"))
+                        if string_text not in keyword_category_map_local:
+                            keyword_category_map_local[string_text] = category
+            
+            # 更新全局映射
+            for string_text, string_type in file_keywords:
+                if string_text not in keyword_file_map:
+                    keyword_file_map[string_text] = set()
+                keyword_file_map[string_text].add(selected_config_file)
+                keyword_type_map[string_text] = string_type
+                
+                # 保存分类信息
+                if string_text in keyword_category_map_local:
+                    if string_text not in global_keyword_category_map:
+                        global_keyword_category_map[string_text] = keyword_category_map_local[string_text]
             
             loaded_configs.append(selected_config_file)
+        
+        # 构建最终的 loaded_strings 列表
+        loaded_strings = []
+        for string_text, file_set in keyword_file_map.items():
+            count = len(file_set)
+            item = {
+                "text": string_text,
+                "type": keyword_type_map[string_text],
+                "count": count,
+                "files": list(file_set)
+            }
+            if string_text in global_keyword_category_map:
+                item["category"] = global_keyword_category_map[string_text]
+            loaded_strings.append(item)
         
         # 使用保存的日志文件
         effective_log_file = selected_log_file
@@ -5123,8 +5110,7 @@ def update_log_filter_group_selector(active_tab, save_clicks, delete_clicks):
 
 # 处理日志过滤Tab中的配置文件组选择
 @app.callback(
-    [Output("selected-config-files", "data", allow_duplicate=True),
-     Output("toast-container", "children", allow_duplicate=True)],
+    Output("toast-container", "children", allow_duplicate=True),
     [Input("log-filter-config-group-selector", "value")],
     prevent_initial_call='initial_duplicate'
 )
@@ -5132,14 +5118,15 @@ def apply_config_group_selection(group_name):
     if not group_name:
         # 如果清空选择，可以选择清空配置文件，或者什么都不做
         # 这里选择什么都不做，让用户手动清除
-        return dash.no_update, dash.no_update
+        return dash.no_update
         
     config_groups = load_config_groups()
     if group_name in config_groups:
-        files_to_load = config_groups[group_name]
-        return files_to_load, html.Script(f"if(window.showToast) window.showToast('已加载组 \"{group_name}\"', 'success');")
+        # files_to_load = config_groups[group_name]
+        # 不再自动选中组内的文件，只显示提示
+        return html.Script(f"if(window.showToast) window.showToast('已加载组 \"{group_name}\"', 'success');")
         
-    return dash.no_update, html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
+    return html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
 
 if __name__ == "__main__":
     import argparse
