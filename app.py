@@ -6,6 +6,8 @@ import plotly.express as px
 import pandas as pd
 import json
 import os
+import sys
+import shutil
 import subprocess
 import re
 import base64
@@ -138,10 +140,12 @@ highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
 highlight_session_info = {}
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
+base_path = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.BOOTSTRAP],
-    suppress_callback_exceptions=True
+    suppress_callback_exceptions=True,
+    assets_folder=os.path.join(base_path, "assets")
 )
 
 # 配置Dash使用标准JSON序列化，避免orjson问题
@@ -159,7 +163,7 @@ ANNOTATIONS_FILE = 'keyword_annotations.json'
 FLOWS_CONFIG_FILE = 'flows.json'
 
 # 获取所有配置文件
-CONFIG_DIR = 'configs'
+CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
 
 # 日志文件目录
 LOG_DIR = 'logs'
@@ -173,17 +177,28 @@ def ensure_temp_dir():
         os.makedirs(TEMP_DIR)
 
 def ensure_config_dir():
-    """确保配置目录存在"""
+    """确保配置目录存在；首次运行从随包默认配置拷贝到可写目录"""
     if not os.path.exists(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
+        default_dir = os.path.join(base_path, 'configs')
+        if os.path.exists(default_dir):
+            for f in os.listdir(default_dir):
+                src = os.path.join(default_dir, f)
+                dst = os.path.join(CONFIG_DIR, f)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy(src, dst)
 
 # 配置文件组目录
-CONFIG_GROUPS_DIR = 'config_groups'
+CONFIG_GROUPS_DIR = os.path.join(os.getcwd(), 'config_groups')
 
 def ensure_config_groups_dir():
-    """确保配置文件组目录存在"""
+    """确保配置文件组目录存在；首次运行从随包默认配置拷贝到可写目录"""
     if not os.path.exists(CONFIG_GROUPS_DIR):
         os.makedirs(CONFIG_GROUPS_DIR)
+        default_path = os.path.join(base_path, 'config_groups', 'config_groups.json')
+        target_path = os.path.join(CONFIG_GROUPS_DIR, 'config_groups.json')
+        if os.path.exists(default_path) and not os.path.exists(target_path):
+            shutil.copy(default_path, target_path)
 
 def get_config_groups_path():
     """获取配置文件组定义的路径"""
@@ -219,8 +234,11 @@ def ensure_log_dir():
         os.makedirs(LOG_DIR)
 
 def get_annotations_path():
-    """获取关键字注释文件的完整路径"""
-    return os.path.join(os.path.dirname(DATA_FILE), ANNOTATIONS_FILE)
+    """获取关键字注释文件的完整路径（优先可写目录，回退到随包默认）"""
+    writable_path = os.path.join(os.path.dirname(DATA_FILE) or os.getcwd(), ANNOTATIONS_FILE)
+    if os.path.exists(writable_path):
+        return writable_path
+    return os.path.join(base_path, ANNOTATIONS_FILE)
 
 def load_annotations():
     """加载关键字注释映射 {keyword: note}"""
@@ -275,9 +293,11 @@ def get_config_path(config_name):
     return os.path.join(CONFIG_DIR, f"{config_name}.json")
 
 def get_flows_config_path():
-    """获取流程配置文件的完整路径"""
-    ensure_config_dir()
-    return os.path.join("", FLOWS_CONFIG_FILE)
+    """获取流程配置文件的完整路径（优先可写目录，回退到随包默认）"""
+    writable_path = os.path.join(os.getcwd(), FLOWS_CONFIG_FILE)
+    if os.path.exists(writable_path):
+        return writable_path
+    return os.path.join(base_path, FLOWS_CONFIG_FILE)
 
 def load_flows_config():
     """加载流程配置，支持两种类型：
@@ -478,8 +498,8 @@ def load_rolling_config():
             "prefetch_threshold": 125      # 约等于原先 windowSize/4
         }
 
-        # 根目录 settings.json
-        root_settings_path = os.path.join(os.path.dirname(__file__), "settings.json")
+        # 根目录 settings.json（打包后位于 base_path）
+        root_settings_path = os.path.join(base_path, "settings.json")
 
         cfg = None
         if os.path.exists(root_settings_path):
@@ -516,8 +536,14 @@ def get_log_path(log_filename):
 
 # 加载已保存的数据
 def load_data():
+    # 优先读取可写目录的用户数据
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    # 回退到随包的默认数据（只读）
+    packaged_path = os.path.join(base_path, DATA_FILE)
+    if os.path.exists(packaged_path):
+        with open(packaged_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     return {"categories": {}}
 
@@ -2403,46 +2429,39 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
     
-    # 构建grep命令
-    grep_parts = []
-    
+    keep_patterns = []
     if keep_strings:
-        # 保留字符串的grep模式
-        keep_patterns = []
         for s in keep_strings:
-            # 转义特殊字符
-            escaped_s = re.escape(s)
-            keep_patterns.append(escaped_s)
-        
-        if len(keep_patterns) == 1:
-            grep_parts.append(f"grep -E '{keep_patterns[0]}' \"{log_path}\"")
-        else:
-            grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' \"{log_path}\"")
-    
+            keep_patterns.append(re.escape(s))
+    filter_pattern = None
     if filter_strings:
-        # 过滤字符串的grep模式
-        filter_patterns = []
-        for s in filter_strings:
-            # 转义特殊字符
-            escaped_s = re.escape(s)
-            filter_patterns.append(escaped_s)
-        
-        if len(filter_patterns) == 1:
-            filter_pattern = filter_patterns[0]
-        else:
-            filter_pattern = f"({'|'.join(filter_patterns)})"
-        
-        if grep_parts:
-            grep_parts.append(f"grep -v -E '{filter_pattern}'")
-        else:
-            grep_parts.append(f"grep -v -E '{filter_pattern}' \"{log_path}\"")
-    
-    # 如果没有选择任何字符串，直接显示文件内容
-    if not grep_parts:
-        full_command = f"cat \"{log_path}\""
+        fp = [re.escape(s) for s in filter_strings]
+        filter_pattern = fp[0] if len(fp) == 1 else f"({'|'.join(fp)})"
+    if os.name == 'nt':
+        ps_cmd = f"Get-Content -Path \"{log_path}\""
+        if keep_patterns:
+            kp = keep_patterns[0] if len(keep_patterns) == 1 else f"({'|'.join(keep_patterns)})"
+            kp = kp.replace("'", "''")
+            ps_cmd += f" | Select-String -Pattern '{kp}'"
+        if filter_pattern:
+            fp = filter_pattern.replace("'", "''")
+            ps_cmd += f" | Select-String -Pattern '{fp}' -NotMatch"
+        if keep_patterns or filter_pattern:
+            ps_cmd += " | ForEach-Object { $_.Line }"
+        full_command = f"powershell -NoProfile -Command \"{ps_cmd}\""
     else:
-        # 组合grep命令
-        full_command = " | ".join(grep_parts)
+        grep_parts = []
+        if keep_patterns:
+            if len(keep_patterns) == 1:
+                grep_parts.append(f"grep -E '{keep_patterns[0]}' \"{log_path}\"")
+            else:
+                grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' \"{log_path}\"")
+        if filter_pattern:
+            if grep_parts:
+                grep_parts.append(f"grep -v -E '{filter_pattern}'")
+            else:
+                grep_parts.append(f"grep -v -E '{filter_pattern}' \"{log_path}\"")
+        full_command = f"cat \"{log_path}\"" if not grep_parts else " | ".join(grep_parts)
     
     # 执行命令，传递选中的字符串和数据用于高亮
     # 过滤结果页面需要基于grep后的临时文件进行滚动、跳转与搜索
@@ -2461,7 +2480,10 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
-    full_command = f"cat \"{log_path}\""
+    if os.name == 'nt':
+        full_command = f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
+    else:
+        full_command = f"cat \"{log_path}\""
     
     # 合并选中的字符串和临时关键字
     all_strings = []
@@ -2538,10 +2560,14 @@ def build_annotation_match_command(selected_log_file, annotations_map):
     log_path = get_log_path(selected_log_file)
     keywords = [str(k) for k in (annotations_map or {}).keys() if str(k)]
     if not keywords:
-        return f"cat \"{log_path}\" | grep -E ''"  # 空匹配，后续会得到空文本
-    # 转义并组合为一个 -E 模式
+        if os.name == 'nt':
+            return f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
+        return f"cat \"{log_path}\""
     escaped = [re.escape(k) for k in keywords]
     pattern = escaped[0] if len(escaped) == 1 else f"({'|'.join(escaped)})"
+    if os.name == 'nt':
+        p = pattern.replace("'", "''")
+        return f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\" | Select-String -Pattern '{p}' | ForEach-Object {{ $_.Line }}\""
     return f"grep -E '{pattern}' \"{log_path}\""
 
 def build_annotation_extract_display_by_matching(selected_log_file, annotations_map):
