@@ -2,9 +2,14 @@
   "STBCICC": {
     "keep": [
       "STB_CINotifyURI",
-      "STB_CINotifyPinEvent",
-      "STB_CINotifyPinReply",
       "STB_CINotifyCCKey"
+    ],
+    "filter": []
+  },
+  "CI_PIN": {
+    "keep": [
+      "STB_CINotifyPinEvent",
+      "STB_CINotifyPinReply"
     ],
     "filter": []
   },
@@ -21,7 +26,9 @@
       "DMX_SET_HW_SOURCE",
       "STB_CiKeysApply",
       "ApplyKey",
-      "STB_EVENT_CI_KEYS_CHANGED"
+      "STB_EVENT_CI_KEYS_CHANGED",
+      "STB_CiKeysClear",
+      "ca_set_key"
     ],
     "filter": []
   }

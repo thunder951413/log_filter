@@ -21,7 +21,8 @@
       "ca_set_key",
       "STB_CiKeysApply",
       "ApplyKey",
-      "STB_EVENT_CI_KEYS_CHANGED"
+      "STB_EVENT_CI_KEYS_CHANGED",
+      "STB_CiKeysClear"
     ],
     "pvr": [
       "STB_PVRStartPlaying",
@@ -60,7 +61,8 @@
     "DTV_LOG": [
       "DTV_LOG",
       "STBPVRPR_AMLMP",
-      "AP_SI"
+      "AP_SI",
+      "DBG"
     ],
     "dtvkitserver": [
       "IPC",
@@ -124,6 +126,9 @@
     ],
     "DTVKIT_EVENT": [
       "DTVKIT_EVENT"
+    ],
+    "STBDPC": [
+      "STBDPC"
     ]
   }
 }

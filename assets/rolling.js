@@ -202,19 +202,22 @@
             // center mode (default): place the anchor line at the center of the viewport
             offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
           }
+          var isTopMode = isOpts && opts && opts.mode === 'top';
           if (scrollTarget === window) {
-            // 当文档内容高度不超过窗口高度时，不进行自动滚动
             var docH = getDocScrollHeight();
             if (docH > window.innerHeight + 1) {
               var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
               window.scrollTo(0, Math.max(0, targetScrollY));
             }
           } else {
-            // 当容器内容高度不超过容器高度时，不进行自动滚动
-            var preTop = preTopInContainer(pre, scrollTarget);
-            var targetScrollTop = preTop + offsetWithinPre;
-            if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
-              scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+            if (isTopMode) {
+              scrollTarget.scrollTop = 0;
+            } else {
+              var preTop = preTopInContainer(pre, scrollTarget);
+              var targetScrollTop = preTop + offsetWithinPre;
+              if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
+                scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+              }
             }
           }
           var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
@@ -404,5 +407,4 @@
     bootstrap();
   }
 })();
-
 

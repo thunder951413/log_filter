@@ -44,13 +44,20 @@
   },
   "DTV_LOG": {
     "keep": [
-      "AP_SI"
+      "AP_SI",
+      "DBG"
     ],
     "filter": []
   },
   "CIPlusRaw": {
     "keep": [
       "DTV_LOG : <CI-Plus>"
+    ],
+    "filter": []
+  },
+  "STBDPC": {
+    "keep": [
+      "STBDPC"
     ],
     "filter": []
   }
