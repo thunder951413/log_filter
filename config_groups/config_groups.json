@@ -8,7 +8,9 @@
     "PVR",
     "highlight",
     "播放流程",
-    "BIO_EVENT"
+    "BIO_EVENT",
+    "A",
+    "all"
   ],
   "TCL": [
     "TCL_CIPLUS",

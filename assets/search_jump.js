@@ -70,6 +70,9 @@
         window.showToast && window.showToast('未找到匹配项', 'info');
         return;
       }
+      if (reg.setHighlightKeyword) {
+        reg.setHighlightKeyword(kw);
+      }
       reg.jumpToLine(res.match_line);
       window.showToast && window.showToast('定位到第 ' + res.match_line + ' 行', 'success', 2500);
     })
@@ -103,6 +106,9 @@
       if (!res.match_line || res.match_line < 1) {
         window.showToast && window.showToast('未找到匹配项', 'info');
         return;
+      }
+      if (reg.setHighlightKeyword) {
+        reg.setHighlightKeyword(kw);
       }
       reg.jumpToLine(res.match_line);
       window.showToast && window.showToast('定位到第 ' + res.match_line + ' 行', 'success', 2500);

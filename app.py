@@ -802,7 +802,8 @@ app.layout = html.Div([
                                             html.Div([
                                                 dbc.InputGroup([
                                                     dbc.Button("查找上一个", id="global-search-prev-btn", color="secondary"),
-                                                    dbc.Input(id="global-search-input", type="text", placeholder="搜索关键字...", debounce=True),
+                                                    dbc.Input(id="global-search-input", type="text", placeholder="搜索关键字...", debounce=True, list="search-suggestions"),
+                                                    html.Datalist(id="search-suggestions", children=[]),
                                                     dbc.Button("查找/下一个", id="global-search-btn", color="info")
                                                 ], size="sm", className="me-2", style={"maxWidth": "420px"}),
                                                 dbc.InputGroup([
@@ -1480,6 +1481,15 @@ def update_keyword_category_suggestions(data):
     
     # 返回所有分类作为建议选项
     return [html.Option(value=cat) for cat in data["categories"].keys()]
+
+# 全局搜索输入框的关键字建议回调
+@app.callback(
+    Output("search-suggestions", "children"),
+    [Input("data-store", "data")]
+)
+def update_search_suggestions(data):
+    keywords = get_all_keywords_from_data(data)
+    return [html.Option(value=k) for k in keywords]
 
 # 关键字管理控件的添加字符串回调
 @app.callback(
@@ -4697,9 +4707,37 @@ def get_log_window():
             if not info:
                 # 直接从请求中取（更可靠）
                 info = highlight_session_info.get(data.get('session_id'))
+            
+            # 准备高亮关键字和颜色
+            keywords_to_highlight = []
+            colors_map = {}
+            
+            # 添加保存的高亮配置
             if info and info.get('keywords'):
+                keywords_to_highlight.extend([k for k in info['keywords'] if isinstance(k, str) and k])
+                if 'colors' in info:
+                    colors_map.update(info['colors'])
+            
+            # 添加临时搜索关键字
+            highlight_keyword = data.get('highlight_keyword')
+            if highlight_keyword and isinstance(highlight_keyword, str) and highlight_keyword.strip():
+                highlight_keyword = highlight_keyword.strip()
+                # 如果关键字不在列表中，添加它
+                # 注意：这里简单处理，如果搜索词和已有词重复，优先使用已有的颜色配置
+                if highlight_keyword not in keywords_to_highlight:
+                    keywords_to_highlight.append(highlight_keyword)
+                
+                # 为搜索关键字设置特定颜色（如果尚未配置颜色）
+                # 使用亮黄色背景，黑色文字，突出显示
+                if highlight_keyword.lower() not in colors_map:
+                    colors_map[highlight_keyword.lower()] = {'bg': '#ffff00', 'fg': '#000000'}
+
+            if keywords_to_highlight:
                 # 构建单个正则（按长度降序，避免子串先匹配）
-                parts = [re.escape(k) for k in info['keywords'] if isinstance(k, str) and k]
+                # 去重并排序
+                unique_keywords = sorted(list(set(keywords_to_highlight)), key=len, reverse=True)
+                parts = [re.escape(k) for k in unique_keywords]
+                
                 if parts:
                     combined = '(' + '|'.join(parts) + ')'
                     regex = re.compile(combined, re.IGNORECASE)
@@ -4718,7 +4756,8 @@ def get_log_window():
                             if m.start() > last:
                                 out_segments.append(html_escape(line[last:m.start()]))
                             matched = m.group(0)
-                            color = info['colors'].get(matched.lower()) if isinstance(matched, str) else None
+                            # 获取颜色配置，优先使用精确匹配，否则尝试小写匹配
+                            color = colors_map.get(matched) or colors_map.get(matched.lower())
                             bg = (color or {}).get('bg', '#ff8800')
                             fg = (color or {}).get('fg', '#ffffff')
                             out_segments.append(f"<span style=\"background-color:{bg};color:{fg};padding:2px 4px;border-radius:3px;font-weight:bold;\">{html_escape(matched)}</span>")

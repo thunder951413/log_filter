@@ -74,7 +74,8 @@
       totalLines: parseInt(div.getAttribute('data-total-lines') || '0', 10) || 0,
       startLine: 1,
       endLine: Math.min(windowSize, parseInt(div.getAttribute('data-total-lines') || '0', 10) || windowSize),
-      centerLine: null
+      centerLine: null,
+      highlightKeyword: null
     };
 
     console.log('[前端滚动窗口][assets] 初始化:', { sessionId: sessionId, windowSize: windowSize, state: state });
@@ -142,6 +143,9 @@
       if (state.isLoading) return;
       state.isLoading = true;
       var payload = { session_id: sessionId, start_line: startLine, end_line: endLine };
+      if (state.highlightKeyword) {
+        payload.highlight_keyword = state.highlightKeyword;
+      }
       console.log('[前端滚动窗口][assets] 请求窗口:', payload);
       fetch('/api/get-log-window', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -350,6 +354,8 @@
     try {
       window.__rollingRegistry = window.__rollingRegistry || {};
       window.__rollingRegistry[sessionId] = {
+        // Set temporary highlight keyword for search
+        setHighlightKeyword: function(kw) { state.highlightKeyword = kw; },
         // Jump to make targetLine the visual center (within available bounds)
         jumpToLine: function(targetLine) {
           var tl = parseInt(targetLine, 10);
