@@ -1,0 +1,25 @@
+{
+  "PlayerInterface": {
+    "keep": [
+      "Player.play",
+      "Player.stop"
+    ],
+    "filter": []
+  },
+  "demux": {
+    "keep": [
+      "ca_set_key",
+      "ApplyKey",
+      "STB_EVENT_CI_KEYS_CHANGED",
+      "STB_CiKeysApply",
+      "STB_CiKeysClear"
+    ],
+    "filter": []
+  },
+  "STBCICC": {
+    "keep": [
+      "STB_CINotifyCCKey"
+    ],
+    "filter": []
+  }
+}

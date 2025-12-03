@@ -149,6 +149,33 @@
         handleSearchPrev();
       } else if (t.id === 'jump-line-btn') {
         handleJumpLine();
+      } else if (t.id === 'quick-top-btn') {
+        try {
+          var div = getActiveLogWindow();
+          if (!div) { window.scrollTo && window.scrollTo(0,0); return; }
+          var sessionId = getSessionId(div);
+          var reg = (window.__rollingRegistry || {})[sessionId];
+          if (!sessionId || !reg) { window.scrollTo && window.scrollTo(0,0); return; }
+          reg.jumpToLine(1);
+        } catch(e){ window.showToast && window.showToast('跳转顶部失败: ' + e, 'error'); }
+      } else if (t.id === 'quick-bottom-btn') {
+        try {
+          var div2 = getActiveLogWindow();
+          if (!div2) { var h=(document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight||0; window.scrollTo && window.scrollTo(0,h); return; }
+          var sessionId2 = getSessionId(div2);
+          var reg2 = (window.__rollingRegistry || {})[sessionId2];
+          if (!sessionId2 || !reg2) { var h2=(document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight||0; window.scrollTo && window.scrollTo(0,h2); return; }
+          var st = reg2.getState ? reg2.getState() : null;
+          var total = (st && parseInt(st.totalLines || 0, 10)) || 0;
+          var cfg = reg2.getConfig ? reg2.getConfig() : { linesAfter: 0 };
+          var linesAfter = parseInt((cfg && cfg.linesAfter) || 0, 10) || 0;
+          if (!total || total < 1) {
+            // fallback to current window end
+            total = (st && parseInt(st.endLine || 1, 10)) || 1;
+          }
+          var bottomTarget = Math.max(1, total - 30);
+          reg2.jumpToLine(bottomTarget);
+        } catch(e){ window.showToast && window.showToast('跳转底部失败: ' + e, 'error'); }
       }
     });
     var si = document.getElementById('global-search-input');
@@ -172,5 +199,3 @@
     bind();
   }
 })();
-
-

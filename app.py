@@ -821,8 +821,10 @@ app.layout = html.Div([
                                     dbc.Row([
                                         dbc.Col([
                                             html.Div([
-                                                html.Span("( - / - / - )", id="log-window-line-status", className="text-muted")
-                                            ], className="text-center")
+                                                dbc.Button("快速去顶部", id="quick-top-btn", color="secondary", outline=True, size="sm", className="me-2"),
+                                                html.Span("( - / - / - )", id="log-window-line-status", className="text-muted"),
+                                                dbc.Button("快速去底部", id="quick-bottom-btn", color="secondary", outline=True, size="sm", className="ms-2")
+                                            ], className="d-flex justify-content-between align-items-center")
                                         ], width=3),
                                         dbc.Col([
                                             html.Div([
