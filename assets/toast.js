@@ -1,5 +1,5 @@
 // Toast Notification System
-class ToastManager {
+window.ToastManager = class ToastManager {
     constructor() {
         this.container = null;
         this.toasts = new Map();
@@ -9,15 +9,18 @@ class ToastManager {
     init() {
         this.container = document.getElementById('toast-container');
         if (!this.container) {
-            console.error('Toast container not found');
-            return;
+            document.addEventListener('DOMContentLoaded', () => {
+                this.container = document.getElementById('toast-container');
+            });
         }
     }
 
     show(message, type = 'info', duration = 4000) {
         if (!this.container) {
-            console.warn('Toast container not initialized');
-            return;
+            this.container = document.getElementById('toast-container');
+            if (!this.container) {
+                return;
+            }
         }
 
         const toastId = 'toast-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
@@ -91,7 +94,7 @@ class ToastManager {
 }
 
 // Initialize global toast manager
-window.toastManager = new ToastManager();
+window.toastManager = new window.ToastManager();
 
 // Dash integration function
 window.showToast = function(message, type = 'info', duration = 4000) {
@@ -101,101 +104,86 @@ window.showToast = function(message, type = 'info', duration = 4000) {
     console.warn('Toast manager not available');
 };
 
-// CSS for toast content and progress bar
-const toastStyles = `
-.toast-content {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
+if (!window.__toastStylesInjected) {
+    var toastStyles = `
+    .toast-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+    }
+    
+    .toast-message {
+        flex: 1;
+        line-height: 1.4;
+    }
+    
+    .toast-close {
+        background: none;
+        border: none;
+        color: inherit;
+        font-size: 18px;
+        cursor: pointer;
+        padding: 0;
+        width: 20px;
+        height: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.7;
+        transition: opacity 0.2s;
+    }
+    
+    .toast-close:hover {
+        opacity: 1;
+    }
+    
+    .toast-progress {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        height: 3px;
+        background: rgba(255, 255, 255, 0.3);
+        border-radius: 0 0 12px 12px;
+        animation: toast-progress 4s linear;
+    }
+    
+    @keyframes toast-progress {
+        from { width: 100%; }
+        to { width: 0%; }
+    }
+    
+    .toast.hide {
+        opacity: 0;
+        transform: translateX(400px);
+    }
+    
+    .toast::before {
+        content: '';
+        position: absolute;
+        left: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: bold;
+    }
+    
+    .toast-success::before { content: '✓'; }
+    .toast-error::before { content: '✕'; }
+    .toast-warning::before { content: '!'; }
+    .toast-info::before { content: 'i'; }
+    
+    .toast { padding-left: 52px; }
+    `;
+    var styleSheet = document.createElement('style');
+    styleSheet.textContent = toastStyles;
+    document.head.appendChild(styleSheet);
+    window.__toastStylesInjected = true;
 }
-
-.toast-message {
-    flex: 1;
-    line-height: 1.4;
-}
-
-.toast-close {
-    background: none;
-    border: none;
-    color: inherit;
-    font-size: 18px;
-    cursor: pointer;
-    padding: 0;
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0.7;
-    transition: opacity 0.2s;
-}
-
-.toast-close:hover {
-    opacity: 1;
-}
-
-.toast-progress {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    height: 3px;
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 0 0 12px 12px;
-    animation: toast-progress 4s linear;
-}
-
-@keyframes toast-progress {
-    from { width: 100%; }
-    to { width: 0%; }
-}
-
-.toast.hide {
-    opacity: 0;
-    transform: translateX(400px);
-}
-
-/* Icon styles for different toast types */
-.toast::before {
-    content: '';
-    position: absolute;
-    left: 16px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 12px;
-    font-weight: bold;
-}
-
-.toast-success::before {
-    content: '✓';
-}
-
-.toast-error::before {
-    content: '✕';
-}
-
-.toast-warning::before {
-    content: '!';
-}
-
-.toast-info::before {
-    content: 'i';
-}
-
-/* Add padding for icon */
-.toast {
-    padding-left: 52px;
-}
-`;
-
-// Inject additional styles
-const styleSheet = document.createElement('style');
-styleSheet.textContent = toastStyles;
-document.head.appendChild(styleSheet);

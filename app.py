@@ -821,9 +821,9 @@ app.layout = html.Div([
                                     dbc.Row([
                                         dbc.Col([
                                             html.Div([
-                                                dbc.Button("快速去顶部", id="quick-top-btn", color="secondary", outline=True, size="sm", className="me-2"),
+                                                dbc.Button("top", id="quick-top-btn", color="secondary", outline=True, size="sm", className="me-2"),
                                                 html.Span("( - / - / - )", id="log-window-line-status", className="text-muted"),
-                                                dbc.Button("快速去底部", id="quick-bottom-btn", color="secondary", outline=True, size="sm", className="ms-2")
+                                                dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm", className="ms-2")
                                             ], className="d-flex justify-content-between align-items-center")
                                         ], width=3),
                                         dbc.Col([
@@ -4499,7 +4499,8 @@ def update_temp_keywords_display(keywords):
 
 # 添加临时关键字
 @app.callback(
-    Output('temp-keywords-store', 'data'),
+    [Output('temp-keywords-store', 'data'),
+     Output('toast-container', 'children', allow_duplicate=True)],
     [Input('temp-keyword-add-btn', 'n_clicks'),
      Input('temp-keyword-text', 'n_submit')],
     [State('temp-keyword-text', 'value'),
@@ -4521,7 +4522,7 @@ def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
     # 只有在按钮被点击时才处理
     if not ctx.triggered:
         print("没有触发事件，返回无更新")
-        return dash.no_update
+        return dash.no_update, dash.no_update
     
     # 检查是否是按钮点击事件
     prop_id = ctx.triggered[0]['prop_id']
@@ -4530,7 +4531,7 @@ def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
     # 检查是否是添加触发
     if 'temp-keyword-add-btn' not in prop_id and 'temp-keyword-text' not in prop_id:
         print("不是添加事件，返回无更新")
-        return dash.no_update
+        return dash.no_update, dash.no_update
         
     if keyword_text and keyword_text.strip():
         # 直接使用输入的关键字（去除前后空格）
@@ -4542,15 +4543,17 @@ def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
         if new_keyword not in all_keywords:
             all_keywords.append(new_keyword)
             print(f"关键字已添加到列表: {all_keywords}")
+            return all_keywords, html.Script(f"""
+                if (typeof window.showToast === 'function') {{
+                    window.showToast('已添加临时关键字: {new_keyword}', 'success');
+                }}
+            """)
         else:
             print(f"关键字已存在，不重复添加")
-        
-        # 只返回存储数据，显示由存储监听回调更新
-        return all_keywords
+            return all_keywords, dash.no_update
     else:
         print("输入内容为空，返回现有内容")
-        # 如果没有输入内容，保持现有存储不变
-        return existing_keywords or []
+        return (existing_keywords or []), dash.no_update
 
 # 处理临时关键字按钮点击（删除关键字）
 @app.callback(
@@ -4628,20 +4631,7 @@ def auto_update_results_on_temp_keywords(temp_keywords, filter_tab_strings, acti
     # 只有当临时关键字变化时才显示提示信息
     # 配置文件选择变化时不自动更新显示，保持当前过滤结果
     if triggered_id == "temp-keywords-store":
-        # 检查是否有临时关键字或选中的字符串
-        has_temp_keywords = temp_keywords and len(temp_keywords) > 0
-        has_selected_strings = filter_tab_strings and len(filter_tab_strings) > 0
-        
-        # 如果没有临时关键字且没有选中的字符串，显示提示信息
-        if not has_temp_keywords and not has_selected_strings:
-            return html.P("请选择配置文件或输入临时关键字，然后点击'生成'按钮执行过滤", className="text-info text-center")
-        
-        # 如果没有选择日志文件，显示提示
-        if not selected_log_file:
-            return html.P("请选择日志文件", className="text-danger text-center")
-        
-        # 临时关键字变化时显示提示信息
-        return html.P("临时关键字已更新，请点击'生成'按钮执行过滤", className="text-success text-center")
+        return dash.no_update
     
     # 对于其他触发源（如配置文件选择），保持当前显示不变
     return dash.no_update

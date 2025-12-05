@@ -1,0 +1,46 @@
+{
+  "name": "log_filter",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "electron:start": "electron .",
+    "electron:dev": "electron .",
+    "dist": "electron-builder",
+    "pack:mac": "node scripts/pack.js mac",
+    "pack:win": "node scripts/pack.js win",
+    "pack:linux": "node scripts/pack.js linux",
+    "pack:all": "node scripts/pack.js all",
+    "pack:dry": "node scripts/pack.js dry-run all"
+  },
+  "build": {
+    "appId": "com.logfilter.app",
+    "productName": "LogFilter",
+    "files": [
+      "electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "python",
+        "filter": [
+          "log_filter_server*"
+        ]
+      }
+    ],
+    "mac": {
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    }
+  },
+  "devDependencies": {
+    "electron": "^39.2.5",
+    "electron-builder": "^24.9.1"
+  }
+}

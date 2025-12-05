@@ -3,3 +3,9 @@ __pycache__/*
 user_selections.json
 configs/default.json
 .DS_Store
+build/
+dist/
+node_modules/
+temp/
+app.spec
+log_filter_server.spec
