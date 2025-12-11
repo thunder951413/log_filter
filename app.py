@@ -138,6 +138,12 @@ highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
 
 # 会话高亮信息（供滚动窗口分片高亮使用）
 highlight_session_info = {}
+_temp_keywords_cache = {"mtime": None, "data": None}
+_data_cache = {"mtime": None, "data": None}
+_config_groups_cache = {"mtime": None, "data": None}
+_config_files_cache = {"mtime": None, "data": None}
+_log_files_cache = {"mtime": None, "data": None}
+_highlight_combo_cache = {"order": [], "map": {}, "max": 30}
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 base_path = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
@@ -208,13 +214,19 @@ def get_config_groups_path():
     return os.path.join(CONFIG_GROUPS_DIR, "config_groups.json")
 
 def load_config_groups():
-    """加载配置文件组定义"""
+    """加载配置文件组定义（带mtime缓存）"""
     path = get_config_groups_path()
     if not os.path.exists(path):
         return {}
     try:
+        mtime = os.path.getmtime(path)
+        if _config_groups_cache["mtime"] == mtime and _config_groups_cache["data"] is not None:
+            return _config_groups_cache["data"]
         with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            _config_groups_cache["mtime"] = mtime
+            _config_groups_cache["data"] = data
+            return data
     except Exception as e:
         print(f"加载配置文件组失败: {e}")
         return {}
@@ -225,6 +237,8 @@ def save_config_groups(groups):
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(groups, f, ensure_ascii=False, indent=2)
+        _config_groups_cache["mtime"] = os.path.getmtime(path)
+        _config_groups_cache["data"] = groups
         return True
     except Exception as e:
         print(f"保存配置文件组失败: {e}")
@@ -266,28 +280,47 @@ def save_annotations(annotations_map):
         print(f"保存关键字注释失败: {e}")
 
 def get_config_files():
-    """获取configs目录下的所有配置文件（不包含.json后缀）"""
+    """获取configs目录下的所有配置文件（不包含.json后缀，带mtime缓存）"""
     ensure_config_dir()
-    config_files = []
-    if os.path.exists(CONFIG_DIR):
-        for file in os.listdir(CONFIG_DIR):
-            if file.endswith('.json'):
-                config_files.append(file[:-5])  # 去掉.json后缀
-    return sorted(config_files)
+    try:
+        if os.path.exists(CONFIG_DIR):
+            mtime = os.path.getmtime(CONFIG_DIR)
+            if _config_files_cache["mtime"] == mtime and _config_files_cache["data"] is not None:
+                return _config_files_cache["data"]
+            config_files = []
+            for file in os.listdir(CONFIG_DIR):
+                if file.endswith('.json'):
+                    config_files.append(file[:-5])  # 去掉.json后缀
+            config_files = sorted(config_files)
+            _config_files_cache["mtime"] = mtime
+            _config_files_cache["data"] = config_files
+            return config_files
+    except Exception as e:
+        print(f"获取配置文件列表失败: {e}")
+    return []
 # 从环境变量获取 URL 前缀
 url_base = os.environ.get('DASH_URL_BASE_PATHNAME', '/')
 
 
 def get_log_files():
     url_base_pathname=url_base,
-    """获取logs目录中的所有文本文件列表"""
+    """获取logs目录中的所有文本文件列表（带mtime缓存）"""
     ensure_log_dir()
-    log_files = []
-    if os.path.exists(LOG_DIR):
-        for file in os.listdir(LOG_DIR):
-            if file.endswith(('.txt', '.log', '.text')):
-                log_files.append(file)
-    return log_files
+    try:
+        if os.path.exists(LOG_DIR):
+            mtime = os.path.getmtime(LOG_DIR)
+            if _log_files_cache["mtime"] == mtime and _log_files_cache["data"] is not None:
+                return _log_files_cache["data"]
+            log_files = [
+                file for file in os.listdir(LOG_DIR)
+                if file.endswith(('.txt', '.log', '.text'))
+            ]
+            _log_files_cache["mtime"] = mtime
+            _log_files_cache["data"] = log_files
+            return log_files
+    except Exception as e:
+        print(f"获取日志列表失败: {e}")
+    return []
 
 def get_config_path(config_name):
     """获取配置文件的完整路径"""
@@ -538,10 +571,18 @@ def get_log_path(log_filename):
 
 # 加载已保存的数据
 def load_data():
-    # 优先读取可写目录的用户数据
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    """加载分类数据，带简单mtime缓存减少重复IO"""
+    try:
+        if os.path.exists(DATA_FILE):
+            mtime = os.path.getmtime(DATA_FILE)
+            if _data_cache["mtime"] == mtime and _data_cache["data"] is not None:
+                return _data_cache["data"]
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                _data_cache["data"] = json.load(f)
+                _data_cache["mtime"] = mtime
+                return _data_cache["data"]
+    except Exception as e:
+        print(f"加载数据失败: {e}")
     # 回退到随包的默认数据（只读）
     packaged_path = os.path.join(base_path, DATA_FILE)
     if os.path.exists(packaged_path):
@@ -553,6 +594,11 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        _data_cache["data"] = data
+        _data_cache["mtime"] = os.path.getmtime(DATA_FILE)
+    except Exception:
+        pass
 
 def get_all_keywords_from_data(data):
     """从数据对象中提取所有关键字列表"""
@@ -641,9 +687,15 @@ def load_temp_keywords_from_file():
     """从配置文件加载临时关键字，默认空列表"""
     try:
         if os.path.exists(TEMP_KEYWORDS_FILE):
+            mtime = os.path.getmtime(TEMP_KEYWORDS_FILE)
+            if _temp_keywords_cache["mtime"] == mtime and _temp_keywords_cache["data"] is not None:
+                return _temp_keywords_cache["data"]
             with open(TEMP_KEYWORDS_FILE, 'r', encoding='utf-8') as f:
                 raw = json.load(f)
-            return normalize_temp_keywords(raw)
+            normalized = normalize_temp_keywords(raw)
+            _temp_keywords_cache["data"] = normalized
+            _temp_keywords_cache["mtime"] = mtime
+            return normalized
     except Exception as e:
         print(f"加载临时关键字配置失败: {e}")
     return []
@@ -654,6 +706,8 @@ def save_temp_keywords_to_file(keywords):
         normalized = normalize_temp_keywords(keywords)
         with open(TEMP_KEYWORDS_FILE, 'w', encoding='utf-8') as f:
             json.dump(normalized, f, ensure_ascii=False, indent=2)
+        _temp_keywords_cache["data"] = normalized
+        _temp_keywords_cache["mtime"] = os.path.getmtime(TEMP_KEYWORDS_FILE)
     except Exception as e:
         print(f"保存临时关键字配置失败: {e}")
 
@@ -2600,12 +2654,16 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
     rolling_cfg = load_rolling_config()
     window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
     initial_content, _ = get_file_lines_range(temp_file_path, 1, min(window_size, line_count), encoding=encoding)
+    if selected_strings and data:
+        initial_display = highlight_keywords_dash(initial_content, selected_strings, data)
+    else:
+        initial_display = html.Pre(initial_content, className="small")
     
     result_display = html.Div([
         html.Div(),
         html.Div(
             id=f"log-window-{session_id}",
-            children=[html.Pre(initial_content, className="small")],
+            children=[initial_display],
             style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
             **{
                 "data-session-id": session_id,
@@ -2655,8 +2713,6 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
                             category_colors["Temp"] = "#ffc107"
                         keyword_to_category[stext] = "Temp"
 
-                if len(keywords_to_highlight) > 20:
-                    keywords_to_highlight = keywords_to_highlight[:20]
                 for kw in keywords_to_highlight:
                     cat = keyword_to_category.get(kw)
                     if cat in category_colors:
@@ -3392,14 +3448,12 @@ def highlight_keywords(text, selected_strings, data):
     
     # 为每个分类分配颜色
     category_colors = get_category_colors(categories)
-    # 添加重复关键字的颜色（偏红色）
-    category_colors["Duplicate"] = "#d63031"
-    
     # 构建关键字到分类的映射
     keyword_to_category = {}
     for category, strings in data["categories"].items():
         for string in strings:
-            keyword_to_category[string] = category
+            if string not in keyword_to_category:
+                keyword_to_category[string] = category
             
     # 从selected_strings中更新映射
     for item in selected_strings:
@@ -3415,9 +3469,8 @@ def highlight_keywords(text, selected_strings, data):
     for item in selected_strings:
         if isinstance(item, dict):
             string_text = item["text"]
-            # 检查是否为重复关键字
-            if item.get("count", 1) > 1:
-                keyword_to_category[string_text] = "Duplicate"
+            if "category" in item and string_text not in keyword_to_category:
+                keyword_to_category[string_text] = item["category"]
         else:
             string_text = item
         
@@ -3473,25 +3526,34 @@ def highlight_keywords_dash(text, selected_strings, data):
     cache_key = highlight_cache.get_cache_key(text, selected_strings, data)
     cached_result = highlight_cache.get(cache_key)
     if cached_result:
-        end_time = time.time()
-        stats = highlight_cache.get_stats()
-        print(f"高亮处理（缓存命中）: {end_time - start_time:.3f}秒")
-        print(f"缓存统计: 命中率 {stats['hit_rate']}% (命中: {stats['hits']}, 未命中: {stats['misses']}, 总请求: {stats['total_requests']})")
         return cached_result
     
-    # 性能监控：记录文本大小
-    text_size = len(text)
-    
-    # 性能优化：如果文本过大，使用简化模式
-    if text_size > 100000:  # 超过100KB的文本
-        result = html.Div([
-            html.P(f"注意：文本过大（{text_size} 字节），已禁用高亮显示以提升性能", className="text-warning mb-2"),
-            html.Pre(text, className="small")
-        ])
-        highlight_cache.put(cache_key, result)
-        end_time = time.time()
-        print(f"高亮处理（大文件简化）: {end_time - start_time:.3f}秒，文本大小: {text_size} 字节")
-        return result
+    # 额外的组合缓存（文件内容 + 关键字列表），减少重复渲染
+    def _flatten_strings(strings):
+        flat = []
+        for item in strings or []:
+            if isinstance(item, dict):
+                parts = [item.get("type", "keep"), item.get("text", "")]
+                if "category" in item:
+                    parts.append(item["category"])
+                flat.append("|".join(parts))
+            else:
+                flat.append(str(item))
+        return tuple(sorted(flat))
+
+    combo_key = (
+        hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest(),
+        _flatten_strings(selected_strings),
+    )
+    combo_cached = _highlight_combo_cache["map"].get(combo_key)
+    if combo_cached is not None:
+        # LRU bump
+        try:
+            _highlight_combo_cache["order"].remove(combo_key)
+        except ValueError:
+            pass
+        _highlight_combo_cache["order"].append(combo_key)
+        return combo_cached
     
     # 获取所有分类（包括来自配置文件的分类）
     categories = set(data["categories"].keys())
@@ -3552,10 +3614,6 @@ def highlight_keywords_dash(text, selected_strings, data):
         result = html.Pre(text, className="small")
         highlight_cache.put(cache_key, result)
         return result
-    
-    # 性能优化：限制高亮关键字数量
-    if len(keywords_to_highlight) > 20:
-        keywords_to_highlight = keywords_to_highlight[:20]  # 最多处理20个关键字
     
     # 按长度降序排序，确保长关键字优先匹配
     keywords_to_highlight.sort(key=len, reverse=True)
@@ -3649,14 +3707,11 @@ def highlight_keywords_dash(text, selected_strings, data):
         # 返回包含所有行的Div
         result = html.Div(highlighted_lines)
         highlight_cache.put(cache_key, result)
-        
-        # 性能监控：记录处理时间
-        end_time = time.time()
-        processing_time = end_time - start_time
-        stats = highlight_cache.get_stats()
-        print(f"高亮处理完成: {processing_time:.3f}秒，文本大小: {text_size} 字节，关键字数量: {len(keywords_to_highlight)}")
-        print(f"缓存统计: 命中率 {stats['hit_rate']}% (命中: {stats['hits']}, 未命中: {stats['misses']}, 总请求: {stats['total_requests']})")
-        
+        _highlight_combo_cache["map"][combo_key] = result
+        _highlight_combo_cache["order"].append(combo_key)
+        if len(_highlight_combo_cache["order"]) > _highlight_combo_cache["max"]:
+            old_key = _highlight_combo_cache["order"].pop(0)
+            _highlight_combo_cache["map"].pop(old_key, None)
         return result
     
     except Exception as e:
@@ -3668,7 +3723,7 @@ def highlight_keywords_dash(text, selected_strings, data):
         # 性能监控：记录错误处理时间
         end_time = time.time()
         processing_time = end_time - start_time
-        print(f"高亮处理失败: {processing_time:.3f}秒，文本大小: {text_size} 字节")
+        print(f"高亮处理失败: {processing_time:.3f}秒")
         
         return result
 
@@ -3922,8 +3977,6 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                                     category_colors["Temp"] = "#ffc107"
                                 keyword_to_category[stext] = "Temp"
 
-                        if len(keywords_to_highlight) > 20:
-                            keywords_to_highlight = keywords_to_highlight[:20]
                         for kw in keywords_to_highlight:
                             cat = keyword_to_category.get(kw)
                             if cat in category_colors:
@@ -4380,6 +4433,9 @@ def delete_configuration(n_clicks, config_name_input, config_file_selector):
         
         # 删除配置文件
         os.remove(config_path)
+        # 失效配置文件缓存
+        _config_files_cache["mtime"] = None
+        _config_files_cache["data"] = None
         
         # 更新配置文件选择器选项
         config_files = get_config_files()
@@ -4482,6 +4538,9 @@ def save_configuration(n_clicks, config_name_input, config_file_selector, select
         # 保存到配置文件
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
+        # 失效配置文件缓存
+        _config_files_cache["mtime"] = None
+        _config_files_cache["data"] = None
         
         # 更新配置文件选择器选项
         config_files = get_config_files()
@@ -4574,9 +4633,8 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
         return dash.no_update
         
     ctx = dash.callback_context
-    print("=== 配置选择回调 ===")
-    print(f"当前选中列表(current_selection): {current_selection}")
-    print(f"触发源(ctx.triggered): {ctx.triggered}")
+    if not ctx.triggered:
+        return dash.no_update
     
     # 如果是配置组选择触发
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'log-filter-config-group-selector.value':
@@ -4607,7 +4665,6 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
         # 获取被点击的按钮的index（即配置文件名）
         prop_id = ctx.triggered[0]['prop_id']
         config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
-        print(f"被点击的配置文件: {config_file}")
         
         # 如果配置文件已经在选中列表中，则移除它（取消选择）
         if config_file in current_selection:
@@ -4774,13 +4831,8 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
 )
 def update_temp_keywords_display(keywords):
     """根据存储的数据更新临时关键字显示"""
-    print(f"=== 存储变化触发显示更新 ===")
-    print(f"存储中的关键字: {keywords}")
-    print(f"关键字类型: {type(keywords)}")
-    print(f"关键字ID: {id(keywords)}")
     normalized = normalize_temp_keywords(keywords)
     result = create_temp_keyword_buttons(normalized)
-    print(f"更新的显示内容: {type(result)}")
     return result, result
 
 # 页面加载/刷新时重新从文件载入临时关键字，避免服务端缓存旧数据
@@ -4806,52 +4858,36 @@ def reload_temp_keywords_on_load(_href):
     prevent_initial_call=True
 )
 def add_temp_keyword(n_clicks, n_submit, exclude_clicks, exclude_submit, keyword_text, exclude_keyword_text, existing_keywords):
-    print(f"=== 添加临时关键字回调被触发 ===")
-    print(f"n_clicks: {n_clicks}")
-    print(f"keyword_text: '{keyword_text}'")
-    print(f"exclude_keyword_text: '{exclude_keyword_text}'")
-    print(f"existing_keywords: {existing_keywords}")
-    print(f"existing_keywords 类型: {type(existing_keywords)}")
-    print(f"existing_keywords ID: {id(existing_keywords)}")
-    
     # 获取回调上下文
     ctx = dash.callback_context
-    print(f"回调上下文: {ctx.triggered}")
     
     normalized_keywords = normalize_temp_keywords(existing_keywords)
     
     # 只有在按钮被点击时才处理
     if not ctx.triggered:
-        print("没有触发事件，返回无更新")
         return dash.no_update, dash.no_update
     
     # 检查是否是按钮点击事件
     prop_id = ctx.triggered[0]['prop_id']
-    print(f"触发ID: {prop_id}")
-    
     # 判断添加类型
     is_exclude = 'temp-exclude-keyword' in prop_id
     target_text = exclude_keyword_text if is_exclude else keyword_text
     target_text = target_text.strip() if target_text else ""
     
     if not target_text:
-        print("输入内容为空，返回现有内容")
         return normalized_keywords, dash.no_update
     
     new_entry = {
         "text": target_text,
         "type": "filter" if is_exclude else "keep"
     }
-    print(f"准备添加新关键字: {new_entry}")
     
     if any(kw["text"] == new_entry["text"] and kw["type"] == new_entry["type"] for kw in normalized_keywords):
-        print("关键字已存在，不重复添加")
         return normalized_keywords, dash.no_update
     
     normalized_keywords.append(new_entry)
     toast_label = "临时反向关键字" if is_exclude else "临时关键字"
     save_temp_keywords_to_file(normalized_keywords)
-    print(f"关键字已添加到列表: {normalized_keywords}")
     return normalized_keywords, html.Script(f"""
         if (typeof window.showToast === 'function') {{
             window.showToast('已添加{toast_label}: {target_text}', 'success');
@@ -4868,40 +4904,26 @@ def add_temp_keyword(n_clicks, n_submit, exclude_clicks, exclude_submit, keyword
 def handle_temp_keyword_click(keyword_clicks, current_keywords):
     ctx = dash.callback_context
     
-    print(f"=== 删除关键字回调被触发 ===")
-    print(f"keyword_clicks: {keyword_clicks}")
-    print(f"current_keywords: {current_keywords}")
-    print(f"current_keywords 类型: {type(current_keywords)}")
-    print(f"current_keywords ID: {id(current_keywords)}")
-    print(f"ctx.triggered: {ctx.triggered}")
-    
     # 如果没有点击事件，返回无更新
     if not ctx.triggered:
-        print("没有触发事件，返回无更新")
         return dash.no_update
     
     # 获取被点击的关键字
     prop_id = ctx.triggered[0]['prop_id']
-    print(f"触发ID: {prop_id}")
-    
     # 检查是否是关键字按钮点击事件
     if 'temp-keyword-btn' in prop_id:
         # 检查按钮是否真的被点击了（n_clicks不为None）
         trigger_value = ctx.triggered[0].get('value')
-        print(f"触发值: {trigger_value}")
         
         if trigger_value is None:
-            print("按钮未被点击，返回无更新")
             return dash.no_update
             
         # 提取被点击的关键字与类型
         keyword_index = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
-        print(f"按钮索引: '{keyword_index}'")
         if ':' in keyword_index:
             kw_type, keyword = keyword_index.split(':', 1)
         else:
             kw_type, keyword = "keep", keyword_index
-        print(f"要删除的关键字: '{keyword}'，类型: {kw_type}")
         
         normalized_keywords = normalize_temp_keywords(current_keywords)
         # 从关键字列表中移除被点击的关键字
@@ -4909,13 +4931,11 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
             kw for kw in normalized_keywords
             if not (kw.get("text") == keyword and kw.get("type") == kw_type)
         ]
-        print(f"更新后的关键字列表: {updated_keywords}")
         save_temp_keywords_to_file(updated_keywords)
         
         # 只返回更新后的关键字列表，显示由存储监听回调更新
         return updated_keywords
     
-    print("不是按钮点击事件，返回无更新")
     return dash.no_update
 
 # 临时关键字变化时自动更新右侧显示结果（已禁用自动过滤，改为手动触发）
@@ -4962,15 +4982,9 @@ def get_temp_keywords_store():
 
 def create_temp_keyword_buttons(keywords):
     """创建临时关键字按钮列表"""
-    print(f"=== create_temp_keyword_buttons 被调用 ===")
-    print(f"输入的关键字列表: {keywords}")
-    print(f"列表类型: {type(keywords)}")
-    print(f"列表长度: {len(keywords) if keywords else 0}")
-    
     normalized = normalize_temp_keywords(keywords)
     
     if not normalized:
-        print("关键字列表为空，返回空内容")
         return None
     
     keyword_buttons = []
