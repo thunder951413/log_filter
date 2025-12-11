@@ -1,0 +1,14 @@
+[
+  {
+    "text": "aml",
+    "type": "keep"
+  },
+  {
+    "text": "AML_DvbCa_Get_Cam_Detect_State",
+    "type": "filter"
+  },
+  {
+    "text": "check_time",
+    "type": "filter"
+  }
+]

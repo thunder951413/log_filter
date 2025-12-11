@@ -1,45 +1,69 @@
-# 字符串分类管理器
+## Electron集成架构
+### 1. 双进程架构
+- 主进程 ( electron/main.js ): 负责启动Python后端服务器
+- 渲染进程 : 显示Dash网页界面
+### 2. 关键文件说明
+package.json ( package.json:1-46 ):
 
-这是一个使用 Dash 和 Dash Bootstrap Components 构建的字符串分类和选择应用。
+- 设置了Electron入口点： "main": "electron/main.js"
+- 提供了多个打包脚本： pack:mac , pack:win , pack:linux
+- 配置了electron-builder的打包参数
+Electron主进程 ( electron/main.js:1-50 ):
 
-## 功能
+- 自动检测并启动Python后端（优先使用打包后的可执行文件）
+- 在端口8052启动本地服务器
+- 创建浏览器窗口加载Dash应用
+打包脚本 ( scripts/pack.js:1-50 ):
 
-- 输入字符串并对其进行分类
-- 保存分类后的字符串
-- 按分类查看已保存的字符串
-- 选择特定的字符串
-- 按分类显示选中的字符串
-
-## 安装和运行
-
-1. 安装依赖：
-```bash
-pip install -r requirements.txt
+- 使用PyInstaller将Python应用打包成可执行文件
+- 使用electron-builder创建各平台安装包
+## 打包到Electron的完整步骤
+### 第一步：项目结构准备
 ```
-
-2. 运行应用：
-```bash
-python app.py
+log_filter/
+├── electron/           # Electron相关文件
+│   ├── main.js        # 主进程
+│   └── preload.js     # 预加载脚本（安全通信）
+├── scripts/           # 打包脚本
+│   └── pack.js        # 自动化打包脚本
+├── app.py            # 原始的Dash应用
+└── package.json      # Node.js配置
 ```
+### 第二步：依赖安装
+```
+# 安装Electron相关依赖
+npm install electron electron-builder --save-dev
+```
+### 第三步：配置package.json
+需要设置：
 
-3. 在浏览器中打开 `http://127.0.0.1:8050/` 访问应用。
+- main 字段指向Electron主进程文件
+- 添加打包脚本和构建配置
+- 配置electron-builder参数
+### 第四步：创建Electron主进程
+主要功能：
 
-## 使用方法
+- 启动Python后端服务器
+- 创建浏览器窗口
+- 处理应用生命周期
+### 第五步：打包流程
+1. 打包Python后端 : 使用PyInstaller将app.py打包成可执行文件
+2. 打包Electron前端 : 使用electron-builder创建各平台安装包
+3. 资源整合 : 将Python可执行文件作为额外资源打包
+## 当前项目的打包命令
+# 打包mac版本
+```
+npm run pack:mac
 
-1. **添加字符串**：
-   - 在文本框中输入要分类的字符串
-   - 在分类框中输入分类名称
-   - 点击"添加字符串"按钮
+# 打包windows版本  
+npm run pack:win
 
-2. **查看已保存的字符串**：
-   - 使用下拉菜单选择特定分类或查看所有分类
-   - 点击字符串卡片上的"选择"按钮来选择字符串
+# 打包linux版本
+npm run pack:linux
 
-3. **查看选中的字符串**：
-   - 选中的字符串会显示在右侧面板中
-   - 字符串按分类组织显示
-   - 点击"清除选择"按钮可以清除所有选中的字符串
+# 打包所有平台
+npm run pack:all
 
-## 数据存储
-
-应用会将数据保存在 `string_data.json` 文件中，该文件位于应用根目录下。数据以 JSON 格式存储，包含所有分类和对应的字符串。
+# 开发模式运行
+npm run electron:dev
+```

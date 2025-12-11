@@ -164,6 +164,8 @@ FLOWS_CONFIG_FILE = 'flows.json'
 
 # 获取所有配置文件
 CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
+# 临时关键字配置放在项目根目录，便于随应用启动/刷新自动加载
+TEMP_KEYWORDS_FILE = os.path.join(os.getcwd(), 'temp_keywords.json')
 
 # 日志文件目录
 LOG_DIR = 'logs'
@@ -612,6 +614,49 @@ def load_user_selections():
         "last_updated": ""
     }
 
+# 临时关键字存储：保留/屏蔽统一结构
+def normalize_temp_keywords(keywords):
+    """标准化临时关键字结构，支持保留与屏蔽"""
+    normalized = []
+    seen = set()
+    for kw in keywords or []:
+        if isinstance(kw, dict):
+            text = kw.get("text", "")
+            kw_type = kw.get("type", "keep")
+        else:
+            text = str(kw)
+            kw_type = "keep"
+        if not text:
+            continue
+        text = text.strip()
+        kw_type = "filter" if kw_type == "filter" else "keep"
+        key = (kw_type, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"text": text, "type": kw_type})
+    return normalized
+
+def load_temp_keywords_from_file():
+    """从配置文件加载临时关键字，默认空列表"""
+    try:
+        if os.path.exists(TEMP_KEYWORDS_FILE):
+            with open(TEMP_KEYWORDS_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            return normalize_temp_keywords(raw)
+    except Exception as e:
+        print(f"加载临时关键字配置失败: {e}")
+    return []
+
+def save_temp_keywords_to_file(keywords):
+    """将临时关键字保存到配置文件"""
+    try:
+        normalized = normalize_temp_keywords(keywords)
+        with open(TEMP_KEYWORDS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"保存临时关键字配置失败: {e}")
+
 def _format_size(size_bytes):
     if size_bytes < 1024:
         return f"{size_bytes} B"
@@ -691,6 +736,7 @@ app.layout = html.Div([
     # Toast通知容器
     html.Div(id="toast-container", className="toast-container"),
     dcc.Store(id="group-selected-files-store", data=[]),
+    dcc.Location(id="url", refresh=False),
     
     dbc.Container([
         # 状态提示 - 隐藏原始状态栏，使用toast通知
@@ -707,7 +753,7 @@ app.layout = html.Div([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
                     dbc.Tab(label="配置管理", tab_id="tab-2"),
                     dbc.Tab(label="日志管理", tab_id="tab-3"),
-                    dbc.Tab(label="关键字注释", tab_id="tab-4")
+                    dbc.Tab(label="关键字注释(开发中)", tab_id="tab-4")
                 ], id="main-tabs", active_tab="tab-1")
             ], width=12)
         ], className="mb-4"),
@@ -743,6 +789,9 @@ app.layout = html.Div([
                     dbc.Popover([
                         dbc.PopoverHeader("添加临时关键字"),
                         dbc.PopoverBody([
+                            html.Div([
+                                html.Small("临时关键字（保留）", className="text-muted"),
+                            ], className="mb-1"),
                             dbc.Row([
                                 dbc.Col([
                                     dbc.Input(id="temp-keyword-text", placeholder="输入关键字...", size="sm"),
@@ -750,7 +799,23 @@ app.layout = html.Div([
                                 dbc.Col([
                                     dbc.Button("添加", id="temp-keyword-add-btn", color="primary", size="sm", className="w-100")
                                 ], width=4, className="ps-1")
-                            ], className="g-0 align-items-center")
+                            ], className="g-0 align-items-center mb-2"),
+                            html.Div([
+                                html.Small("临时反向关键字（屏蔽）", className="text-muted"),
+                            ], className="mb-1"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Input(id="temp-exclude-keyword-text", placeholder="输入要屏蔽的关键字...", size="sm"),
+                                ], width=8, className="pe-1"),
+                                dbc.Col([
+                                    dbc.Button("屏蔽", id="temp-exclude-keyword-add-btn", color="danger", size="sm", className="w-100")
+                                ], width=4, className="ps-1")
+                            ], className="g-0 align-items-center"),
+                            html.Hr(className="my-2"),
+                            html.Div([
+                                html.Small("当前临时关键字", className="text-muted d-block mb-1"),
+                                html.Div(id="temp-keywords-popover-display", className="d-flex flex-wrap gap-1")
+                            ])
                         ])
                     ],
                     id="temp-keyword-popover",
@@ -762,7 +827,10 @@ app.layout = html.Div([
                 ], className="d-flex align-items-center justify-content-end"),
                 
                 # 临时关键字显示区域
-                html.Div(id="temp-keywords-display", className="mt-2 d-flex flex-wrap justify-content-end gap-1")
+                html.Div(
+                    id="temp-keywords-display",
+                    className="mt-2 d-flex flex-wrap justify-content-end gap-1"
+                )
             ], className="position-fixed", style={"top": "20px", "right": "20px", "zIndex": 1000, "maxWidth": "600px"}),
             
 
@@ -1345,7 +1413,7 @@ app.layout = html.Div([
         dcc.Store(id='selected-log-file', data=''),
         dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
         dcc.Store(id='selected-config-files', data=[]),  # 存储选中的配置文件列表（支持多选）
-        dcc.Store(id='temp-keywords-store', data=[]),  # 存储临时关键字列表
+        dcc.Store(id='temp-keywords-store', data=load_temp_keywords_from_file()),  # 存储临时关键字列表（支持保留/屏蔽）
         dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
         dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
         dcc.Store(id='rename-target-file', data=''),  # 存储待重命名的文件
@@ -1853,6 +1921,30 @@ def update_log_file_selector(active_tab):
         options = [{"label": file, "value": file} for file in log_files]
         return options
     return dash.no_update
+
+@app.callback(
+    [Output("log-file-selector", "options", allow_duplicate=True),
+     Output("log-file-selector", "value", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("url", "search")],
+    prevent_initial_call='initial_duplicate'
+)
+def open_log_from_query(search):
+    if not search:
+        return dash.no_update, dash.no_update, dash.no_update
+    try:
+        from urllib.parse import parse_qs, unquote
+        q = parse_qs(search[1:] if search.startswith('?') else search)
+        target = unquote((q.get('open') or [''])[0])
+        if not target:
+            return dash.no_update, dash.no_update, dash.no_update
+        files = get_log_files()
+        options = [{"label": f, "value": f} for f in files]
+        if target not in files:
+            options.append({"label": target, "value": target})
+        return options, target, html.Script("if(window.showToast) window.showToast('已打开日志', 'success');")
+    except Exception:
+        return dash.no_update, dash.no_update, html.Script("if(window.showToast) window.showToast('打开日志失败', 'error');")
 
 # 保存日志文件选择状态
 @app.callback(
@@ -2401,80 +2493,249 @@ def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp
 
  
 
+def _compile_patterns(keep_strings, filter_strings):
+    """预编译保留/过滤正则，避免重复编译"""
+    keep_regex = None
+    filter_regex = None
+    if keep_strings:
+        escaped = [re.escape(s) for s in keep_strings if s]
+        if escaped:
+            keep_regex = re.compile("|".join(escaped), re.IGNORECASE)
+    if filter_strings:
+        escaped = [re.escape(s) for s in filter_strings if s]
+        if escaped:
+            filter_regex = re.compile("|".join(escaped), re.IGNORECASE)
+    return keep_regex, filter_regex
+
+def _compile_byte_patterns(keep_strings, filter_strings, encoding):
+    """基于编码预编译字节级正则，避免逐行解码"""
+    keep_regex = None
+    filter_regex = None
+    try:
+        if keep_strings:
+            escaped = [re.escape(s).encode(encoding, errors='ignore') for s in keep_strings if s]
+            if escaped:
+                keep_regex = re.compile(b"|".join(escaped), re.IGNORECASE)
+        if filter_strings:
+            escaped = [re.escape(s).encode(encoding, errors='ignore') for s in filter_strings if s]
+            if escaped:
+                filter_regex = re.compile(b"|".join(escaped), re.IGNORECASE)
+    except Exception as e:
+        print(f"[过滤] 编译字节正则失败，回退文本正则: {e}")
+    return keep_regex, filter_regex
+
+
+def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500):
+    """流式过滤日志到临时文件，并生成行偏移索引"""
+    ensure_temp_dir()
+    temp_file_path = get_temp_file_path(session_id)
+    idx_path = get_temp_index_path(temp_file_path)
+    
+    encoding = detect_file_encoding(log_path)
+    keep_bytes_regex, filter_bytes_regex = _compile_byte_patterns(keep_strings, filter_strings, encoding=encoding)
+    
+    line_count = 0
+    offsets = []
+    current_offset = 0
+    
+    print(f"[过滤] 开始流式过滤: {log_path}, 编码 {encoding}")
+    try:
+        with open(log_path, 'rb') as src, open(temp_file_path, 'wb') as dst:
+            for raw_line in src:
+                text_line = None
+                # 优先使用字节正则，避免解码开销
+                if keep_bytes_regex:
+                    if not keep_bytes_regex.search(raw_line):
+                        continue
+                elif keep_regex:
+                    # 回退到文本匹配
+                    try:
+                        text_line = raw_line.decode(encoding)
+                    except UnicodeDecodeError:
+                        text_line = raw_line.decode(encoding, errors='replace')
+                    if not keep_regex.search(text_line):
+                        continue
+                
+                if filter_bytes_regex:
+                    if filter_bytes_regex.search(raw_line):
+                        continue
+                elif filter_regex:
+                    if text_line is None:
+                        try:
+                            text_line = raw_line.decode(encoding)
+                        except UnicodeDecodeError:
+                            text_line = raw_line.decode(encoding, errors='replace')
+                    if filter_regex.search(text_line):
+                        continue
+                
+                dst.write(raw_line)
+                line_count += 1
+                
+                # 记录当前行的起始偏移用于索引
+                if line_count % index_every == 1:
+                    offsets.append([line_count, current_offset])
+                
+                current_offset += len(raw_line)
+    except Exception as e:
+        print(f"[过滤] 流式过滤失败: {e}")
+        raise
+    
+    # 保存索引文件
+    try:
+        with open(idx_path, 'w', encoding='utf-8') as idx_file:
+            json.dump({
+                "encoding": encoding,
+                "index_every": index_every,
+                "offsets": offsets
+            }, idx_file, ensure_ascii=False)
+    except Exception as e:
+        print(f"[过滤] 写入索引文件失败（不会影响结果显示）: {e}")
+    
+    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}, 索引条目: {len(offsets)}")
+    return temp_file_path, idx_path, line_count, encoding
+
+
+def build_rolling_display(temp_file_path, line_count, session_id, selected_strings, data, encoding):
+    """基于临时文件构建滚动窗口组件"""
+    rolling_cfg = load_rolling_config()
+    window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
+    initial_content, _ = get_file_lines_range(temp_file_path, 1, min(window_size, line_count), encoding=encoding)
+    
+    result_display = html.Div([
+        html.Div(),
+        html.Div(
+            id=f"log-window-{session_id}",
+            children=[html.Pre(initial_content, className="small")],
+            style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
+            **{
+                "data-session-id": session_id,
+                "data-total-lines": line_count,
+                "data-window-size": window_size,
+                "data-lines-before": rolling_cfg.get('lines_before', 250),
+                "data-lines-after": rolling_cfg.get('lines_after', 249),
+                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
+            }
+        ),
+        dcc.Store(id=f"temp-file-info-{session_id}", data={
+            "file_path": temp_file_path,
+            "total_lines": line_count,
+            "session_id": session_id,
+        }),
+        dcc.Store(id=f"current-window-{session_id}", data={
+            "start_line": 1,
+            "end_line": min(500, line_count),
+            "total_lines": line_count
+        }),
+        html.Div(id=f"rolling-bootstrap-{session_id}"),
+    ])
+    
+    # 记录会话高亮信息，供滚动窗口分片渲染使用
+    try:
+        keywords_to_highlight = []
+        keyword_to_color = {}
+        if selected_strings and data and isinstance(data, dict) and "categories" in data:
+            categories = list(data["categories"].keys())
+            if categories:
+                category_colors = get_category_colors(categories)
+                keyword_to_category = {}
+                for category, strings in data["categories"].items():
+                    for s in strings:
+                        keyword_to_category[s] = category
+                for item in selected_strings:
+                    if isinstance(item, dict):
+                        stext = item.get("text")
+                    else:
+                        stext = item
+                    
+                    if stext in keyword_to_category:
+                        keywords_to_highlight.append(stext)
+                    else:
+                        keywords_to_highlight.append(stext)
+                        if "Temp" not in category_colors:
+                            category_colors["Temp"] = "#ffc107"
+                        keyword_to_category[stext] = "Temp"
+
+                if len(keywords_to_highlight) > 20:
+                    keywords_to_highlight = keywords_to_highlight[:20]
+                for kw in keywords_to_highlight:
+                    cat = keyword_to_category.get(kw)
+                    if cat in category_colors:
+                        keyword_to_color[kw.lower()] = {
+                            "bg": category_colors[cat],
+                            "fg": "#ffffff"
+                        }
+        highlight_session_info[session_id] = {
+            "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
+            "colors": keyword_to_color
+        }
+        print(f"[滚动窗口] 已记录会话高亮信息, session: {session_id}, 关键字数: {len(highlight_session_info[session_id]['keywords'])}")
+    except Exception as _e:
+        print(f"[滚动窗口] 记录会话高亮信息失败: {_e}")
+    
+    print(f"[滚动窗口] 滚动窗口组件已创建，session_id: {session_id}")
+    return result_display
+
+
 def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     """执行过滤逻辑，包含临时关键字"""
     # 合并选中的字符串和临时关键字
+    normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
     all_strings = []
     if selected_strings:
         all_strings.extend(selected_strings)
-    if temp_keywords:
-        # 临时关键字默认为保留字符串
-        for keyword in temp_keywords:
-            all_strings.append(keyword)
+    all_strings.extend(normalized_temp_keywords)
     
     # 提取保留字符串和过滤字符串
     keep_strings = []
     filter_strings = []
-    
     for item in all_strings:
         if isinstance(item, dict):
-            if item["type"] == "keep":
+            if item.get("type") == "keep":
                 keep_strings.append(item["text"])
             else:
                 filter_strings.append(item["text"])
         else:
-            # 旧格式字符串和临时关键字，默认为保留字符串
             keep_strings.append(item)
     
-    # 本地方式
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
     
-    keep_patterns = []
-    if keep_strings:
-        for s in keep_strings:
-            keep_patterns.append(re.escape(s))
-    filter_pattern = None
-    if filter_strings:
-        fp = [re.escape(s) for s in filter_strings]
-        filter_pattern = fp[0] if len(fp) == 1 else f"({'|'.join(fp)})"
-    if os.name == 'nt':
-        ps_cmd = f"Get-Content -Path \"{log_path}\""
-        if keep_patterns:
-            kp = keep_patterns[0] if len(keep_patterns) == 1 else f"({'|'.join(keep_patterns)})"
-            kp = kp.replace("'", "''")
-            ps_cmd += f" | Select-String -Pattern '{kp}'"
-        if filter_pattern:
-            fp = filter_pattern.replace("'", "''")
-            ps_cmd += f" | Select-String -Pattern '{fp}' -NotMatch"
-        if keep_patterns or filter_pattern:
-            ps_cmd += " | ForEach-Object { $_.Line }"
-        full_command = f"powershell -NoProfile -Command \"{ps_cmd}\""
-    else:
-        grep_parts = []
-        if keep_patterns:
-            if len(keep_patterns) == 1:
-                grep_parts.append(f"grep -E '{keep_patterns[0]}' \"{log_path}\"")
-            else:
-                grep_parts.append(f"grep -E '({'|'.join(keep_patterns)})' \"{log_path}\"")
-        if filter_pattern:
-            if grep_parts:
-                grep_parts.append(f"grep -v -E '{filter_pattern}'")
-            else:
-                grep_parts.append(f"grep -v -E '{filter_pattern}' \"{log_path}\"")
-        full_command = f"cat \"{log_path}\"" if not grep_parts else " | ".join(grep_parts)
+    keep_regex, filter_regex = _compile_patterns(keep_strings, filter_strings)
+    data = load_data()
     
-    # 执行命令，传递选中的字符串和数据用于高亮
-    # 过滤结果页面需要基于grep后的临时文件进行滚动、跳转与搜索
-    data = load_data()  # 加载当前数据
+    # session_id 基于文件和关键字，保证同配置复用滚动会话
     try:
-        session_id = hashlib.md5(full_command.encode()).hexdigest()
+        session_key = f"{log_path}:{keep_strings}:{filter_strings}"
+        session_id = hashlib.md5(session_key.encode()).hexdigest()
     except Exception:
         session_id = None
-    result_display = execute_command(full_command, all_strings, data, save_to_temp=True, session_id=session_id)
     
-    return full_command, result_display
+    try:
+        temp_file_path, _idx_path, line_count, encoding = stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=session_id)
+    except Exception as e:
+        return "", html.Div([
+            html.P("过滤失败:", className="text-danger"),
+            html.Pre(str(e), className="text-danger small")
+        ])
+    
+    if line_count == 0:
+        return "python-filter", html.Pre("没有找到符合条件的日志行", className="small")
+    
+    LARGE_FILE_THRESHOLD = 1000
+    if line_count > LARGE_FILE_THRESHOLD:
+        result_display = build_rolling_display(temp_file_path, line_count, session_id, all_strings, data, encoding)
+    else:
+        # 小结果直接读取全部并高亮
+        content_text, _ = get_file_lines_range(temp_file_path, 1, line_count, encoding=encoding)
+        if all_strings and data:
+            result_display = html.Div([
+                highlight_keywords_dash(content_text, all_strings, data)
+            ])
+        else:
+            result_display = html.Pre(content_text, className="small")
+    
+    return "python-filter", result_display
 
 def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords=None):
     """执行源文件逻辑，包含临时关键字"""
@@ -2488,13 +2749,11 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
         full_command = f"cat \"{log_path}\""
     
     # 合并选中的字符串和临时关键字
+    normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
     all_strings = []
     if selected_strings:
         all_strings.extend(selected_strings)
-    if temp_keywords:
-        # 临时关键字默认为保留字符串
-        for keyword in temp_keywords:
-            all_strings.append(keyword)
+    all_strings.extend(normalized_temp_keywords)
     
     # 执行命令：源文件页面的滚动、跳转与搜索基于原始日志生成的临时文件
     try:
@@ -3301,6 +3560,13 @@ def highlight_keywords_dash(text, selected_strings, data):
     # 按长度降序排序，确保长关键字优先匹配
     keywords_to_highlight.sort(key=len, reverse=True)
     
+    # 预先构建关键字到颜色的快速查找表，避免在每个匹配上循环查找
+    keyword_color_lookup = {}
+    for kw in keywords_to_highlight:
+        cat = keyword_to_category.get(kw)
+        if cat in category_colors:
+            keyword_color_lookup[kw.lower()] = category_colors[cat]
+    
     # 性能优化：使用单一正则表达式进行匹配
     try:
         # 构建单一正则表达式模式
@@ -3347,16 +3613,7 @@ def highlight_keywords_dash(text, selected_strings, data):
                 
                 # 获取匹配的关键字和对应的分类颜色
                 matched_text = match.group()
-                category = None
-                color = None
-                
-                # 查找匹配的关键字对应的分类
-                for keyword in keywords_to_highlight:
-                    if keyword.lower() == matched_text.lower():
-                        if keyword in keyword_to_category:
-                            category = keyword_to_category[keyword]
-                            color = category_colors[category]
-                            break
+                color = keyword_color_lookup.get(matched_text.lower())
                 
                 if color:
                     # 添加高亮的关键字
@@ -3424,6 +3681,26 @@ def get_temp_file_path(session_id=None):
     print(f"[滚动窗口] 生成临时文件路径: {file_path}, session_id: {session_id}")
     return file_path
 
+def get_temp_index_path(temp_file_path):
+    """获取临时结果的索引文件路径"""
+    return f"{temp_file_path}.idx"
+
+def detect_file_encoding(file_path, default_encoding="utf-8"):
+    """读取部分内容推测编码，失败则返回默认编码"""
+    encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+    try:
+        with open(file_path, 'rb') as f:
+            sample = f.read(65536)  # 64KB 样本
+        for enc in encodings:
+            try:
+                sample.decode(enc)
+                return enc
+            except UnicodeDecodeError:
+                continue
+    except Exception as e:
+        print(f"[滚动窗口] 探测编码失败，使用默认编码 {default_encoding}: {e}")
+    return default_encoding
+
 def get_file_line_count(file_path):
     """获取文件的总行数"""
     try:
@@ -3444,42 +3721,61 @@ def get_file_lines_range(file_path, start_line, end_line, encoding=None):
     """
     try:
         print(f"[滚动窗口] 读取文件行范围: {file_path}, 行 {start_line} - {end_line}")
-        lines = []
-        detected_encoding = 'utf-8'
-        encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
+        if start_line > end_line:
+            return "", encoding or "utf-8"
         
-        with open(file_path, 'rb') as f:
-            content_bytes = f.read()
-            print(f"[滚动窗口] 文件大小: {len(content_bytes)} 字节")
-            
-            for encoding_to_try in encodings:
-                try:
-                    decoded_content = content_bytes.decode(encoding_to_try)
-                    all_lines = decoded_content.split('\n')
-                    
-                    # 转换为0-based索引并获取范围
-                    start_idx = max(0, start_line - 1)
-                    end_idx = min(len(all_lines), end_line)
-                    
-                    lines = all_lines[start_idx:end_idx]
-                    detected_encoding = encoding_to_try
-                    print(f"[滚动窗口] 成功使用编码 {encoding_to_try} 读取 {len(lines)} 行")
+        idx_path = get_temp_index_path(file_path)
+        has_index = os.path.exists(idx_path)
+        
+        # 加载索引信息（如果存在）
+        idx_encoding = None
+        offsets = []
+        if has_index:
+            try:
+                with open(idx_path, 'r', encoding='utf-8') as idx_file:
+                    idx_data = json.load(idx_file)
+                    offsets = idx_data.get("offsets", [])
+                    idx_encoding = idx_data.get("encoding")
+            except Exception as e:
+                print(f"[滚动窗口] 读取索引失败，回退全文件读取: {e}")
+                offsets = []
+                has_index = False
+        
+        # 如果未指定编码，尝试使用索引中的编码或探测
+        detected_encoding = encoding or idx_encoding or detect_file_encoding(file_path)
+        
+        # 使用索引快速定位，减少大文件读取
+        start_offset = 0
+        start_line_offset = 1
+        if has_index and offsets:
+            for entry_line, entry_offset in offsets:
+                if entry_line <= start_line:
+                    start_offset = entry_offset
+                    start_line_offset = entry_line
+                else:
                     break
+        
+        lines = []
+        current_line_no = start_line_offset
+        with open(file_path, 'rb') as f:
+            if start_offset:
+                f.seek(start_offset)
+            while current_line_no <= end_line:
+                raw_line = f.readline()
+                if not raw_line:
+                    break
+                try:
+                    line_text = raw_line.decode(detected_encoding)
                 except UnicodeDecodeError:
-                    continue
-            
-            if not lines:
-                # 如果所有编码都失败，使用latin-1
-                print(f"[滚动窗口] 所有编码失败，使用latin-1")
-                decoded_content = content_bytes.decode('latin-1', errors='replace')
-                all_lines = decoded_content.split('\n')
-                start_idx = max(0, start_line - 1)
-                end_idx = min(len(all_lines), end_line)
-                lines = all_lines[start_idx:end_idx]
-                detected_encoding = 'latin-1'
+                    line_text = raw_line.decode(detected_encoding, errors='replace')
+                if current_line_no >= start_line:
+                    lines.append(line_text.rstrip('\n'))
+                current_line_no += 1
+                if current_line_no > end_line:
+                    break
         
         result_text = '\n'.join(lines)
-        print(f"[滚动窗口] 返回内容长度: {len(result_text)} 字符")
+        print(f"[滚动窗口] 返回内容长度: {len(result_text)} 字符，使用编码 {detected_encoding}，索引 {'命中' if has_index else '未命中'}")
         return result_text, detected_encoding
     except Exception as e:
         print(f"[滚动窗口] 读取文件行范围失败: {e}")
@@ -3497,183 +3793,175 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
         save_to_temp: 是否保存到临时文件（用于大文件）
         session_id: 会话ID（用于临时文件命名）
     """
+    def _decode_bytes(data_bytes):
+        """使用多种编码解码字节串（最佳努力）"""
+        if data_bytes is None:
+            return ""
+        if isinstance(data_bytes, str):
+            return data_bytes
+        for encoding in ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']:
+            try:
+                return data_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return data_bytes.decode('latin-1', errors='replace')
+    
     try:
-        # 本地命令执行 - 使用二进制模式读取，然后尝试多种编码
+        # save_to_temp 为 True 时改为流式写入临时文件，避免一次性加载大输出
+        if save_to_temp:
+            ensure_temp_dir()
+            if session_id is None:
+                session_id = hashlib.md5((full_command + str(time.time())).encode()).hexdigest()
+            temp_file_path = get_temp_file_path(session_id)
+            
+            line_count = 0
+            sample_bytes = b""
+            last_chunk_ended_newline = True
+            proc = None
+            stderr_bytes = b""
+            
+            try:
+                proc = subprocess.Popen(
+                    full_command,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                
+                with open(temp_file_path, 'wb') as temp_file:
+                    for chunk in iter(lambda: proc.stdout.read(65536), b''):
+                        temp_file.write(chunk)
+                        line_count += chunk.count(b'\n')
+                        last_chunk_ended_newline = chunk.endswith(b'\n')
+                        if len(sample_bytes) < 65536:
+                            needed = 65536 - len(sample_bytes)
+                            sample_bytes += chunk[:needed]
+                
+                stderr_bytes = proc.stderr.read()
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                if proc:
+                    proc.kill()
+                return html.P("命令执行超时", className="text-warning")
+            except Exception as e:
+                return html.Div([
+                    html.P("执行命令时发生异常:", className="text-danger"),
+                    html.P(str(e), className="text-danger small")
+                ])
+            
+            if proc and proc.returncode != 0:
+                error_output = _decode_bytes(stderr_bytes)
+                return html.Div([
+                    html.P("命令执行出错:", className="text-danger"),
+                    html.Pre(error_output, className="small text-danger")
+                ])
+            
+            if not os.path.exists(temp_file_path) or os.path.getsize(temp_file_path) == 0:
+                return html.Pre("没有找到符合条件的日志行", className="small")
+            
+            if not last_chunk_ended_newline:
+                line_count += 1
+            if line_count == 0:
+                line_count = 1
+            
+            rolling_cfg = load_rolling_config()
+            window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
+            initial_content, initial_encoding = get_file_lines_range(temp_file_path, 1, min(window_size, line_count))
+            
+            result_display = html.Div([
+                html.Div(),
+                html.Div(
+                    id=f"log-window-{session_id}",
+                    children=[html.Pre(initial_content, className="small")],
+                    style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
+                    **{
+                        "data-session-id": session_id,
+                        "data-total-lines": line_count,
+                        "data-window-size": window_size,
+                        "data-lines-before": rolling_cfg.get('lines_before', 250),
+                        "data-lines-after": rolling_cfg.get('lines_after', 249),
+                        "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
+                    }
+                ),
+                dcc.Store(id=f"temp-file-info-{session_id}", data={
+                    "file_path": temp_file_path,
+                    "total_lines": line_count,
+                    "session_id": session_id,
+                }),
+                dcc.Store(id=f"current-window-{session_id}", data={
+                    "start_line": 1,
+                    "end_line": min(500, line_count),
+                    "total_lines": line_count
+                }),
+                html.Div(id=f"rolling-bootstrap-{session_id}"),
+            ])
+            
+            # 记录会话高亮信息，供滚动窗口分片渲染使用
+            try:
+                keywords_to_highlight = []
+                keyword_to_color = {}
+                if selected_strings and data and isinstance(data, dict) and "categories" in data:
+                    categories = list(data["categories"].keys())
+                    if categories:
+                        category_colors = get_category_colors(categories)
+                        keyword_to_category = {}
+                        for category, strings in data["categories"].items():
+                            for s in strings:
+                                keyword_to_category[s] = category
+                        for item in selected_strings:
+                            if isinstance(item, dict):
+                                stext = item.get("text")
+                            else:
+                                stext = item
+                            
+                            if stext in keyword_to_category:
+                                keywords_to_highlight.append(stext)
+                            else:
+                                keywords_to_highlight.append(stext)
+                                if "Temp" not in category_colors:
+                                    category_colors["Temp"] = "#ffc107"
+                                keyword_to_category[stext] = "Temp"
+
+                        if len(keywords_to_highlight) > 20:
+                            keywords_to_highlight = keywords_to_highlight[:20]
+                        for kw in keywords_to_highlight:
+                            cat = keyword_to_category.get(kw)
+                            if cat in category_colors:
+                                keyword_to_color[kw.lower()] = {
+                                    "bg": category_colors[cat],
+                                    "fg": "#ffffff"
+                                }
+                highlight_session_info[session_id] = {
+                    "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
+                    "colors": keyword_to_color
+                }
+                print(f"[滚动窗口] 已记录会话高亮信息, session: {session_id}, 关键字数: {len(highlight_session_info[session_id]['keywords'])}")
+            except Exception as _e:
+                print(f"[滚动窗口] 记录会话高亮信息失败: {_e}")
+            
+            print(f"[滚动窗口] 滚动窗口组件已创建，session_id: {session_id}")
+            return result_display
+        
+        # 非临时文件模式：保持原有逻辑（目前主要兼容未来调用）
         result = subprocess.run(
             full_command,
             shell=True,
             capture_output=True,
-            text=False,  # 不使用text模式，获取原始字节
+            text=False,
             timeout=30
         )
         
-        # 处理结果
         if result.returncode == 0:
-            # 本地结果需要解码
             output_bytes = result.stdout
-            if not output_bytes:
-                output = "没有找到符合条件的日志行"
-            else:
-                # 尝试多种编码
-                encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
-                output = None
-                
-                for encoding in encodings:
-                    try:
-                        output = output_bytes.decode(encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                
-                # 如果所有编码都失败，使用latin-1（不会失败）
-                if output is None:
-                    output = output_bytes.decode('latin-1', errors='replace')
-            
+            output = _decode_bytes(output_bytes) if output_bytes else "没有找到符合条件的日志行"
             if not output.strip():
                 output = "没有找到符合条件的日志行"
             
-            # 计算行数
             line_count = len(output.split('\n'))
             
-            # 定义大文件阈值（行数）
-            LARGE_FILE_THRESHOLD = 1000
-            
-            # 如果结果太大，保存到临时文件并使用滚动窗口
-            if line_count > LARGE_FILE_THRESHOLD or save_to_temp:
-                print(f"[滚动窗口] 检测到大文件 ({line_count} 行 > {LARGE_FILE_THRESHOLD} 行阈值)，启用滚动窗口模式")
-                # 确保临时目录存在
-                ensure_temp_dir()
-                
-                # 生成临时文件路径
-                if session_id is None:
-                    session_id = hashlib.md5((full_command + str(time.time())).encode()).hexdigest()
-                temp_file_path = get_temp_file_path(session_id)
-                
-                # 保存结果到临时文件
-                try:
-                    print(f"[滚动窗口] 开始保存过滤结果到临时文件: {temp_file_path}")
-                    # 确定编码
-                    detected_encoding = 'utf-8'
-                    for encoding in ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']:
-                        try:
-                            output_bytes.decode(encoding)
-                            detected_encoding = encoding
-                            print(f"[滚动窗口] 检测到编码: {encoding}")
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    
-                    # 保存到文件
-                    with open(temp_file_path, 'wb') as f:
-                        f.write(output_bytes)
-                    file_size = os.path.getsize(temp_file_path)
-                    print(f"[滚动窗口] 成功保存临时文件，大小: {file_size} 字节")
-                    
-                    # 先加载初始窗口内容（使用滚动配置）
-                    print(f"[滚动窗口] 开始加载初始窗口内容")
-                    rolling_cfg = load_rolling_config()
-                    window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
-                    initial_content, initial_encoding = get_file_lines_range(temp_file_path, 1, min(window_size, line_count))
-                    print(f"[滚动窗口] 初始窗口内容加载完成，长度: {len(initial_content)}")
-                    
-                    # 返回滚动窗口显示组件
-                    result_display = html.Div([
-                        html.Div(),
-                        html.Div(
-                            id=f"log-window-{session_id}",
-                            children=[html.Pre(initial_content, className="small")],
-                            style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
-                            **{
-                                "data-session-id": session_id,
-                                "data-total-lines": line_count,
-                                "data-window-size": window_size,
-                                "data-lines-before": rolling_cfg.get('lines_before', 250),
-                                "data-lines-after": rolling_cfg.get('lines_after', 249),
-                                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
-                            }
-                        ),
-                        dcc.Store(id=f"temp-file-info-{session_id}", data={
-                            "file_path": temp_file_path,
-                            "total_lines": line_count,
-                            "session_id": session_id,
-                            # 注意：不存储selected_strings和data，避免orjson序列化问题
-                            # "selected_strings": selected_strings,
-                            # "data": data
-                        }),
-                        dcc.Store(id=f"current-window-{session_id}", data={
-                            "start_line": 1,
-                            "end_line": min(500, line_count),
-                            "total_lines": line_count
-                        }),
-                        html.Div(id=f"rolling-bootstrap-{session_id}"),
-                    ])
-                    
-                    # 记录会话高亮信息，供滚动窗口分片渲染使用
-                    try:
-                        # 从数据中提取分类颜色映射
-                        keywords_to_highlight = []
-                        keyword_to_color = {}
-                        if selected_strings and data and isinstance(data, dict) and "categories" in data:
-                            categories = list(data["categories"].keys())
-                            if categories:
-                                category_colors = get_category_colors(categories)
-                                # 构建关键字到分类的映射
-                                keyword_to_category = {}
-                                for category, strings in data["categories"].items():
-                                    for s in strings:
-                                        keyword_to_category[s] = category
-                                # 挑选需要高亮的关键字
-                                for item in selected_strings:
-                                    if isinstance(item, dict):
-                                        stext = item.get("text")
-                                    else:
-                                        stext = item
-                                    
-                                    # 如果是已知分类的关键字
-                                    if stext in keyword_to_category:
-                                        keywords_to_highlight.append(stext)
-                                    else:
-                                        # 临时关键字，添加到高亮列表并分配默认颜色
-                                        keywords_to_highlight.append(stext)
-                                        # 确保临时关键字有颜色映射
-                                        if "Temp" not in category_colors:
-                                            category_colors["Temp"] = "#ffc107"  # 默认黄色
-                                        keyword_to_category[stext] = "Temp"
-
-                                # 限制最多20个关键字
-                                if len(keywords_to_highlight) > 20:
-                                    keywords_to_highlight = keywords_to_highlight[:20]
-                                # 生成颜色映射（统一白字）
-                                for kw in keywords_to_highlight:
-                                    cat = keyword_to_category.get(kw)
-                                    if cat in category_colors:
-                                        keyword_to_color[kw.lower()] = {
-                                            "bg": category_colors[cat],
-                                            "fg": "#ffffff"
-                                        }
-                        highlight_session_info[session_id] = {
-                            "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
-                            "colors": keyword_to_color
-                        }
-                        print(f"[滚动窗口] 已记录会话高亮信息, session: {session_id}, 关键字数: {len(highlight_session_info[session_id]['keywords'])}")
-                    except Exception as _e:
-                        print(f"[滚动窗口] 记录会话高亮信息失败: {_e}")
-
-                    print(f"[滚动窗口] 滚动窗口组件已创建，session_id: {session_id}")
-                    return result_display
-                except Exception as e:
-                    print(f"[滚动窗口] 保存到临时文件失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # 如果保存失败，回退到原来的方式
-            
-            # 如果结果不大，正常处理
-            # 如果提供了选中的字符串和数据，进行关键字高亮
             if selected_strings and data:
-                # 使用新的Dash组件高亮函数
                 highlighted_display = highlight_keywords_dash(output, selected_strings, data)
                 
-                # 如果超过3000行，添加提示信息
                 if line_count > 3000:
                     result_display = html.Div([
                         html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
@@ -3686,7 +3974,6 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                         highlighted_display
                     ])
             else:
-                # 如果超过3000行，添加提示信息
                 if line_count > 3000:
                     result_display = html.Div([
                         html.P(f"注意：结果包含 {line_count} 行，已启用滚动条", className="text-info mb-2"),
@@ -3695,19 +3982,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                 else:
                     result_display = html.Pre(output, className="small")
         else:
-            error_output = result.stderr
-            # 错误信息也需要解码
-            if isinstance(error_output, bytes):
-                encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
-                for encoding in encodings:
-                    try:
-                        error_output = error_output.decode(encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    error_output = error_output.decode('latin-1', errors='replace')
-            
+            error_output = _decode_bytes(result.stderr)
             result_display = html.Div([
                 html.P("命令执行出错:", className="text-danger"),
                 html.Pre(error_output, className="small text-danger")
@@ -4483,9 +4758,9 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
 
 # 监听临时关键字存储变化，更新显示
 @app.callback(
-    Output('temp-keywords-display', 'children', allow_duplicate=True),
-    [Input('temp-keywords-store', 'data')],
-    prevent_initial_call=True
+    [Output('temp-keywords-display', 'children'),
+     Output('temp-keywords-popover-display', 'children')],
+    [Input('temp-keywords-store', 'data')]
 )
 def update_temp_keywords_display(keywords):
     """根据存储的数据更新临时关键字显示"""
@@ -4493,24 +4768,38 @@ def update_temp_keywords_display(keywords):
     print(f"存储中的关键字: {keywords}")
     print(f"关键字类型: {type(keywords)}")
     print(f"关键字ID: {id(keywords)}")
-    result = create_temp_keyword_buttons(keywords or [])
+    normalized = normalize_temp_keywords(keywords)
+    result = create_temp_keyword_buttons(normalized)
     print(f"更新的显示内容: {type(result)}")
-    return result
+    return result, result
+
+# 页面加载/刷新时重新从文件载入临时关键字，避免服务端缓存旧数据
+@app.callback(
+    Output('temp-keywords-store', 'data', allow_duplicate=True),
+    [Input('url', 'href')],
+    prevent_initial_call="initial_duplicate"
+)
+def reload_temp_keywords_on_load(_href):
+    return load_temp_keywords_from_file()
 
 # 添加临时关键字
 @app.callback(
     [Output('temp-keywords-store', 'data'),
      Output('toast-container', 'children', allow_duplicate=True)],
     [Input('temp-keyword-add-btn', 'n_clicks'),
-     Input('temp-keyword-text', 'n_submit')],
+     Input('temp-keyword-text', 'n_submit'),
+     Input('temp-exclude-keyword-add-btn', 'n_clicks'),
+     Input('temp-exclude-keyword-text', 'n_submit')],
     [State('temp-keyword-text', 'value'),
+     State('temp-exclude-keyword-text', 'value'),
      State('temp-keywords-store', 'data')],
     prevent_initial_call=True
 )
-def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
+def add_temp_keyword(n_clicks, n_submit, exclude_clicks, exclude_submit, keyword_text, exclude_keyword_text, existing_keywords):
     print(f"=== 添加临时关键字回调被触发 ===")
     print(f"n_clicks: {n_clicks}")
     print(f"keyword_text: '{keyword_text}'")
+    print(f"exclude_keyword_text: '{exclude_keyword_text}'")
     print(f"existing_keywords: {existing_keywords}")
     print(f"existing_keywords 类型: {type(existing_keywords)}")
     print(f"existing_keywords ID: {id(existing_keywords)}")
@@ -4518,6 +4807,8 @@ def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
     # 获取回调上下文
     ctx = dash.callback_context
     print(f"回调上下文: {ctx.triggered}")
+    
+    normalized_keywords = normalize_temp_keywords(existing_keywords)
     
     # 只有在按钮被点击时才处理
     if not ctx.triggered:
@@ -4528,32 +4819,34 @@ def add_temp_keyword(n_clicks, n_submit, keyword_text, existing_keywords):
     prop_id = ctx.triggered[0]['prop_id']
     print(f"触发ID: {prop_id}")
     
-    # 检查是否是添加触发
-    if 'temp-keyword-add-btn' not in prop_id and 'temp-keyword-text' not in prop_id:
-        print("不是添加事件，返回无更新")
-        return dash.no_update, dash.no_update
-        
-    if keyword_text and keyword_text.strip():
-        # 直接使用输入的关键字（去除前后空格）
-        new_keyword = keyword_text.strip()
-        print(f"添加新关键字: '{new_keyword}'")
-        
-        # 合并现有关键字和新关键字，去重
-        all_keywords = existing_keywords or []
-        if new_keyword not in all_keywords:
-            all_keywords.append(new_keyword)
-            print(f"关键字已添加到列表: {all_keywords}")
-            return all_keywords, html.Script(f"""
-                if (typeof window.showToast === 'function') {{
-                    window.showToast('已添加临时关键字: {new_keyword}', 'success');
-                }}
-            """)
-        else:
-            print(f"关键字已存在，不重复添加")
-            return all_keywords, dash.no_update
-    else:
+    # 判断添加类型
+    is_exclude = 'temp-exclude-keyword' in prop_id
+    target_text = exclude_keyword_text if is_exclude else keyword_text
+    target_text = target_text.strip() if target_text else ""
+    
+    if not target_text:
         print("输入内容为空，返回现有内容")
-        return (existing_keywords or []), dash.no_update
+        return normalized_keywords, dash.no_update
+    
+    new_entry = {
+        "text": target_text,
+        "type": "filter" if is_exclude else "keep"
+    }
+    print(f"准备添加新关键字: {new_entry}")
+    
+    if any(kw["text"] == new_entry["text"] and kw["type"] == new_entry["type"] for kw in normalized_keywords):
+        print("关键字已存在，不重复添加")
+        return normalized_keywords, dash.no_update
+    
+    normalized_keywords.append(new_entry)
+    toast_label = "临时反向关键字" if is_exclude else "临时关键字"
+    save_temp_keywords_to_file(normalized_keywords)
+    print(f"关键字已添加到列表: {normalized_keywords}")
+    return normalized_keywords, html.Script(f"""
+        if (typeof window.showToast === 'function') {{
+            window.showToast('已添加{toast_label}: {target_text}', 'success');
+        }}
+    """)
 
 # 处理临时关键字按钮点击（删除关键字）
 @app.callback(
@@ -4591,13 +4884,23 @@ def handle_temp_keyword_click(keyword_clicks, current_keywords):
             print("按钮未被点击，返回无更新")
             return dash.no_update
             
-        # 提取被点击的关键字
-        keyword = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
-        print(f"要删除的关键字: '{keyword}'")
+        # 提取被点击的关键字与类型
+        keyword_index = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
+        print(f"按钮索引: '{keyword_index}'")
+        if ':' in keyword_index:
+            kw_type, keyword = keyword_index.split(':', 1)
+        else:
+            kw_type, keyword = "keep", keyword_index
+        print(f"要删除的关键字: '{keyword}'，类型: {kw_type}")
         
+        normalized_keywords = normalize_temp_keywords(current_keywords)
         # 从关键字列表中移除被点击的关键字
-        updated_keywords = [kw for kw in current_keywords if kw != keyword]
+        updated_keywords = [
+            kw for kw in normalized_keywords
+            if not (kw.get("text") == keyword and kw.get("type") == kw_type)
+        ]
         print(f"更新后的关键字列表: {updated_keywords}")
+        save_temp_keywords_to_file(updated_keywords)
         
         # 只返回更新后的关键字列表，显示由存储监听回调更新
         return updated_keywords
@@ -4654,17 +4957,27 @@ def create_temp_keyword_buttons(keywords):
     print(f"列表类型: {type(keywords)}")
     print(f"列表长度: {len(keywords) if keywords else 0}")
     
-    if not keywords:
+    normalized = normalize_temp_keywords(keywords)
+    
+    if not normalized:
         print("关键字列表为空，返回空内容")
         return None
     
     keyword_buttons = []
-    for keyword in keywords:
+    for kw in normalized:
+        text = kw.get("text", "")
+        kw_type = kw.get("type", "keep")
+        btn_color = "outline-danger" if kw_type == "filter" else "outline-primary"
+        badge_color = "danger" if kw_type == "filter" else "primary"
+        badge_label = "屏蔽" if kw_type == "filter" else "保留"
         keyword_buttons.append(
             dbc.Button(
-                keyword,
-                id={"type": "temp-keyword-btn", "index": keyword},
-                color="outline-primary",
+                [
+                    html.Span(text, className="me-1"),
+                    dbc.Badge(badge_label, color=badge_color, className="ms-1")
+                ],
+                id={"type": "temp-keyword-btn", "index": f"{kw_type}:{text}"},
+                color=btn_color,
                 size="sm",
                 className="m-1",
                 style={"whiteSpace": "nowrap", "flexShrink": 0}
@@ -5199,4 +5512,4 @@ if __name__ == "__main__":
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the application to')
     args = parser.parse_args()
     
-    app.run(debug=True, port=args.port, host=args.host)
+    app.run(debug=False, port=args.port, host=args.host)
