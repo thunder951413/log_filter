@@ -4574,6 +4574,9 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
         return dash.no_update
         
     ctx = dash.callback_context
+    print("=== 配置选择回调 ===")
+    print(f"当前选中列表(current_selection): {current_selection}")
+    print(f"触发源(ctx.triggered): {ctx.triggered}")
     
     # 如果是配置组选择触发
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'log-filter-config-group-selector.value':
@@ -4596,9 +4599,15 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
     
     # 如果点击了配置文件按钮
     if ctx.triggered and 'config-file-btn' in ctx.triggered[0]['prop_id']:
+        # 排除初始 None 触发（value 为 None 表示未真正点击）
+        trigger_value = ctx.triggered[0].get('value')
+        if trigger_value is None:
+            print("触发的配置按钮 value 为 None，忽略此次更新")
+            return dash.no_update
         # 获取被点击的按钮的index（即配置文件名）
         prop_id = ctx.triggered[0]['prop_id']
         config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
+        print(f"被点击的配置文件: {config_file}")
         
         # 如果配置文件已经在选中列表中，则移除它（取消选择）
         if config_file in current_selection:
@@ -4606,6 +4615,7 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
         else:
             # 否则添加到选中列表中
             current_selection.append(config_file)
+        print(f"更新后的选中列表: {current_selection}")
         
         # 保存配置文件选择状态（只保存配置文件名称，不加载内容，但保留日志文件选择）
         current_selections = load_user_selections()
