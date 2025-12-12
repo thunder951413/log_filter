@@ -3243,15 +3243,8 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         line_count = done or task.get("total_lines") or 0
         data = load_data()
         selected_strings = task.get("selected_strings")
-        LARGE_FILE_THRESHOLD = 1000
-        if line_count > LARGE_FILE_THRESHOLD:
-            final_display = build_rolling_display(temp_file, line_count, session_id, selected_strings, data, encoding)
-        else:
-            content_text, _ = get_file_lines_range(temp_file, 1, line_count, encoding=encoding)
-            if selected_strings and data:
-                final_display = html.Div([highlight_keywords_dash(content_text, selected_strings, data)])
-            else:
-                final_display = html.Pre(content_text, className="small")
+        # Always use rolling display to ensure search/jump functionality works
+        final_display = build_rolling_display(temp_file, line_count, session_id, selected_strings, data, encoding)
         print(f"[进度] session={session_id} 完成，行数={line_count}，停止轮询")
         inline_progress = ""  # 完成后隐藏内联进度条
         return (100, "完成", dash.no_update, inline_progress, progress_footer_hide, True, "", "",
@@ -4008,17 +4001,7 @@ def highlight_keywords(text, selected_strings, data):
             active_cats.add(c)
             
     real_categories = [c for c in active_cats if c not in ["Temp", "Duplicate"]]
-    # DEBUG START
-    print(f"--- Highlighting Debug ---")
-    print(f"Active Categories: {active_cats}")
-    print(f"Real Categories (excluding Temp/Duplicate): {real_categories}")
-    print(f"Real Category Count: {len(real_categories)}")
-    
-    if len(real_categories) == 1:
-        print(f"Strategy: SINGLE_CATEGORY_MULTICOLOR (Category: {real_categories[0]})")
-    else:
-        print(f"Strategy: STANDARD_MODE")
-    # DEBUG END
+
     per_keyword_colors = {}
     
     if len(real_categories) == 1:
@@ -4181,17 +4164,7 @@ def highlight_keywords_dash(text, selected_strings, data, flat=False):
             active_cats.add(c)
             
     real_categories = [c for c in active_cats if c not in ["Temp", "Duplicate"]]
-    # DEBUG START
-    print(f"--- Highlight-Dash Debug ---")
-    print(f"Active Categories: {active_cats}")
-    print(f"Real Categories (excluding Temp/Duplicate): {real_categories}")
-    print(f"Real Category Count: {len(real_categories)}")
-    
-    if len(real_categories) == 1:
-        print(f"Strategy: SINGLE_CATEGORY_MULTICOLOR (Category: {real_categories[0]})")
-    else:
-        print(f"Strategy: STANDARD_MODE")
-    # DEBUG END
+
     
     keyword_color_lookup = {}
     
@@ -5425,14 +5398,7 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
                 item["category"] = global_keyword_category_map[string_text]
             loaded_strings.append(item)
             
-        # DEBUG START
-        print(f"[ConfigLoad] Global Category Map keys: {list(global_keyword_category_map.keys())[:5]}...")
-        print(f"[ConfigLoad] Sample loaded item: {loaded_strings[0] if loaded_strings else 'None'}")
-        
-        # Calculate loaded categories count
-        loaded_cats = set(global_keyword_category_map.values())
-        print(f"[ConfigLoad] Loaded Categories ({len(loaded_cats)}): {loaded_cats}")
-        # DEBUG END
+
         
         # 使用保存的日志文件
         effective_log_file = selected_log_file
