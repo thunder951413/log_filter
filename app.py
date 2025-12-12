@@ -1133,12 +1133,15 @@ app.layout = html.Div([
                             dbc.Row([
                                 dbc.Col([
                                     html.Div([
-                                        html.Button(
-                                            [html.I(className="bi bi-chevron-down me-2"), "配置文件"],
-                                            id="config-files-toggle",
-                                            className="btn btn-link text-decoration-none p-0 text-start",
-                                            style={"color": "#333", "fontWeight": "bold"}
-                                        ),
+                                        html.Div([
+                                            html.Button(
+                                                [html.I(className="bi bi-chevron-down me-2"), "配置文件"],
+                                                id="config-files-toggle",
+                                                className="btn btn-link text-decoration-none p-0 text-start",
+                                                style={"color": "#333", "fontWeight": "bold"}
+                                            ),
+                                            html.Span(id="log-view-status-bar", className="badge bg-secondary ms-3", style={"minWidth": "60px"}, children="Ready"),
+                                        ], className="d-flex align-items-center"),
                                         html.Div([
                                             dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="me-2"),
                                             html.Div([
@@ -1195,7 +1198,6 @@ app.layout = html.Div([
                                                 dbc.Button("top", id="quick-top-btn", color="secondary", outline=True, size="sm"),
                                                 html.Span("( - / - / - )", id="log-window-line-status", className="text-muted mx-2"),
                                                 dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm"),
-                                                html.Span(id="log-view-status-bar", className="badge bg-secondary ms-2", style={"minWidth": "60px"}, children="Ready"),
                                                 html.Div(id="filter-progress-inline", style={"minWidth": "200px", "minHeight": "12px"}),
                                                 dbc.Button(id="log-view-ready-signal-btn", style={"display": "none"})
                                             ], className="d-flex align-items-center gap-2 justify-content-start")
@@ -3106,13 +3108,8 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
                             category_colors["Temp"] = "#ffc107"
                         keyword_to_category[stext] = "Temp"
 
-                for kw in keywords_to_highlight:
-                    cat = keyword_to_category.get(kw)
-                    if cat in category_colors:
-                        keyword_to_color[kw.lower()] = {
-                            "bg": category_colors[cat],
-                            "fg": "#ffffff"
-                        }
+                # Use shared helper to calculate colors, supporting single-category multi-color mode
+                keyword_to_color = calculate_highlight_color_map(selected_strings, keywords_to_highlight, keyword_to_category, category_colors)
         highlight_session_info[session_id] = {
             "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
             "colors": keyword_to_color
@@ -3922,6 +3919,50 @@ def get_category_colors(categories):
     
     return category_colors
 
+def calculate_highlight_color_map(selected_strings, keywords_to_highlight, keyword_to_category, category_colors):
+    """计算会话高亮的颜色映射，支持单分类多色模式"""
+    keyword_to_color = {}
+    
+    # 策略判断：是否启用单分类多色模式
+    explicit_cats = set()
+    if selected_strings:
+        for item in selected_strings:
+            if isinstance(item, dict):
+                c = item.get("category")
+                if c and c not in ["Temp", "Duplicate"]:
+                    explicit_cats.add(c)
+    
+    single_cat_mode = (len(explicit_cats) == 1)
+    single_cat_colors = {}
+    
+    if single_cat_mode:
+        single_cat = list(explicit_cats)[0]
+        # 获取该分类下的关键字
+        single_cat_kws = [kw for kw in keywords_to_highlight if keyword_to_category.get(kw) == single_cat]
+        if single_cat_kws:
+            unique_kws = sorted(list(set(single_cat_kws)))
+            single_cat_colors = get_category_colors(unique_kws)
+    
+    for kw in keywords_to_highlight:
+        # 默认颜色
+        color = None
+        cat = keyword_to_category.get(kw)
+        
+        # 尝试单分类多色
+        if single_cat_mode and single_cat_colors and cat == list(explicit_cats)[0] and kw in single_cat_colors:
+            color = single_cat_colors[kw]
+        # 否则使用分类颜色
+        elif cat in category_colors:
+            color = category_colors[cat]
+            
+        if color:
+            keyword_to_color[kw.lower()] = {
+                "bg": color,
+                "fg": "#ffffff"
+            }
+            
+    return keyword_to_color
+
 def highlight_keywords(text, selected_strings, data):
     """在文本中高亮显示不同分类的关键字"""
     if not selected_strings or not data or "categories" not in data:
@@ -4156,20 +4197,21 @@ def highlight_keywords_dash(text, selected_strings, data, flat=False):
     # 单一分类多色高亮逻辑
     # -------------------------------------------------------------------------
     # 如果只有一个分类（忽略Temp和Duplicate），则对该分类下的关键字进行多色区分
-    # 结合当前显示的关键字反推活跃分类
-    active_cats = set()
-    for kw in keywords_to_highlight:
-        c = keyword_to_category.get(kw)
-        if c:
-            active_cats.add(c)
-            
-    real_categories = [c for c in active_cats if c not in ["Temp", "Duplicate"]]
-
+    # 计算显式选择的分类（基于 selected_strings 中的 dict配置）
+    # 忽略临时添加的无分类关键字（Temp）或自动生成的 Duplicate
+    explicit_cats = set()
+    for item in selected_strings:
+        if isinstance(item, dict):
+            c = item.get("category")
+            if c and c not in ["Temp", "Duplicate"]:
+                explicit_cats.add(c)
     
     keyword_color_lookup = {}
     
-    if len(real_categories) == 1:
-        single_cat = real_categories[0]
+    # 只要显式选择的分类只有1个，就启用单分类多色模式
+    # 即使 keywords_to_highlight 中包含了 Temp 关键字也不影响
+    if len(explicit_cats) == 1:
+        single_cat = list(explicit_cats)[0]
         # 获取该分类下所有需要高亮的关键字
         single_cat_keywords = [
             kw for kw in keywords_to_highlight 
@@ -4562,13 +4604,8 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                                     category_colors["Temp"] = "#ffc107"
                                 keyword_to_category[stext] = "Temp"
 
-                        for kw in keywords_to_highlight:
-                            cat = keyword_to_category.get(kw)
-                            if cat in category_colors:
-                                keyword_to_color[kw.lower()] = {
-                                    "bg": category_colors[cat],
-                                    "fg": "#ffffff"
-                                }
+                        # Use shared helper to calculate colors, supporting single-category multi-color mode
+                        keyword_to_color = calculate_highlight_color_map(selected_strings, keywords_to_highlight, keyword_to_category, category_colors)
                 highlight_session_info[session_id] = {
                     "keywords": sorted(set(keywords_to_highlight), key=len, reverse=True),
                     "colors": keyword_to_color
@@ -6216,4 +6253,4 @@ if __name__ == "__main__":
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the application to')
     args = parser.parse_args()
     
-    app.run(debug=True, port=args.port, host=args.host)
+    app.run(debug=False, port=args.port, host=args.host)
