@@ -13,6 +13,7 @@ import re
 import base64
 import hashlib
 import time
+import threading
 from datetime import datetime
 
 # 高亮缓存系统
@@ -144,6 +145,36 @@ _config_groups_cache = {"mtime": None, "data": None}
 _config_files_cache = {"mtime": None, "data": None}
 _log_files_cache = {"mtime": None, "data": None}
 _highlight_combo_cache = {"order": [], "map": {}, "max": 30}
+_filter_tasks = {}
+_filter_tasks_lock = threading.Lock()
+_FILTER_CHUNK_LINES = 200  # 首片行数（更快首屏）
+_FILTER_PROGRESS_INTERVAL_MS = 800  # 前端轮询间隔
+_SOURCE_PREVIEW_LINES = 2000  # 源文件tab预览行数上限
+_UI_BUSY_STORE_ID = "ui-busy-store"
+
+
+def _clear_filter_task(session_id, delete_files=False):
+    """删除指定session的任务记录，可选删除临时文件"""
+    with _filter_tasks_lock:
+        task = _filter_tasks.pop(session_id, None)
+    if delete_files and task:
+        try:
+            temp_file = task.get("temp_file")
+            idx_file = task.get("idx_file")
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+            if idx_file and os.path.exists(idx_file):
+                os.remove(idx_file)
+        except Exception:
+            pass
+
+
+def _clear_all_filter_tasks(delete_files=False):
+    """清空所有任务，避免状态残留"""
+    with _filter_tasks_lock:
+        sessions = list(_filter_tasks.keys())
+    for sid in sessions:
+        _clear_filter_task(sid, delete_files=delete_files)
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 base_path = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
@@ -172,12 +203,35 @@ FLOWS_CONFIG_FILE = 'flows.json'
 CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
 # 临时关键字配置放在项目根目录，便于随应用启动/刷新自动加载
 TEMP_KEYWORDS_FILE = os.path.join(os.getcwd(), 'temp_keywords.json')
+# 外部程序配置
+EXTERNAL_PROGRAM_CONFIG_FILE = os.path.join(os.getcwd(), 'external_program_config.json')
 
 # 日志文件目录
 LOG_DIR = 'logs'
 
 # 临时文件目录（用于存储过滤结果）
 TEMP_DIR = 'temp'
+
+# ... (existing code)
+
+# 外部程序配置管理
+def load_external_program_config():
+    if os.path.exists(EXTERNAL_PROGRAM_CONFIG_FILE):
+        try:
+            with open(EXTERNAL_PROGRAM_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Loading external program config failed: {e}")
+    return {"path": ""}
+
+def save_external_program_config(path):
+    try:
+        with open(EXTERNAL_PROGRAM_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({"path": path}, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"Saving external program config failed: {e}")
+        return False
 
 def ensure_temp_dir():
     """确保临时目录存在"""
@@ -415,6 +469,149 @@ def save_default_config(selected_strings):
     # 保存到默认配置文件
     with open(default_config_path, 'w', encoding='utf-8') as f:
         json.dump(categorized_strings, f, ensure_ascii=False, indent=2)
+
+
+# ------------------- 异步过滤任务 -------------------
+def _init_filter_task(session_id, log_path, keep_strings, filter_strings, selected_strings):
+    with _filter_tasks_lock:
+        _filter_tasks[session_id] = {
+            "status": "running",
+            "log_path": log_path,
+            "temp_file": get_temp_file_path(session_id),
+            "idx_file": None,
+            "encoding": None,
+            "done_lines": 0,
+            "total_lines": None,
+            "first_ready": False,
+            "finished": False,
+            "error": None,
+            "keep_strings": keep_strings,
+            "filter_strings": filter_strings,
+            "selected_strings": selected_strings,
+        }
+
+
+def _update_filter_task(session_id, **kwargs):
+    with _filter_tasks_lock:
+        if session_id not in _filter_tasks:
+            return
+        _filter_tasks[session_id].update(kwargs)
+
+
+def _get_filter_task(session_id):
+    with _filter_tasks_lock:
+        return _filter_tasks.get(session_id, {}).copy()
+
+
+def _estimate_total_lines(log_path):
+    try:
+        size = os.path.getsize(log_path)
+        # 粗略估计：假设平均 100 字节/行
+        return max(1, size // 100)
+    except Exception:
+        return None
+
+
+def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_every=500):
+    try:
+        # print(f"[过滤线程] start session={session_id}, log_path={log_path}")
+        # print(f"[过滤线程] keep_strings={keep_strings}, filter_strings={filter_strings}")
+        temp_file_path = get_temp_file_path(session_id)
+        idx_path = get_temp_index_path(temp_file_path)
+        encoding = detect_file_encoding(log_path)
+        keep_bytes_regex, filter_bytes_regex = _compile_byte_patterns(keep_strings, filter_strings, encoding=encoding)
+        keep_regex, filter_regex = _compile_patterns(keep_strings, filter_strings)
+
+        total_lines_est = _estimate_total_lines(log_path)
+        _update_filter_task(session_id, temp_file=temp_file_path, idx_file=idx_path, encoding=encoding, total_lines=total_lines_est)
+
+        line_count = 0
+        offsets = []
+        current_offset = 0
+
+        with open(log_path, 'rb') as src, open(temp_file_path, 'wb') as dst:
+            for raw_line in src:
+                text_line = None
+                if keep_bytes_regex:
+                    if not keep_bytes_regex.search(raw_line):
+                        continue
+                elif keep_regex:
+                    try:
+                        text_line = raw_line.decode(encoding)
+                    except UnicodeDecodeError:
+                        text_line = raw_line.decode(encoding, errors='replace')
+                    if not keep_regex.search(text_line):
+                        continue
+
+                if filter_bytes_regex:
+                    if filter_bytes_regex.search(raw_line):
+                        continue
+                elif filter_regex:
+                    if text_line is None:
+                        try:
+                            text_line = raw_line.decode(encoding)
+                        except UnicodeDecodeError:
+                            text_line = raw_line.decode(encoding, errors='replace')
+                    if filter_regex.search(text_line):
+                        continue
+
+                dst.write(raw_line)
+                line_count += 1
+                if line_count % index_every == 1:
+                    offsets.append([line_count, current_offset])
+                current_offset += len(raw_line)
+
+                if not _get_filter_task(session_id) or _get_filter_task(session_id).get("status") != "running":
+                    raise RuntimeError("任务已取消")
+
+                if not _get_filter_task(session_id).get("first_ready") and line_count >= _FILTER_CHUNK_LINES:
+                    _update_filter_task(session_id, first_ready=True)
+                    print(f"[过滤线程] session={session_id} 首片就绪, 行数={line_count}")
+
+                if line_count % 500 == 0:
+                    _update_filter_task(session_id, done_lines=line_count)
+                    # print(f"[过滤线程] session={session_id} 进度行数={line_count}")
+
+        # 写索引
+        try:
+            with open(idx_path, 'w', encoding='utf-8') as idx_file:
+                json.dump({
+                    "encoding": encoding,
+                    "index_every": index_every,
+                    "offsets": offsets
+                }, idx_file, ensure_ascii=False)
+        except Exception as e:
+            print(f"[过滤] 写入索引失败: {e}")
+
+        _update_filter_task(session_id, done_lines=line_count, finished=True, first_ready=True, status="finished")
+        print(f"[过滤线程] session={session_id} 完成，行数={line_count}")
+    except Exception as e:
+        print(f"[过滤] 异步过滤失败: {e}")
+        _update_filter_task(session_id, error=str(e), status="error", finished=True)
+    finally:
+        # 确保任务最终标记为完成，防止进度条卡住
+        try:
+            task = _get_filter_task(session_id)
+            if task and not task.get("finished"):
+                print(f"[过滤线程] session={session_id} finally块触发完成状态更新")
+                _update_filter_task(session_id, finished=True, status="finished" if task.get("status") != "error" else "error")
+        except Exception as e:
+            print(f"[过滤] finally块更新状态失败: {e}")
+
+
+def _read_partial_lines(file_path, encoding, max_lines):
+    """读取临时文件前 max_lines 行"""
+    lines = []
+    try:
+        with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+            for _ in range(max_lines):
+                line = f.readline()
+                if not line:
+                    break
+                lines.append(line)
+    except Exception as e:
+        print(f"[过滤] 读取部分结果失败: {e}")
+    return "".join(lines)
     
     return len(selected_strings)
 
@@ -723,7 +920,10 @@ def _create_file_list_table(log_files):
     if not log_files:
         return html.Div("暂无上传的文件", className="text-muted text-center p-3")
     
-    rows = []
+    # 预处理文件信息以便排序
+    file_info_list = []
+    today = datetime.now().date()
+    
     for file in log_files:
         # Ensure file name is string and handle spaces
         if not isinstance(file, str):
@@ -733,8 +933,34 @@ def _create_file_list_table(log_files):
         if not os.path.exists(file_path):
             continue
             
-        file_size = os.path.getsize(file_path)
-        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            stat = os.stat(file_path)
+            file_size = stat.st_size
+            mtime = stat.st_mtime
+            mtime_dt = datetime.fromtimestamp(mtime)
+            
+            file_info_list.append({
+                "name": file,
+                "size": file_size,
+                "mtime": mtime,
+                "mtime_dt": mtime_dt
+            })
+        except Exception:
+            continue
+    
+    # 按修改时间降序排序（最新的在最上面）
+    file_info_list.sort(key=lambda x: x["mtime"], reverse=True)
+    
+    rows = []
+    for info in file_info_list:
+        file = info["name"]
+        file_size = info["size"]
+        file_mtime = info["mtime_dt"].strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 判断是否是当天上传/修改的文件
+        row_class = ""
+        if info["mtime_dt"].date() == today:
+            row_class = "table-warning"  # Bootstrap 警告色（浅黄）
         
         rows.append(html.Tr([
             html.Td(file, className="align-middle"),
@@ -760,7 +986,7 @@ def _create_file_list_table(log_files):
                 ], 
                 className="align-middle"
             )
-        ]))
+        ], className=row_class))
     
     return dbc.Table(
         [
@@ -784,12 +1010,18 @@ data = load_data()
 
 # 确保配置目录存在
 ensure_config_dir()
+# 加载外部程序配置
+ext_prog_config = load_external_program_config()
 
 # 应用布局
 app.layout = html.Div([
     # Toast通知容器
     html.Div(id="toast-container", className="toast-container"),
     dcc.Store(id="group-selected-files-store", data=[]),
+    dcc.Store(id="filter-session-store", data=""),
+    dcc.Store(id="filter-first-chunk-ready", data=False),
+    dcc.Interval(id="filter-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
+    dcc.Store(id=_UI_BUSY_STORE_ID, data=False),
     dcc.Location(id="url", refresh=False),
     
     dbc.Container([
@@ -840,6 +1072,14 @@ app.layout = html.Div([
                         color="secondary", 
                         size="sm"
                     ),
+                    dbc.Button(
+                        html.I(className="bi bi-box-arrow-up-right"), 
+                        id="open-external-btn", 
+                        color="secondary", 
+                        size="sm",
+                        className="ms-2",
+                        title="使用外部程序打开当前日志"
+                    ),
                     dbc.Popover([
                         dbc.PopoverHeader("添加临时关键字"),
                         dbc.PopoverBody([
@@ -876,15 +1116,11 @@ app.layout = html.Div([
                     target="temp-keyword-drawer-toggle",
                     trigger="legacy",
                     placement="bottom",
-                    style={"maxWidth": "300px"}
+                    style={"maxWidth": "800px"}
                     )
                 ], className="d-flex align-items-center justify-content-end"),
                 
-                # 临时关键字显示区域
-                html.Div(
-                    id="temp-keywords-display",
-                    className="mt-2 d-flex flex-wrap justify-content-end gap-1"
-                )
+
             ], className="position-fixed", style={"top": "20px", "right": "20px", "zIndex": 1000, "maxWidth": "600px"}),
             
 
@@ -896,33 +1132,44 @@ app.layout = html.Div([
                             # 左侧：配置文件选择器和相关按钮
                             dbc.Row([
                                 dbc.Col([
-                                    html.Div(id="config-files-container", className="border rounded p-2", style={"maxHeight": "150px", "overflowY": "auto", "fontSize": "11px"}),
-                                    # 将清除选择和过滤按钮放在一起
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="w-100")
-                                        ], width=6),
-                                        dbc.Col([
+                                    html.Div([
+                                        html.Button(
+                                            [html.I(className="bi bi-chevron-down me-2"), "配置文件"],
+                                            id="config-files-toggle",
+                                            className="btn btn-link text-decoration-none p-0 text-start",
+                                            style={"color": "#333", "fontWeight": "bold"}
+                                        ),
+                                        html.Div([
+                                            dbc.Button("清除选择", id="clear-config-selection-btn", color="danger", size="sm", className="me-2"),
                                             html.Div([
                                                 dbc.Button([
                                                     html.Span("过滤", id="filter-btn-text"),
                                                     dbc.Spinner(size="sm", color="light", id="filter-loading-spinner", spinner_style={"display": "none", "marginLeft": "5px"})
-                                                ], id="execute-filter-btn", color="success", className="w-100", size="sm"),
+                                                ], id="execute-filter-btn", color="success", size="sm"),
                                                 dcc.Loading(
                                                     id="filter-loading",
                                                     type="circle",
                                                     children=html.Div(id="filter-loading-output"),
                                                     style={"display": "none"}
                                                 )
-                                            ])
-                                        ], width=6)
-                                    ], className="mt-2 mb-3"),
+                                            ], style={"display": "inline-block"})
+                                        ], className="d-flex align-items-center")
+                                    ], className="d-flex justify-content-between align-items-center mb-2"),
+                                    dbc.Collapse(
+                                        html.Div(id="config-files-container", className="border rounded p-2", style={"maxHeight": "150px", "overflowY": "auto", "fontSize": "11px"}),
+                                        id="config-files-collapse",
+                                        is_open=True
+                                    ),
                                     # 显示模式切换 Tabs
                                     dbc.Row([
                                         dbc.Col([
                                             dbc.Tabs([
                                                 dbc.Tab(label="过滤结果", tab_id="filtered", children=[
-                                                    html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                    html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"}),
+                                                    html.Div([
+                                                        dbc.Progress(id="filter-progress-bar", value=0, striped=True, animated=True, className="my-2", style={"height": "8px", "minWidth": "200px"}),
+                                                        html.Div(id="filter-progress-text", className="small text-muted mb-1")
+                                                    ], id="filter-progress-footer", className="mt-1", style={"display": "none"})
                                                 ]),
                                                 dbc.Tab(label="源文件", tab_id="source", children=[
                                                     html.Div(id="log-source-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
@@ -942,12 +1189,17 @@ app.layout = html.Div([
                                     # 右侧工具（关键字搜索、行跳转）
                                     dbc.Row([
                                         dbc.Col([
+                                    dbc.Row([
+                                        dbc.Col([
                                             html.Div([
-                                                dbc.Button("top", id="quick-top-btn", color="secondary", outline=True, size="sm", className="me-2"),
-                                                html.Span("( - / - / - )", id="log-window-line-status", className="text-muted"),
-                                                dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm", className="ms-2")
-                                            ], className="d-flex justify-content-between align-items-center")
-                                        ], width=3),
+                                                dbc.Button("top", id="quick-top-btn", color="secondary", outline=True, size="sm"),
+                                                html.Span("( - / - / - )", id="log-window-line-status", className="text-muted mx-2"),
+                                                dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm"),
+                                                html.Span(id="log-view-status-bar", className="badge bg-secondary ms-2", style={"minWidth": "60px"}, children="Ready"),
+                                                html.Div(id="filter-progress-inline", style={"minWidth": "200px", "minHeight": "12px"}),
+                                                dbc.Button(id="log-view-ready-signal-btn", style={"display": "none"})
+                                            ], className="d-flex align-items-center gap-2 justify-content-start")
+                                        ], width=6),
                                         dbc.Col([
                                             html.Div([
                                                 dbc.InputGroup([
@@ -961,7 +1213,9 @@ app.layout = html.Div([
                                                     dbc.Button("跳转", id="jump-line-btn", color="primary")
                                                 ], size="sm", style={"maxWidth": "220px"})
                                             ], className="d-flex justify-content-end align-items-center gap-2")
-                                        ], width=9)
+                                        ], width=6)
+                                    ], className="w-100")
+                                ], width=12)
                                     ])
                                 ], width=12)
                             ], className="mb-3"),
@@ -1386,6 +1640,41 @@ app.layout = html.Div([
                         ], className="mb-4 shadow-sm")
                     ], width=12)
                 ]),
+
+                # 外部程序配置区域
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.Div([
+                                    html.I(className="bi bi-gear me-2"),
+                                    html.Span("外部程序设置")
+                                ], className="d-flex align-items-center")
+                            ]),
+                            dbc.CardBody([
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("外部程序路径:"),
+                                        dbc.Input(
+                                            id="external-program-path-input",
+                                            type="text",
+                                            placeholder="输入外部程序绝对路径 (例如: /usr/bin/vim 或 C:\\Windows\\notepad.exe)",
+                                            value=ext_prog_config.get("path", "")
+                                        )
+                                    ], width=8),
+                                    dbc.Col([
+                                        dbc.Label("操作:", className="d-block invisible"),
+                                        dbc.Button("保存配置", id="save-external-program-btn", color="primary", className="w-100")
+                                    ], width=2),
+                                    dbc.Col([
+                                        dbc.Label("状态:", className="d-block invisible"),
+                                        html.Div(id="external-program-save-status", className="mt-2")
+                                    ], width=2)
+                                ])
+                            ])
+                        ], className="mb-4 shadow-sm")
+                    ], width=12)
+                ]),
                 
                 # 文件列表区域
                 dbc.Row([
@@ -1580,6 +1869,31 @@ def toggle_config_management(n_clicks, is_open):
     if n_clicks:
         return not is_open
     return is_open
+
+
+# 控制配置文件区域折叠/展开的回调
+@app.callback(
+    Output("config-files-collapse", "is_open"),
+    [Input("config-files-toggle", "n_clicks")],
+    [State("config-files-collapse", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_config_files(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
+
+
+# 文件选择后，标记 UI 正在忙（禁用分组按钮等）
+@app.callback(
+    Output(_UI_BUSY_STORE_ID, "data"),
+    [Input("log-file-selector", "value")],
+    prevent_initial_call=True
+)
+def mark_ui_busy_on_file_change(selected_log_file):
+    if selected_log_file:
+        return True
+    return False
 
 
 
@@ -2486,9 +2800,17 @@ def render_keyword_annotations_list(annotations_map):
 @app.callback(
     [Output("log-filter-results", "children"),
      Output("filtered-result-store", "data"),
+     Output("filter-progress-bar", "value", allow_duplicate=True),
+     Output("filter-progress-text", "children", allow_duplicate=True),
+     Output("filter-progress-footer", "style", allow_duplicate=True),
      Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
      Output("filter-btn-text", "children", allow_duplicate=True),
-     Output("execute-filter-btn", "disabled", allow_duplicate=True)],
+     Output("execute-filter-btn", "disabled", allow_duplicate=True),
+     Output("execute-filter-btn", "color", allow_duplicate=True),
+     Output("filter-session-store", "data"),
+     Output("filter-progress-interval", "disabled", allow_duplicate=True),
+     Output("filter-progress-interval", "n_intervals", allow_duplicate=True),
+     Output("filter-first-chunk-ready", "data")],
     [Input("execute-filter-btn", "n_clicks")],
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
@@ -2499,12 +2821,55 @@ def render_keyword_annotations_list(annotations_map):
 def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1" or not n_clicks:
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update)
+    
+    # 先清空旧任务，避免残留状态影响新一轮过滤
+    _clear_all_filter_tasks(delete_files=False)
     
     # 执行过滤命令，包含临时关键字
-    filtered_command, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
+    session_id, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
+    try:
+        print(f"[过滤UI] 启动过滤 session={session_id}, n_clicks={n_clicks}")
+    except Exception:
+        pass
     
-    return filtered_result, filtered_result, {"display": "none", "marginLeft": "5px"}, "过滤", False
+    # 启动进度轮询，首片尚未就绪；重置存储、启用interval、按钮置忙，并重置 interval 计数
+    return (
+        filtered_result,                # log-filter-results 显示进度组件
+        "",                             # filtered-result-store 清空
+        0,                              # 重置底部进度条
+        "",                             # 重置进度文字
+        {"display": "block"},           # 展示底部进度条区域
+        {"display": "inline-block", "marginLeft": "5px"},  # spinner 显示
+        "处理中...",                    # 按钮文案
+        True,                           # 按钮禁用
+        "success",                      # 按钮颜色设为绿色
+        session_id or "",               # 会话
+        False,                          # interval 启用 (disabled=False)
+        0,                              # 重置轮询计数
+        False                           # 首片未就绪
+    )
+
+
+# 客户端回调：选择文件后立即禁用过滤按钮并显示等待
+app.clientside_callback(
+    """
+    function(value) {
+        if (value) {
+            return [true, "secondary", "等待后端刷新...", "badge bg-warning text-dark ms-2"];
+        }
+        return [window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update];
+    }
+    """,
+    [Output("execute-filter-btn", "disabled", allow_duplicate=True),
+     Output("execute-filter-btn", "color", allow_duplicate=True),
+     Output("log-view-status-bar", "children", allow_duplicate=True),
+     Output("log-view-status-bar", "className", allow_duplicate=True)],
+    Input("log-file-selector", "value"),
+    prevent_initial_call=True
+)
 
 
 # 选择文件后加载其他Tab内容
@@ -2514,7 +2879,8 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
      Output("log-annotation-results", "children"),
      Output("log-flows-results", "children"),
      Output("source-result-store", "data"),
-     Output("log-filter-results", "children", allow_duplicate=True)],
+     Output("log-filter-results", "children", allow_duplicate=True),
+     Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True)],
     [Input("log-file-selector", "value")],
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
@@ -2524,9 +2890,9 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
 )
 def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp_keywords, annotations_map, active_tab):
     if not selected_log_file:
-        return "", "", "", "", "", ""
+        return "", "", "", "", "", "", False
         
-    # 执行源文件逻辑
+    # 源文件视图使用滚动窗口，便于查找/跳转
     source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
     
     # 高亮模式
@@ -2543,7 +2909,8 @@ def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp
     # 流程视图
     flows_component = build_flows_display(selected_log_file)
     
-    return source_result, highlight_result, annotation_component, flows_component, source_result, html.P("请点击'过滤'按钮查看结果", className="text-info text-center")
+    # 过滤按钮状态已由客户端回调和rolling.js处理，此处无需重复设置
+    return source_result, highlight_result, annotation_component, flows_component, source_result, "", False
 
  
 
@@ -2579,63 +2946,18 @@ def _compile_byte_patterns(keep_strings, filter_strings, encoding):
     return keep_regex, filter_regex
 
 
-def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500):
-    """流式过滤日志到临时文件，并生成行偏移索引"""
-    ensure_temp_dir()
-    temp_file_path = get_temp_file_path(session_id)
-    idx_path = get_temp_index_path(temp_file_path)
-    
-    encoding = detect_file_encoding(log_path)
-    keep_bytes_regex, filter_bytes_regex = _compile_byte_patterns(keep_strings, filter_strings, encoding=encoding)
-    
-    line_count = 0
+def _build_temp_index(temp_file_path, idx_path, encoding, index_every=500):
+    """为临时文件生成行偏移索引"""
     offsets = []
     current_offset = 0
-    
-    print(f"[过滤] 开始流式过滤: {log_path}, 编码 {encoding}")
+    line_count = 0
     try:
-        with open(log_path, 'rb') as src, open(temp_file_path, 'wb') as dst:
-            for raw_line in src:
-                text_line = None
-                # 优先使用字节正则，避免解码开销
-                if keep_bytes_regex:
-                    if not keep_bytes_regex.search(raw_line):
-                        continue
-                elif keep_regex:
-                    # 回退到文本匹配
-                    try:
-                        text_line = raw_line.decode(encoding)
-                    except UnicodeDecodeError:
-                        text_line = raw_line.decode(encoding, errors='replace')
-                    if not keep_regex.search(text_line):
-                        continue
-                
-                if filter_bytes_regex:
-                    if filter_bytes_regex.search(raw_line):
-                        continue
-                elif filter_regex:
-                    if text_line is None:
-                        try:
-                            text_line = raw_line.decode(encoding)
-                        except UnicodeDecodeError:
-                            text_line = raw_line.decode(encoding, errors='replace')
-                    if filter_regex.search(text_line):
-                        continue
-                
-                dst.write(raw_line)
+        with open(temp_file_path, 'rb') as f:
+            for raw_line in f:
                 line_count += 1
-                
-                # 记录当前行的起始偏移用于索引
                 if line_count % index_every == 1:
                     offsets.append([line_count, current_offset])
-                
                 current_offset += len(raw_line)
-    except Exception as e:
-        print(f"[过滤] 流式过滤失败: {e}")
-        raise
-    
-    # 保存索引文件
-    try:
         with open(idx_path, 'w', encoding='utf-8') as idx_file:
             json.dump({
                 "encoding": encoding,
@@ -2643,10 +2965,76 @@ def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filt
                 "offsets": offsets
             }, idx_file, ensure_ascii=False)
     except Exception as e:
-        print(f"[过滤] 写入索引文件失败（不会影响结果显示）: {e}")
-    
-    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}, 索引条目: {len(offsets)}")
+        print(f"[过滤] 构建索引失败: {e}")
+    return line_count
+
+
+def _escape_shell_pattern(pattern: str) -> str:
+    """简单转义单引号，供shell/grep使用"""
+    return pattern.replace("'", "'\"'\"'")
+
+
+def _build_patterns(keep_strings, filter_strings):
+    keep_parts = [re.escape(s) for s in keep_strings or [] if s]
+    filter_parts = [re.escape(s) for s in filter_strings or [] if s]
+    keep_pattern = "|".join(keep_parts) if keep_parts else ""
+    filter_pattern = "|".join(filter_parts) if filter_parts else ""
+    return keep_pattern, filter_pattern
+
+
+def _stream_filter_to_temp_unix(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, encoding, index_every):
+    """使用系统 grep 过滤（类 Unix）"""
+    # 构建管道：grep keep | grep -v filter
+    if keep_pattern:
+        cmd = f"grep -a -i -E '{_escape_shell_pattern(keep_pattern)}' \"{log_path}\""
+    else:
+        cmd = f"cat \"{log_path}\""
+    if filter_pattern:
+        cmd += f" | grep -a -i -E -v '{_escape_shell_pattern(filter_pattern)}'"
+    cmd += f" > \"{temp_file_path}\""
+    print(f"[过滤] 使用系统 grep 执行: {cmd}")
+    result = subprocess.run(cmd, shell=True)
+    # grep 无匹配时返回码 1，视为正常
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"系统过滤失败，返回码 {result.returncode}")
+    line_count = _build_temp_index(temp_file_path, idx_path, encoding, index_every=index_every)
+    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}")
     return temp_file_path, idx_path, line_count, encoding
+
+
+def _stream_filter_to_temp_windows(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, index_every):
+    """使用 PowerShell Select-String 过滤（Windows）"""
+    # 使用简单匹配，默认不区分大小写
+    ps_cmd = f"Get-Content -Path \"{log_path}\""
+    if keep_pattern:
+        ps_cmd += f" | Select-String -SimpleMatch -CaseSensitive:$false -Pattern '{keep_pattern}'"
+    if filter_pattern:
+        ps_cmd += f" | Select-String -SimpleMatch -CaseSensitive:$false -NotMatch -Pattern '{filter_pattern}'"
+    ps_cmd += f" | Out-File -FilePath \"{temp_file_path}\" -Encoding utf8"
+    full_cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
+    print(f"[过滤] 使用PowerShell过滤: {full_cmd}")
+    result = subprocess.run(full_cmd, shell=True)
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"PowerShell 过滤失败，返回码 {result.returncode}")
+    # 输出为utf-8
+    encoding = "utf-8"
+    line_count = _build_temp_index(temp_file_path, idx_path, encoding, index_every=index_every)
+    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}")
+    return temp_file_path, idx_path, line_count, encoding
+
+
+def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500):
+    """使用系统 grep/PowerShell 过滤日志到临时文件，并生成索引"""
+    ensure_temp_dir()
+    temp_file_path = get_temp_file_path(session_id)
+    idx_path = get_temp_index_path(temp_file_path)
+    keep_pattern, filter_pattern = _build_patterns(keep_strings, filter_strings)
+    encoding = detect_file_encoding(log_path)
+    
+    if os.name == "nt":
+        return _stream_filter_to_temp_windows(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, index_every)
+    else:
+        return _stream_filter_to_temp_unix(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, encoding, index_every)
 
 
 def build_rolling_display(temp_file_path, line_count, session_id, selected_strings, data, encoding):
@@ -2655,7 +3043,7 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
     window_size = rolling_cfg.get('lines_before', 250) + rolling_cfg.get('lines_after', 249) + 1
     initial_content, _ = get_file_lines_range(temp_file_path, 1, min(window_size, line_count), encoding=encoding)
     if selected_strings and data:
-        initial_display = highlight_keywords_dash(initial_content, selected_strings, data)
+        initial_display = highlight_keywords_dash(initial_content, selected_strings, data, flat=True)
     else:
         initial_display = html.Pre(initial_content, className="small")
     
@@ -2663,7 +3051,11 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
         html.Div(),
         html.Div(
             id=f"log-window-{session_id}",
-            children=[initial_display],
+            children=[
+                html.Div(className="pad-top", style={"height": "0px"}),
+                initial_display,
+                html.Div(className="pad-bottom", style={"height": "0px"})
+            ],
             style={"backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"},
             **{
                 "data-session-id": session_id,
@@ -2671,7 +3063,8 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
                 "data-window-size": window_size,
                 "data-lines-before": rolling_cfg.get('lines_before', 250),
                 "data-lines-after": rolling_cfg.get('lines_after', 249),
-                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
+                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125),
+                "data-initial-loaded": "true"
             }
         ),
         dcc.Store(id=f"temp-file-info-{session_id}", data={
@@ -2692,7 +3085,7 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
         keywords_to_highlight = []
         keyword_to_color = {}
         if selected_strings and data and isinstance(data, dict) and "categories" in data:
-            categories = list(data["categories"].keys())
+            categories = sorted(list(data["categories"].keys()))
             if categories:
                 category_colors = get_category_colors(categories)
                 keyword_to_category = {}
@@ -2733,7 +3126,7 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
 
 
 def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
-    """执行过滤逻辑，包含临时关键字"""
+    """执行过滤逻辑，包含临时关键字（异步流式过滤）"""
     # 合并选中的字符串和临时关键字
     normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
     all_strings = []
@@ -2756,42 +3149,118 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
-    
-    keep_regex, filter_regex = _compile_patterns(keep_strings, filter_strings)
     data = load_data()
     
     # session_id 基于文件和关键字，保证同配置复用滚动会话
     try:
-        session_key = f"{log_path}:{keep_strings}:{filter_strings}"
+        session_key = f"{log_path}:{keep_strings}:{filter_strings}:{time.time()}"
         session_id = hashlib.md5(session_key.encode()).hexdigest()
     except Exception:
-        session_id = None
+        session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
     
-    try:
-        temp_file_path, _idx_path, line_count, encoding = stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=session_id)
-    except Exception as e:
-        return "", html.Div([
+    # 初始化任务并启动后台线程
+    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
+    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings))
+    thread.daemon = True
+    thread.start()
+    
+    progress_component = html.Div([
+        html.Div(id="filter-partial-display")
+    ])
+    
+    # 返回 session_id 用于前端轮询
+    return session_id, progress_component
+
+
+# 过滤进度轮询
+@app.callback(
+    [Output("filter-progress-bar", "value", allow_duplicate=True),
+     Output("filter-progress-text", "children", allow_duplicate=True),
+     Output("filter-partial-display", "children", allow_duplicate=True),
+     Output("filter-progress-inline", "children", allow_duplicate=True),
+     Output("filter-progress-footer", "style", allow_duplicate=True),
+     Output("filter-progress-interval", "disabled", allow_duplicate=True),
+     Output("filter-session-store", "data", allow_duplicate=True),
+     Output("filter-first-chunk-ready", "data", allow_duplicate=True),
+     Output("log-filter-results", "children", allow_duplicate=True),
+     Output("filtered-result-store", "data", allow_duplicate=True),
+     Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
+     Output("filter-btn-text", "children", allow_duplicate=True),
+     Output("execute-filter-btn", "disabled", allow_duplicate=True)],
+    [Input("filter-progress-interval", "n_intervals")],
+    [State("filter-session-store", "data"),
+     State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def poll_filter_progress(n_intervals, session_id, active_tab):
+    spinner_hide = {"display": "none", "marginLeft": "5px"}
+    progress_footer_show = {"display": "block"}
+    progress_footer_hide = {"display": "none"}
+    if active_tab != "tab-1" or not session_id:
+        print(f"[进度] 跳过轮询 active_tab={active_tab} session_id={session_id}")
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update)
+    
+    task = _get_filter_task(session_id)
+    if not task:
+        print(f"[进度] session={session_id} 未找到任务(可能是旧轮询)，暂不停止轮询")
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+    
+    # 错误处理
+    if task.get("status") == "error":
+        err_div = html.Div([
             html.P("过滤失败:", className="text-danger"),
-            html.Pre(str(e), className="text-danger small")
+            html.Pre(task.get("error"), className="text-danger small")
         ])
+        print(f"[进度] session={session_id} 状态=error, err={task.get('error')}")
+        return (0, "过滤失败", err_div, "", progress_footer_show, True, "", True, err_div, err_div,
+                spinner_hide, "过滤", False)
     
-    if line_count == 0:
-        return "python-filter", html.Pre("没有找到符合条件的日志行", className="small")
+    done = task.get("done_lines") or 0
+    total = task.get("total_lines")
+    percent = min(100, int(done / total * 100)) if total else None
+    progress_text = f"{done} 行" + (f"/约{total}行" if total else "")
+    print(f"[进度] tick session={session_id} status={task.get('status')} done={done} total={total} first_ready={task.get('first_ready')} finished={task.get('finished')} first_chunk={task.get('first_ready')} progress_bar={(percent if percent is not None else 'NA')}")
     
-    LARGE_FILE_THRESHOLD = 1000
-    if line_count > LARGE_FILE_THRESHOLD:
-        result_display = build_rolling_display(temp_file_path, line_count, session_id, all_strings, data, encoding)
-    else:
-        # 小结果直接读取全部并高亮
-        content_text, _ = get_file_lines_range(temp_file_path, 1, line_count, encoding=encoding)
-        if all_strings and data:
-            result_display = html.Div([
-                highlight_keywords_dash(content_text, all_strings, data)
-            ])
+    # 首片就绪但未完成
+    if task.get("first_ready") and not task.get("finished"):
+        encoding = task.get("encoding") or "utf-8"
+        chunk_text = _read_partial_lines(task.get("temp_file"), encoding, _FILTER_CHUNK_LINES)
+        data = load_data()
+        partial_display = highlight_keywords_dash(chunk_text, task.get("selected_strings"), data)
+        print(f"[进度] session={session_id} 首片已就绪，返回部分内容，percent={percent}")
+        return (percent if percent is not None else 1, progress_text, partial_display, "", progress_footer_show, False, session_id, True,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+    
+    # 完成
+    if task.get("finished"):
+        temp_file = task.get("temp_file")
+        idx_file = task.get("idx_file")
+        encoding = task.get("encoding") or "utf-8"
+        line_count = done or task.get("total_lines") or 0
+        data = load_data()
+        selected_strings = task.get("selected_strings")
+        LARGE_FILE_THRESHOLD = 1000
+        if line_count > LARGE_FILE_THRESHOLD:
+            final_display = build_rolling_display(temp_file, line_count, session_id, selected_strings, data, encoding)
         else:
-            result_display = html.Pre(content_text, className="small")
+            content_text, _ = get_file_lines_range(temp_file, 1, line_count, encoding=encoding)
+            if selected_strings and data:
+                final_display = html.Div([highlight_keywords_dash(content_text, selected_strings, data)])
+            else:
+                final_display = html.Pre(content_text, className="small")
+        print(f"[进度] session={session_id} 完成，行数={line_count}，停止轮询")
+        inline_progress = ""  # 完成后隐藏内联进度条
+        return (100, "完成", dash.no_update, inline_progress, progress_footer_hide, True, "", "",
+                final_display, final_display, spinner_hide, "过滤", False)
     
-    return "python-filter", result_display
+    # 仍在进行，但未到首片
+    inline_progress = ""  # 不再显示顶部内联进度条
+    return (percent, progress_text, dash.no_update, inline_progress, progress_footer_show, False, session_id, dash.no_update,
+            dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
 
 def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords=None):
     """执行源文件逻辑，包含临时关键字"""
@@ -2823,6 +3292,40 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
         result_display = execute_command(full_command, save_to_temp=True, session_id=session_id)
     
     return full_command, result_display
+
+
+def execute_source_preview(selected_log_file, selected_strings=None, temp_keywords=None, max_lines=_SOURCE_PREVIEW_LINES):
+    """源文件tab预览：前 max_lines 行，并计算总行数便于跳转/提示"""
+    if not selected_log_file:
+        return "", html.P("请选择日志文件", className="text-danger text-center")
+    log_path = get_log_path(selected_log_file)
+    try:
+        total_lines = get_file_line_count(log_path)
+    except Exception:
+        total_lines = None
+    preview_end = max_lines if total_lines is None else min(max_lines, total_lines)
+
+    # 合并选中的字符串和临时关键字
+    normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
+    all_strings = []
+    if selected_strings:
+        all_strings.extend(selected_strings)
+    all_strings.extend(normalized_temp_keywords)
+
+    content_text, encoding = get_file_lines_range(log_path, 1, preview_end)
+    if all_strings:
+        data = load_data()
+        result_display = html.Div([
+            html.P(f"预览前 {preview_end} 行" + (f"/共约 {total_lines} 行" if total_lines else ""), className="text-muted small"),
+            highlight_keywords_dash(content_text, all_strings, data)
+        ])
+    else:
+        result_display = html.Div([
+            html.P(f"预览前 {preview_end} 行" + (f"/共约 {total_lines} 行" if total_lines else ""), className="text-muted small"),
+            html.Pre(content_text, className="small")
+        ])
+
+    return f"preview:{log_path}", result_display
 
 def _run_command_capture_text(full_command):
     """执行命令并返回解码后的文本（最佳努力解码）"""
@@ -3494,13 +3997,53 @@ def highlight_keywords(text, selected_strings, data):
     # 按长度降序排序，确保长关键字优先匹配
     keywords_to_highlight.sort(key=len, reverse=True)
     
+    # -------------------------------------------------------------------------
+    # 单一分类多色高亮逻辑
+    # -------------------------------------------------------------------------
+    # 计算当前实际包含的分类
+    active_cats = set()
+    for kw in keywords_to_highlight:
+        c = keyword_to_category.get(kw)
+        if c:
+            active_cats.add(c)
+            
+    real_categories = [c for c in active_cats if c not in ["Temp", "Duplicate"]]
+    # DEBUG START
+    print(f"--- Highlighting Debug ---")
+    print(f"Active Categories: {active_cats}")
+    print(f"Real Categories (excluding Temp/Duplicate): {real_categories}")
+    print(f"Real Category Count: {len(real_categories)}")
+    
+    if len(real_categories) == 1:
+        print(f"Strategy: SINGLE_CATEGORY_MULTICOLOR (Category: {real_categories[0]})")
+    else:
+        print(f"Strategy: STANDARD_MODE")
+    # DEBUG END
+    per_keyword_colors = {}
+    
+    if len(real_categories) == 1:
+        single_cat = real_categories[0]
+        # 找出属于该单一分类的关键字
+        single_cat_keywords = [
+            kw for kw in keywords_to_highlight 
+            if keyword_to_category.get(kw) == single_cat
+        ]
+        if single_cat_keywords:
+            unique_kws = sorted(list(set(single_cat_keywords)))
+            per_keyword_colors = get_category_colors(unique_kws)
+
     # 对每个关键字进行高亮处理
     highlighted_text = text
     for keyword in keywords_to_highlight:
-        if keyword in keyword_to_category:
+        # 优先使用单分类关键字颜色
+        color = None
+        if keyword in per_keyword_colors:
+            color = per_keyword_colors[keyword]
+        elif keyword in keyword_to_category:
             category = keyword_to_category[keyword]
-            color = category_colors[category]
+            color = category_colors.get(category)
             
+        if color:
             # 使用正则表达式进行不区分大小写的匹配
             pattern = re.escape(keyword)
             replacement = f'<span style="background-color: {color}; color: white; padding: 2px 4px; border-radius: 3px; font-weight: bold;">{keyword}</span>'
@@ -3514,8 +4057,11 @@ def highlight_keywords(text, selected_strings, data):
     
     return highlighted_text
 
-def highlight_keywords_dash(text, selected_strings, data):
-    """为Dash组件生成高亮显示的组件列表（优化版本）"""
+def highlight_keywords_dash(text, selected_strings, data, flat=False):
+    """为Dash组件生成高亮显示的组件列表（优化版本）
+    flat: 如果为True，返回包含Span和字符串的列表（包裹在Pre中），而不是每行一个Div。
+          这对于rolling.js兼容性很重要（rolling.js期望pre直接包含文本/span）。
+    """
     start_time = time.time()
     
     if not selected_strings or not data or "categories" not in data:
@@ -3524,6 +4070,10 @@ def highlight_keywords_dash(text, selected_strings, data):
     
     # 性能优化：使用缓存
     cache_key = highlight_cache.get_cache_key(text, selected_strings, data)
+    # flat模式使用不同的缓存键
+    if flat:
+        cache_key += ":flat"
+        
     cached_result = highlight_cache.get(cache_key)
     if cached_result:
         return cached_result
@@ -3618,12 +4168,60 @@ def highlight_keywords_dash(text, selected_strings, data):
     # 按长度降序排序，确保长关键字优先匹配
     keywords_to_highlight.sort(key=len, reverse=True)
     
-    # 预先构建关键字到颜色的快速查找表，避免在每个匹配上循环查找
-    keyword_color_lookup = {}
+    
+    # -------------------------------------------------------------------------
+    # 单一分类多色高亮逻辑
+    # -------------------------------------------------------------------------
+    # 如果只有一个分类（忽略Temp和Duplicate），则对该分类下的关键字进行多色区分
+    # 结合当前显示的关键字反推活跃分类
+    active_cats = set()
     for kw in keywords_to_highlight:
-        cat = keyword_to_category.get(kw)
-        if cat in category_colors:
-            keyword_color_lookup[kw.lower()] = category_colors[cat]
+        c = keyword_to_category.get(kw)
+        if c:
+            active_cats.add(c)
+            
+    real_categories = [c for c in active_cats if c not in ["Temp", "Duplicate"]]
+    # DEBUG START
+    print(f"--- Highlight-Dash Debug ---")
+    print(f"Active Categories: {active_cats}")
+    print(f"Real Categories (excluding Temp/Duplicate): {real_categories}")
+    print(f"Real Category Count: {len(real_categories)}")
+    
+    if len(real_categories) == 1:
+        print(f"Strategy: SINGLE_CATEGORY_MULTICOLOR (Category: {real_categories[0]})")
+    else:
+        print(f"Strategy: STANDARD_MODE")
+    # DEBUG END
+    
+    keyword_color_lookup = {}
+    
+    if len(real_categories) == 1:
+        single_cat = real_categories[0]
+        # 获取该分类下所有需要高亮的关键字
+        single_cat_keywords = [
+            kw for kw in keywords_to_highlight 
+            if keyword_to_category.get(kw) == single_cat
+        ]
+        if single_cat_keywords:
+            # 为这些关键字生成各自的颜色
+            # 使用 set 去重后排序，保证颜色分配一致性
+            unique_kws = sorted(list(set(single_cat_keywords)))
+            kw_colors = get_category_colors(unique_kws)
+            # 更新查找表
+            for kw in single_cat_keywords:
+                if kw in kw_colors:
+                    keyword_color_lookup[kw.lower()] = kw_colors[kw]
+    
+    # -------------------------------------------------------------------------
+    # 常规逻辑（或处理剩余的 Temp/Duplicate/多分类情况）
+    # -------------------------------------------------------------------------
+    # 补充尚未分配颜色的关键字（多分类情况，或者 Temp/Duplicate）
+    for kw in keywords_to_highlight:
+        kw_lower = kw.lower()
+        if kw_lower not in keyword_color_lookup:
+            cat = keyword_to_category.get(kw)
+            if cat in category_colors:
+                keyword_color_lookup[kw_lower] = category_colors[cat]
     
     # 性能优化：使用单一正则表达式进行匹配
     try:
@@ -3645,11 +4243,15 @@ def highlight_keywords_dash(text, selected_strings, data):
         # 按行处理文本
         lines = text.split('\n')
         highlighted_lines = []
+        flat_elements = [] if flat else None
         
         for line in lines:
             if not line.strip():
                 # 空行直接添加
-                highlighted_lines.append(html.Div('\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+                if flat:
+                    flat_elements.append('\n')
+                else:
+                    highlighted_lines.append(html.Div('\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
                 continue
             
             # 使用单一正则表达式查找所有匹配
@@ -3657,7 +4259,10 @@ def highlight_keywords_dash(text, selected_strings, data):
             
             if not matches:
                 # 该行没有关键字，直接添加
-                highlighted_lines.append(html.Div(line + '\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+                if flat:
+                    flat_elements.append(line + '\n')
+                else:
+                    highlighted_lines.append(html.Div(line + '\n', style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
                 continue
             
             # 构建该行的组件
@@ -3699,13 +4304,20 @@ def highlight_keywords_dash(text, selected_strings, data):
                 components.append(line[current_pos:])
             
             # 添加换行符
-            components.append('\n')
-            
-            # 创建该行的Div组件
-            highlighted_lines.append(html.Div(components, style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
+            if flat:
+                components.append('\n')
+                flat_elements.extend(components)
+            else:
+                components.append('\n')
+                # 创建该行的Div组件
+                highlighted_lines.append(html.Div(components, style={'whiteSpace': 'pre', 'fontFamily': 'monospace', 'fontSize': '12px'}))
         
-        # 返回包含所有行的Div
-        result = html.Div(highlighted_lines)
+        # 返回结果
+        if flat:
+            result = html.Pre(flat_elements, className="small")
+        else:
+            result = html.Div(highlighted_lines)
+            
         highlight_cache.put(cache_key, result)
         _highlight_combo_cache["map"][combo_key] = result
         _highlight_combo_cache["order"].append(combo_key)
@@ -3934,11 +4546,11 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                         "data-total-lines": line_count,
                         "data-window-size": window_size,
                         "data-lines-before": rolling_cfg.get('lines_before', 250),
-                        "data-lines-after": rolling_cfg.get('lines_after', 249),
-                        "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
-                    }
-                ),
-                dcc.Store(id=f"temp-file-info-{session_id}", data={
+                "data-lines-after": rolling_cfg.get('lines_after', 249),
+                "data-prefetch-threshold": rolling_cfg.get('prefetch_threshold', 125)
+            }
+        ),
+        dcc.Store(id=f"temp-file-info-{session_id}", data={
                     "file_path": temp_file_path,
                     "total_lines": line_count,
                     "session_id": session_id,
@@ -3956,7 +4568,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
                 keywords_to_highlight = []
                 keyword_to_color = {}
                 if selected_strings and data and isinstance(data, dict) and "categories" in data:
-                    categories = list(data["categories"].keys())
+                    categories = sorted(list(data["categories"].keys()))
                     if categories:
                         category_colors = get_category_colors(categories)
                         keyword_to_category = {}
@@ -4166,16 +4778,18 @@ def delete_log_file(n_clicks):
 
 # 页面加载时初始化文件列表
 @app.callback(
-    Output('uploaded-files-list', 'children', allow_duplicate=True),
+    [Output('uploaded-files-list', 'children', allow_duplicate=True),
+     Output('external-program-path-input', 'value')],
     [Input('main-tabs', 'active_tab')],
     prevent_initial_call='initial_duplicate'
 )
 def initialize_file_list(active_tab):
     if active_tab == "tab-3":
         log_files = get_log_files()
-        return _create_file_list_table(log_files)
+        ext_config = load_external_program_config()
+        return _create_file_list_table(log_files), ext_config.get("path", "")
     
-    return dash.no_update
+    return dash.no_update, dash.no_update
 
 # 重命名文件回调：打开模态框和取消
 @app.callback(
@@ -4334,7 +4948,8 @@ def load_configuration(n_clicks, config_name, selected_log_file):
                     for string_text in content["keep"]:
                         loaded_strings.append({
                             "text": string_text,
-                            "type": "keep"
+                            "type": "keep",
+                            "category": category
                         })
                 
                 # 处理过滤字符串
@@ -4342,14 +4957,19 @@ def load_configuration(n_clicks, config_name, selected_log_file):
                     for string_text in content["filter"]:
                         loaded_strings.append({
                             "text": string_text,
-                            "type": "filter"
+                            "type": "filter",
+                            "category": category
                         })
             else:
                 # 处理旧格式的配置文件
+                # 使用 config_name 作为分类名，确保单一配置文件加载时能被识别为同一分类
+                # 去除文件扩展名作为分类名
+                cat_name = os.path.splitext(config_name)[0]
                 for string_text in content:
                     loaded_strings.append({
                         "text": string_text,
-                        "type": "keep"  # 默认为保留字符串
+                        "type": "keep",  # 默认为保留字符串
+                        "category": cat_name
                     })
         
         # 保存到用户选择状态
@@ -4604,7 +5224,8 @@ def update_config_files_display(active_tab, selected_config_files, selected_grou
                     color="primary" if is_selected else "outline-primary",
                     size="sm",
                     className="m-1",
-                    style={"whiteSpace": "nowrap", "flexShrink": 0}
+                    style={"whiteSpace": "nowrap", "flexShrink": 0},
+                    disabled=False  # 具体禁用由外层控制
                 )
             )
         
@@ -4635,6 +5256,10 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
+
+    # 防御：None 处理
+    if current_selection is None:
+        current_selection = []
     
     # 如果是配置组选择触发
     if ctx.triggered and ctx.triggered[0]['prop_id'] == 'log-filter-config-group-selector.value':
@@ -4657,11 +5282,15 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
     
     # 如果点击了配置文件按钮
     if ctx.triggered and 'config-file-btn' in ctx.triggered[0]['prop_id']:
-        # 排除初始 None 触发（value 为 None 表示未真正点击）
         trigger_value = ctx.triggered[0].get('value')
-        if trigger_value is None:
-            print("触发的配置按钮 value 为 None，忽略此次更新")
-            return dash.no_update
+        # 如果Dash给了None，尝试从点击列表里推断本次点击的按钮
+        if trigger_value is None and isinstance(config_btn_clicks, list):
+            for idx, val in enumerate(config_btn_clicks):
+                if val is not None and val > 0:
+                    trigger_value = val
+                    break
+            if trigger_value is None:
+                return dash.no_update
         # 获取被点击的按钮的index（即配置文件名）
         prop_id = ctx.triggered[0]['prop_id']
         config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
@@ -4761,10 +5390,12 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
                                 keyword_category_map_local[string_text] = category
                 else:
                     # 处理旧格式的配置文件
+                    # 使用 config_name 作为分类名，确保单一配置文件加载时能被识别为同一分类
+                    cat_name = os.path.splitext(selected_config_file)[0]
                     for string_text in content:
                         file_keywords.add((string_text, "keep"))
                         if string_text not in keyword_category_map_local:
-                            keyword_category_map_local[string_text] = category
+                            keyword_category_map_local[string_text] = cat_name
             
             # 更新全局映射
             for string_text, string_type in file_keywords:
@@ -4793,6 +5424,15 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
             if string_text in global_keyword_category_map:
                 item["category"] = global_keyword_category_map[string_text]
             loaded_strings.append(item)
+            
+        # DEBUG START
+        print(f"[ConfigLoad] Global Category Map keys: {list(global_keyword_category_map.keys())[:5]}...")
+        print(f"[ConfigLoad] Sample loaded item: {loaded_strings[0] if loaded_strings else 'None'}")
+        
+        # Calculate loaded categories count
+        loaded_cats = set(global_keyword_category_map.values())
+        print(f"[ConfigLoad] Loaded Categories ({len(loaded_cats)}): {loaded_cats}")
+        # DEBUG END
         
         # 使用保存的日志文件
         effective_log_file = selected_log_file
@@ -4825,15 +5465,14 @@ def load_selected_config_files(selected_config_files, selected_log_file, active_
 
 # 监听临时关键字存储变化，更新显示
 @app.callback(
-    [Output('temp-keywords-display', 'children'),
-     Output('temp-keywords-popover-display', 'children')],
+    Output('temp-keywords-popover-display', 'children'),
     [Input('temp-keywords-store', 'data')]
 )
 def update_temp_keywords_display(keywords):
     """根据存储的数据更新临时关键字显示"""
     normalized = normalize_temp_keywords(keywords)
     result = create_temp_keyword_buttons(normalized)
-    return result, result
+    return result
 
 # 页面加载/刷新时重新从文件载入临时关键字，避免服务端缓存旧数据
 @app.callback(
@@ -5004,8 +5643,8 @@ def create_temp_keyword_buttons(keywords):
                 color=btn_color,
                 size="sm",
                 className="m-1",
-                style={"whiteSpace": "nowrap", "flexShrink": 0}
-            )
+                style={"whiteSpace": "nowrap", "flexShrink": 0, "maxWidth": "200px", "overflow": "hidden", "textOverflow": "ellipsis"}
+            ),
         )
     
     # 使用d-flex和flex-wrap实现多列布局
@@ -5522,6 +6161,81 @@ def apply_config_group_selection(group_name):
         
     return html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
 
+# 同步前端滚动窗口Ready状态到Dash状态
+@app.callback(
+    [Output("execute-filter-btn", "disabled", allow_duplicate=True),
+     Output("execute-filter-btn", "color", allow_duplicate=True),
+     Output("log-view-status-bar", "children", allow_duplicate=True),
+     Output("log-view-status-bar", "className", allow_duplicate=True)],
+    [Input("log-view-ready-signal-btn", "n_clicks")],
+    prevent_initial_call=True
+)
+def sync_log_view_ready_state(n_clicks):
+    if n_clicks:
+        return False, "success", "Ready", "badge bg-success ms-2"
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+
+# -----------------------------------------------------------------------------
+# 外部程序调用相关回调
+# -----------------------------------------------------------------------------
+
+@app.callback(
+    Output("external-program-save-status", "children"),
+    [Input("save-external-program-btn", "n_clicks")],
+    [State("external-program-path-input", "value")],
+    prevent_initial_call=True
+)
+def save_external_program_config_callback(n_clicks, path):
+    if not n_clicks:
+        return dash.no_update
+    
+    if not path:
+        return dbc.Alert("请输入有效的程序路径", color="warning", dismissable=True)
+        
+    if save_external_program_config(path):
+        return dbc.Alert("配置保存成功", color="success", dismissable=True)
+    else:
+        return dbc.Alert("配置保存失败", color="danger", dismissable=True)
+
+@app.callback(
+    Output("toast-container", "children", allow_duplicate=True),
+    [Input("open-external-btn", "n_clicks")],
+    [State("log-file-selector", "value")],
+    prevent_initial_call=True
+)
+def open_external_program_callback(n_clicks, selected_log_file):
+    if not n_clicks:
+        return dash.no_update
+        
+    if not selected_log_file:
+         return html.Script("if(window.showToast) window.showToast('请先选择一个日志文件', 'warning');")
+    
+    config = load_external_program_config()
+    program_path = config.get("path")
+    
+    if not program_path:
+         return html.Script("if(window.showToast) window.showToast('未配置外部程序路径，请在日志管理中配置', 'warning');")
+         
+    log_path = get_log_path(selected_log_file)
+    if not os.path.exists(log_path):
+         return html.Script(f"if(window.showToast) window.showToast('日志文件不存在: {selected_log_file}', 'error');")
+         
+    try:
+        # 使用 shlex to properly split command string (handle quotes/spaces)
+        import shlex
+        args = shlex.split(program_path)
+        cmd = args + [log_path]
+        
+        print(f"Executing external program: {cmd}")
+        subprocess.Popen(cmd)
+            
+        return html.Script(f"if(window.showToast) window.showToast('已请求使用外部程序打开: {selected_log_file}', 'success');")
+    except FileNotFoundError:
+         return html.Script(f"if(window.showToast) window.showToast('找不到外部程序: {args[0]}', 'error');")
+    except Exception as e:
+         print(f"External program error: {e}")
+         return html.Script(f"if(window.showToast) window.showToast('打开失败: {str(e)}', 'error');")
+
 if __name__ == "__main__":
     import argparse
     
@@ -5536,4 +6250,4 @@ if __name__ == "__main__":
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind the application to')
     args = parser.parse_args()
     
-    app.run(debug=False, port=args.port, host=args.host)
+    app.run(debug=True, port=args.port, host=args.host)

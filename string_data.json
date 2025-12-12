@@ -129,6 +129,25 @@
     ],
     "STBDPC": [
       "STBDPC"
+    ],
+    "ROKU": [
+      "[pav",
+      "[tuner.",
+      "[tv.",
+      "[aud",
+      "[pwr",
+      "[oom.",
+      "[dvb",
+      "[ui.",
+      "[chplay",
+      "State transition",
+      "[tuner_device",
+      "[AmlAv",
+      "[pav.fmt.chg]",
+      "[aud.ctrl.dec.fmt]",
+      "[cecq.",
+      "[ciplus",
+      "writeTsData failed"
     ]
   }
 }

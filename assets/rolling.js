@@ -139,9 +139,108 @@
       } catch (e) {}
     }
 
+    function updateView(data, anchorArg) {
+      if (data && data.success) {
+        var prevStart = state.startLine;
+        var prevEnd = state.endLine;
+        state.startLine = data.start_line; state.endLine = data.end_line; state.totalLines = data.total_lines || state.totalLines;
+
+        var nodes = ensureStructure();
+        var pre = nodes.pre;
+        var topPad = nodes.topPad;
+        var bottomPad = nodes.bottomPad;
+        
+        // Only update content if provided (skipping if using initial loaded content)
+        if (data.content !== null && data.content !== undefined) {
+            if (data.is_html) {
+              pre.innerHTML = data.content || '';
+            } else {
+              pre.textContent = data.content || '';
+            }
+        }
+
+        var lh = getLineHeight(pre);
+        var viewportHeight = (scrollTarget === window) ? window.innerHeight : scrollTarget.clientHeight;
+
+        // Make scrollbar reflect only current window (virtualized within window)
+        topPad.style.height = '0px';
+        bottomPad.style.height = '0px';
+
+        // Anchor handling: prefer absolute center line; fallback to ratio within window
+        var opts = anchorArg;
+        var isOpts = opts && typeof opts === 'object' && (opts.mode || typeof opts.centerLine === 'number' || typeof opts.ratio === 'number');
+        var anchorCenterLine;
+        if (isOpts && typeof opts.centerLine === 'number' && isFinite(opts.centerLine)) {
+          var cl = Math.floor(opts.centerLine);
+          // clamp within new window just in case
+          var minL = (data.start_line || 1);
+          var maxL = (data.end_line || minL);
+          if (cl < minL) cl = minL;
+          if (cl > maxL) cl = maxL;
+          anchorCenterLine = cl;
+        } else if (isOpts && typeof opts.ratio === 'number') {
+          var spanNew = Math.max(1, (data.end_line || 0) - (data.start_line || 0));
+          var r = Math.max(0, Math.min(1, opts.ratio));
+          anchorCenterLine = Math.round((data.start_line || 1) + r * spanNew);
+        } else {
+          anchorCenterLine = (typeof anchorArg === 'number') ? anchorArg : (data.start_line + Math.floor((data.end_line - data.start_line + 1) / 2));
+        }
+        // Compute offset: support 'top' mode (place anchor line at top), otherwise center by default
+        var offsetWithinPre;
+        if (isOpts && opts.mode === 'top') {
+          // place the anchor line at the very top of the viewport within the pre element
+          offsetWithinPre = (anchorCenterLine - data.start_line) * lh;
+        } else {
+          // center mode (default): place the anchor line at the center of the viewport
+          offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
+        }
+        var isTopMode = isOpts && opts && opts.mode === 'top';
+        if (scrollTarget === window) {
+          var docH = getDocScrollHeight();
+          if (docH > window.innerHeight + 1) {
+            var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
+            window.scrollTo(0, Math.max(0, targetScrollY));
+          }
+        } else {
+          if (isTopMode) {
+            scrollTarget.scrollTop = 0;
+          } else {
+            var preTop = preTopInContainer(pre, scrollTarget);
+            var targetScrollTop = preTop + offsetWithinPre;
+            if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
+              scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+            }
+          }
+        }
+        var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
+        state.centerLine = centerLogged || null;
+        // Persist current center line for this session
+        try { window.__savedCentersBySession[sessionId] = state.centerLine; } catch(e) {}
+        console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: centerLogged, total: state.totalLines });
+        updateStatusDisplay();
+      } else {
+        console.error('[前端滚动窗口][assets] 响应失败:', data && data.error);
+      }
+    }
+
     function loadRange(startLine, endLine, anchorArg) {
       if (state.isLoading) return;
       state.isLoading = true;
+      
+      // Update UI: Show Loading and Disable Filter Button
+      try {
+        var statusEl = document.getElementById('log-view-status-bar');
+        if (statusEl) {
+            statusEl.textContent = 'Loading';
+            statusEl.className = 'badge bg-warning text-dark ms-2';
+        }
+        var filterBtn = document.getElementById('execute-filter-btn');
+        if (filterBtn) {
+            filterBtn.disabled = true;
+            // Optionally change text or style to indicate disabled state visibly if needed
+        }
+      } catch(e) {}
+
       var payload = { session_id: sessionId, start_line: startLine, end_line: endLine };
       if (state.highlightKeyword) {
         payload.highlight_keyword = state.highlightKeyword;
@@ -152,86 +251,32 @@
       })
       .then(function(r){ return r.json(); })
       .then(function(data){
-        if (data && data.success) {
-          var prevStart = state.startLine;
-          var prevEnd = state.endLine;
-          state.startLine = data.start_line; state.endLine = data.end_line; state.totalLines = data.total_lines || state.totalLines;
-
-          var nodes = ensureStructure();
-          var pre = nodes.pre;
-          var topPad = nodes.topPad;
-          var bottomPad = nodes.bottomPad;
-          if (data && data.is_html) {
-            pre.innerHTML = data.content || '';
-          } else {
-            pre.textContent = data.content || '';
-          }
-
-          var lh = getLineHeight(pre);
-          var viewportHeight = (scrollTarget === window) ? window.innerHeight : scrollTarget.clientHeight;
-
-          // Make scrollbar reflect only current window (virtualized within window)
-          topPad.style.height = '0px';
-          bottomPad.style.height = '0px';
-
-          // Anchor handling: prefer absolute center line; fallback to ratio within window
-          var opts = anchorArg;
-          var isOpts = opts && typeof opts === 'object' && (opts.mode || typeof opts.centerLine === 'number' || typeof opts.ratio === 'number');
-          var anchorCenterLine;
-          if (isOpts && typeof opts.centerLine === 'number' && isFinite(opts.centerLine)) {
-            var cl = Math.floor(opts.centerLine);
-            // clamp within new window just in case
-            var minL = (data.start_line || 1);
-            var maxL = (data.end_line || minL);
-            if (cl < minL) cl = minL;
-            if (cl > maxL) cl = maxL;
-            anchorCenterLine = cl;
-          } else if (isOpts && typeof opts.ratio === 'number') {
-            var spanNew = Math.max(1, (data.end_line || 0) - (data.start_line || 0));
-            var r = Math.max(0, Math.min(1, opts.ratio));
-            anchorCenterLine = Math.round((data.start_line || 1) + r * spanNew);
-          } else {
-            anchorCenterLine = (typeof anchorArg === 'number') ? anchorArg : (data.start_line + Math.floor((data.end_line - data.start_line + 1) / 2));
-          }
-          // Compute offset: support 'top' mode (place anchor line at top), otherwise center by default
-          var offsetWithinPre;
-          if (isOpts && opts.mode === 'top') {
-            // place the anchor line at the very top of the viewport within the pre element
-            offsetWithinPre = (anchorCenterLine - data.start_line) * lh;
-          } else {
-            // center mode (default): place the anchor line at the center of the viewport
-            offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
-          }
-          var isTopMode = isOpts && opts && opts.mode === 'top';
-          if (scrollTarget === window) {
-            var docH = getDocScrollHeight();
-            if (docH > window.innerHeight + 1) {
-              var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
-              window.scrollTo(0, Math.max(0, targetScrollY));
-            }
-          } else {
-            if (isTopMode) {
-              scrollTarget.scrollTop = 0;
-            } else {
-              var preTop = preTopInContainer(pre, scrollTarget);
-              var targetScrollTop = preTop + offsetWithinPre;
-              if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
-                scrollTarget.scrollTop = Math.max(0, targetScrollTop);
-              }
-            }
-          }
-          var centerLogged = (typeof anchorCenterLine !== 'undefined' ? anchorCenterLine : undefined);
-          state.centerLine = centerLogged || null;
-          // Persist current center line for this session
-          try { window.__savedCentersBySession[sessionId] = state.centerLine; } catch(e) {}
-          console.log('[前端滚动窗口][assets] 窗口更新:', { start: data.start_line, end: data.end_line, center: centerLogged, total: state.totalLines });
-          updateStatusDisplay();
-        } else {
-          console.error('[前端滚动窗口][assets] 响应失败:', data && data.error);
-        }
+        updateView(data, anchorArg);
       })
       .catch(function(err){ console.error('[前端滚动窗口][assets] 请求异常:', err); })
-      .finally(function(){ state.isLoading = false; });
+      .finally(function(){ 
+        state.isLoading = false; 
+        
+        // Update UI: Show Ready and Enable Filter Button
+        try {
+            var statusEl = document.getElementById('log-view-status-bar');
+            if (statusEl) {
+                statusEl.textContent = 'Ready';
+                statusEl.className = 'badge bg-success ms-2';
+            }
+            var filterBtn = document.getElementById('execute-filter-btn');
+            if (filterBtn) {
+                filterBtn.disabled = false;
+                filterBtn.classList.remove('btn-secondary');
+                filterBtn.classList.add('btn-success');
+            }
+            // Trigger Dash callback to sync state
+            var signalBtn = document.getElementById('log-view-ready-signal-btn');
+            if (signalBtn) {
+                signalBtn.click();
+            }
+        } catch(e) {}
+      });
     }
 
     var onScroll = debounce(function(){
@@ -350,7 +395,33 @@
       var saved = savedCenters[sessionId];
       var initialCenter = (typeof saved === 'number' && isFinite(saved)) ? Math.max(1, Math.floor(saved)) : 1;
       var initialMode = (typeof saved === 'number' && isFinite(saved)) ? 'center' : 'top';
-      loadRange(state.startLine, state.endLine, { centerLine: initialCenter, mode: initialMode });
+      
+      // If server already provided initial content (data-initial-loaded="true"),
+      // skip the initial fetch, but update UI status.
+      if (div.getAttribute('data-initial-loaded') === 'true') {
+        console.log('[前端滚动窗口][assets] 检测到初始内容已加载，跳过首次fetch');
+        // Update UI status to ready immediately
+        try {
+            var statusEl = document.getElementById('log-view-status-bar');
+            if (statusEl) {
+                statusEl.textContent = 'Ready';
+                statusEl.className = 'badge bg-success ms-2';
+            }
+            var filterBtn = document.getElementById('execute-filter-btn');
+            if (filterBtn) {
+                filterBtn.disabled = false;
+                filterBtn.classList.remove('btn-secondary');
+                filterBtn.classList.add('btn-success');
+            }
+            // Trigger Dash callback to sync state
+            var signalBtn = document.getElementById('log-view-ready-signal-btn');
+            if (signalBtn) {
+                signalBtn.click();
+            }
+        } catch(e) {}
+      } else {
+        loadRange(state.startLine, state.endLine, { centerLine: initialCenter, mode: initialMode });
+      }
     } catch (e) {}
 
     // Expose simple registry for external controls (search/jump)

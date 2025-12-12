@@ -16,5 +16,8 @@
     "TCL_CIPLUS",
     "CI_CARD",
     "CI_ITEMS"
+  ],
+  "ROKU": [
+    "ROKU"
   ]
 }

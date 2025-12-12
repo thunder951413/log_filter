@@ -9,3 +9,4 @@ node_modules/
 temp/
 app.spec
 log_filter_server.spec
+temp_keywords.json

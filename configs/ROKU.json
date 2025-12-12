@@ -1,0 +1,19 @@
+{
+  "ROKU": {
+    "keep": [
+      "[pav",
+      "[tuner.",
+      "[tv.",
+      "[dvb",
+      "[chplay",
+      "State transition",
+      "[tuner_device",
+      "[AmlAv",
+      "writeTsData failed",
+      "[ciplus",
+      "[aud.ctrl.dec.fmt]",
+      "[pav.fmt.chg]"
+    ],
+    "filter": []
+  }
+}
