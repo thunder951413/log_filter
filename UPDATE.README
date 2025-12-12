@@ -1,0 +1,46 @@
+1. 修改更新服务器地址
+打开 
+package.json
+，找到以下部分，将 url 换成你实际的文件服务器地址：
+
+```"publish": [
+  {
+    "provider": "generic",
+    "url": "http://your-server-address.com/downloads/log-filter/" 
+  }
+]
+```
+2. 生成发布包
+运行打包命令（会自动生成更新所需的 yml 文件）：
+
+bash
+npm run dist
+打包完成后，dist 目录下会生成：
+
+LogFilter-0.1.0-arm64-mac.zip (核心更新文件)
+LogFilter-0.1.0-arm64.dmg
+latest-mac.yml (这是关键，记录了版本和校验信息)
+3. 部署更新
+当你要发布新版本（比如 0.1.1）时：
+
+在 
+package.json
+ 中修改 version 为 0.1.1。
+再次运行 npm run dist。
+将生成的新文件（zip, dmg, latest-mac.yml）全部上传到你在第 1 步配置的 HTTP 服务器目录下。
+用户打开旧版本 App 时，会自动请求 latest-mac.yml，发现版本号变更后通过 zip 包进行增量更新。
+其他可选方案
+如果你使用 GitHub 托管代码，可以将 publish 配置改为：
+
+json
+"publish": [
+  {
+    "provider": "github",
+    "owner": "你的github用户名",
+    "repo": "仓库名"
+  }
+]
+这样每次打包后发布的 GitHub Release 就会被自动作为更新源，无需自己搭建 HTTP 服务器。
+
+macOS 的注意事项
+在 macOS 上，**代码签名（Code Signing）**对于自动更新非常重要。未签名的应用（使用自签名证书）虽然也能打包，但在部分 macOS 版本上自动更新功能可能会被系统安全策略拦截。如果是在公司内部大规模使用，建议使用 Apple Developer ID 进行正规签名。

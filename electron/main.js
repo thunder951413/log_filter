@@ -3,6 +3,76 @@ const path = require('path')
 const { spawn } = require('child_process')
 const http = require('http')
 const fs = require('fs')
+const { autoUpdater } = require('electron-updater')
+const log = require('electron-log')
+
+// 配置 autoUpdater 日志
+autoUpdater.logger = log
+autoUpdater.logger.transports.file.level = 'info'
+log.info('App starting...')
+
+// 设置自动下载为 false，让用户决定是否更新
+autoUpdater.autoDownload = false
+
+function setupAutoUpdater() {
+  autoUpdater.on('checking-for-update', () => {
+    log.info('Checking for update...')
+  })
+
+  autoUpdater.on('update-available', (info) => {
+    log.info('Update available.', info)
+    // 通知渲染进程
+    if (mainWindow) {
+      mainWindow.webContents.send('update-available', info)
+    }
+    // 可以弹窗提示用户
+    new Notification({ title: '发现新版本', body: `发现新版本 v${info.version}, 是否下载更新?` }).show()
+  })
+
+  autoUpdater.on('update-not-available', (info) => {
+    log.info('Update not available.', info)
+  })
+
+  autoUpdater.on('error', (err) => {
+    log.error('Error in auto-updater. ' + err)
+    if (mainWindow) {
+      mainWindow.webContents.send('update-error', err.toString())
+    }
+  })
+
+  autoUpdater.on('download-progress', (progressObj) => {
+    let log_message = "Download speed: " + progressObj.bytesPerSecond
+    log_message = log_message + ' - Downloaded ' + progressObj.percent + '%'
+    log_message = log_message + ' (' + progressObj.transferred + "/" + progressObj.total + ')'
+    log.info(log_message)
+    if (mainWindow) {
+      mainWindow.webContents.send('download-progress', progressObj)
+    }
+  })
+
+  autoUpdater.on('update-downloaded', (info) => {
+    log.info('Update downloaded')
+    if (mainWindow) {
+      mainWindow.webContents.send('update-downloaded', info)
+    }
+    new Notification({ title: '更新已下载', body: '更新已下载完毕，将在退出后安装' }).show()
+  })
+
+  // 监听渲染进程触发的检查更新
+  ipcMain.handle('checkForUpdates', () => {
+    autoUpdater.checkForUpdatesAndNotify()
+  })
+
+  // 监听渲染进程触发的下载更新
+  ipcMain.handle('downloadUpdate', () => {
+    autoUpdater.downloadUpdate()
+  })
+
+  // 监听渲染进程触发的退出并安装
+  ipcMain.handle('quitAndInstall', () => {
+    autoUpdater.quitAndInstall()
+  })
+}
 
 let pyProc = null
 const PORT = parseInt(process.env.LOG_FILTER_PORT || '8052', 10)
@@ -101,10 +171,15 @@ function createMenu(win) {
 }
 
 app.on('ready', async function () {
+  setupAutoUpdater()
   startPython()
   try { await waitForServer(50, 200) } catch (e) {}
   const win = createWindow()
   createMenu(win)
+  // 启动时自动检查更新
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify()
+  }
 })
 
 app.on('window-all-closed', function () { if (process.platform !== 'darwin') app.quit() })
