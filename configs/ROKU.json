@@ -3,7 +3,6 @@
     "keep": [
       "[pav",
       "[tuner.",
-      "[tv.",
       "[dvb",
       "[chplay",
       "State transition",
@@ -12,7 +11,8 @@
       "writeTsData failed",
       "[ciplus",
       "[aud.ctrl.dec.fmt]",
-      "[pav.fmt.chg]"
+      "[pav.fmt.chg]",
+      "dscmb."
     ],
     "filter": []
   }

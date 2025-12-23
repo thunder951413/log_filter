@@ -1021,6 +1021,8 @@ app.layout = html.Div([
     dcc.Store(id="filter-session-store", data=""),
     dcc.Store(id="filter-first-chunk-ready", data=False),
     dcc.Interval(id="filter-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
+    dcc.Store(id="compare-session-store", data={"a": "", "b": ""}),
+    dcc.Interval(id="compare-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
     dcc.Store(id=_UI_BUSY_STORE_ID, data=False),
     dcc.Location(id="url", refresh=False),
     
@@ -1037,6 +1039,7 @@ app.layout = html.Div([
             dbc.Col([
                 dbc.Tabs([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
+                    dbc.Tab(label="日志对比", tab_id="tab-compare"),
                     dbc.Tab(label="配置管理", tab_id="tab-2"),
                     dbc.Tab(label="日志管理", tab_id="tab-3"),
                     dbc.Tab(label="关键字注释(开发中)", tab_id="tab-4")
@@ -1226,6 +1229,129 @@ app.layout = html.Div([
                 ], width=12)
             ], className="mb-4"),
         ], style={"display": "block"}),
+
+        # Tab-compare内容 - 日志对比
+        html.Div(id="tab-compare-content", children=[
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dcc.Dropdown(
+                                        id="compare-log-file-a-selector",
+                                        placeholder="选择日志A...",
+                                        options=[],
+                                        clearable=False,
+                                        style={"fontSize": "12px", "textAlign": "left"}
+                                    )
+                                ], width=2),
+                                dbc.Col([
+                                    dcc.Dropdown(
+                                        id="compare-log-file-b-selector",
+                                        placeholder="选择日志B...",
+                                        options=[],
+                                        clearable=False,
+                                        style={"fontSize": "12px", "textAlign": "left"}
+                                    )
+                                ], width=2),
+                                dbc.Col([
+                                    dcc.Dropdown(
+                                        id="compare-config-group-selector",
+                                        placeholder="配置文件组",
+                                        style={"fontSize": "12px", "textAlign": "left"},
+                                        clearable=True
+                                    )
+                                ], width=2),
+                                dbc.Col([
+                                    dbc.InputGroup([
+                                        dbc.InputGroupText("忽略行首", style={"fontSize": "11px", "padding": "2px 6px"}),
+                                        dbc.Input(
+                                            id="compare-ignore-prefix-length",
+                                            type="number",
+                                            min=0,
+                                            max=200,
+                                            value=0,
+                                            placeholder="0",
+                                            style={"fontSize": "11px", "width": "50px", "padding": "2px 6px", "textAlign": "center"}
+                                        ),
+                                        dbc.InputGroupText("字符", style={"fontSize": "11px", "padding": "2px 6px"}),
+                                        dbc.Input(
+                                            id="compare-prefix-measure-input",
+                                            type="text",
+                                            placeholder="粘贴文本测长度",
+                                            style={"fontSize": "11px", "width": "100px", "padding": "2px 6px"}
+                                        ),
+                                        dbc.InputGroupText(id="compare-prefix-measure-length", children="0", style={"fontSize": "11px", "padding": "2px 6px", "minWidth": "30px", "backgroundColor": "#e9ecef"})
+                                    ], size="sm")
+                                ], width=4, className="d-flex align-items-center"),
+                                dbc.Col([
+                                    dbc.Button("清除", id="compare-clear-config-selection-btn", color="danger", size="sm", className="me-2"),
+                                    dbc.Button([
+                                        html.Span("过滤并对比", id="compare-btn-text"),
+                                        dbc.Spinner(size="sm", color="light", id="compare-loading-spinner", spinner_style={"display": "none", "marginLeft": "5px"})
+                                    ], id="compare-execute-btn", color="primary", size="sm")
+                                ], width=2, className="d-flex align-items-center justify-content-end")
+                            ], className="mb-2"),
+
+                            dbc.Collapse(
+                                html.Div(id="compare-config-files-container", className="border rounded p-2", style={"maxHeight": "150px", "overflowY": "auto", "fontSize": "11px"}),
+                                id="compare-config-files-collapse",
+                                is_open=True
+                            ),
+
+                            dbc.Row([
+                                dbc.Col([
+                                    html.Div([
+                                        html.Div("日志A", className="small text-muted"),
+                                        dbc.Progress(id="compare-progress-a", value=0, striped=True, animated=True, style={"height": "8px"}),
+                                        html.Div(id="compare-progress-text-a", className="small text-muted mt-1")
+                                    ])
+                                ], width=6),
+                                dbc.Col([
+                                    html.Div([
+                                        html.Div("日志B", className="small text-muted"),
+                                        dbc.Progress(id="compare-progress-b", value=0, striped=True, animated=True, style={"height": "8px"}),
+                                        html.Div(id="compare-progress-text-b", className="small text-muted mt-1")
+                                    ])
+                                ], width=6)
+                            ], id="compare-progress-container", className="mt-3", style={"display": "none"}),
+
+                            html.Hr(className="my-3"),
+                            html.Div([
+                                html.Span(id="compare-diff-summary", className="small text-muted"),
+                                html.Span([
+                                    dbc.Checkbox(
+                                        id="compare-sync-scroll-switch",
+                                        label="同步滚动",
+                                        value=True,
+                                        style={"fontSize": "11px"},
+                                        input_class_name="compare-sync-checkbox"
+                                    )
+                                ], className="ms-3"),
+                            ], className="d-flex align-items-center mb-2"),
+                            # Beyond Compare 风格的左右对比布局（初始等待状态）
+                            html.Div([
+                                html.Div([
+                                    html.Div([
+                                        html.Div([
+                                            html.Strong("日志A", className="me-2")
+                                        ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "borderRight": "1px solid #dee2e6", "fontFamily": "sans-serif"}),
+                                        html.Div([
+                                            html.Strong("日志B", className="me-2")
+                                        ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "fontFamily": "sans-serif"})
+                                    ], style={"display": "flex", "borderBottom": "2px solid #dee2e6"}),
+                                    html.Div([
+                                        html.Div("请选择日志文件并点击「过滤并对比」", style={"flex": "1", "padding": "40px 20px", "textAlign": "center", "color": "#999", "borderRight": "2px solid #dee2e6"}),
+                                        html.Div("请选择日志文件并点击「过滤并对比」", style={"flex": "1", "padding": "40px 20px", "textAlign": "center", "color": "#999"})
+                                    ], style={"display": "flex", "minHeight": "200px"})
+                                ], style={"border": "1px solid #dee2e6", "borderRadius": "5px", "overflow": "hidden"})
+                            ], id="compare-diff-results")
+                        ])
+                    ])
+                ], width=12)
+            ])
+        ], style={"display": "none"}),
         
         # Tab2内容 - 配置管理
         html.Div(id="tab-2-content", children=[
@@ -1755,9 +1881,11 @@ app.layout = html.Div([
         dcc.Store(id='source-result-store', data=''),
         dcc.Store(id='selected-strings', data=[]),
         dcc.Store(id='filter-tab-strings-store', data=[]),  # 日志过滤tab专用的字符串存储
+        dcc.Store(id='compare-tab-strings-store', data=[]),
         dcc.Store(id='selected-log-file', data=''),
         dcc.Store(id='string-type-store', data='keep'),  # 存储字符串类型选择，默认为"keep"
         dcc.Store(id='selected-config-files', data=[]),  # 存储选中的配置文件列表（支持多选）
+        dcc.Store(id='compare-selected-config-files', data=[]),
         dcc.Store(id='temp-keywords-store', data=load_temp_keywords_from_file()),  # 存储临时关键字列表（支持保留/屏蔽）
         dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
         dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
@@ -2292,6 +2420,20 @@ def update_log_file_selector(active_tab):
         return options
     return dash.no_update
 
+
+@app.callback(
+    [Output("compare-log-file-a-selector", "options", allow_duplicate=True),
+     Output("compare-log-file-b-selector", "options", allow_duplicate=True)],
+    [Input("main-tabs", "active_tab")],
+    prevent_initial_call='initial_duplicate'
+)
+def update_compare_log_file_selectors(active_tab):
+    if active_tab:
+        log_files = get_log_files()
+        options = [{"label": file, "value": file} for file in log_files]
+        return options, options
+    return dash.no_update, dash.no_update
+
 @app.callback(
     [Output("log-file-selector", "options", allow_duplicate=True),
      Output("log-file-selector", "value", allow_duplicate=True),
@@ -2817,18 +2959,19 @@ def render_keyword_annotations_list(annotations_map):
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
+     State("filter-session-store", "data"),
      State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, active_tab):
+def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, previous_session_id, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update)
     
-    # 先清空旧任务，避免残留状态影响新一轮过滤
-    _clear_all_filter_tasks(delete_files=False)
+    if previous_session_id:
+        _clear_filter_task(previous_session_id, delete_files=False)
     
     # 执行过滤命令，包含临时关键字
     session_id, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
@@ -3169,6 +3312,199 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     return session_id, progress_component
 
 
+def _start_filter_task_for_log(selected_strings, temp_keywords, selected_log_file, session_prefix=""):
+    normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
+    all_strings = []
+    if selected_strings:
+        all_strings.extend(selected_strings)
+    all_strings.extend(normalized_temp_keywords)
+
+    keep_strings = []
+    filter_strings = []
+    for item in all_strings:
+        if isinstance(item, dict):
+            if item.get("type") == "keep":
+                keep_strings.append(item.get("text"))
+            else:
+                filter_strings.append(item.get("text"))
+        else:
+            keep_strings.append(item)
+
+    if not selected_log_file:
+        return ""
+
+    log_path = get_log_path(selected_log_file)
+    try:
+        session_key = f"{session_prefix}:{log_path}:{keep_strings}:{filter_strings}:{time.time()}"
+        session_id = hashlib.md5(session_key.encode()).hexdigest()
+    except Exception:
+        session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
+
+    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
+    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings))
+    thread.daemon = True
+    thread.start()
+    return session_id
+
+
+def _read_lines_for_diff(file_path, encoding, max_lines=20000):
+    lines = []
+    total = 0
+    truncated = False
+    try:
+        with open(file_path, 'rb') as f:
+            for raw in f:
+                total += 1
+                if len(lines) < max_lines:
+                    try:
+                        s = raw.decode(encoding)
+                    except Exception:
+                        s = raw.decode(encoding, errors='replace')
+                    if not s.endswith("\n"):
+                        s += "\n"
+                    lines.append(s)
+                else:
+                    truncated = True
+    except Exception:
+        return [], 0, False
+    return lines, total, truncated
+
+
+def build_side_by_side_diff(a_lines, b_lines, max_display_lines=10000, ignore_prefix_length=0):
+    """
+    生成 Beyond Compare 风格的左右对比显示
+    返回: (left_content, right_content, add_cnt, del_cnt, mod_cnt)
+    
+    Args:
+        a_lines: 日志A的行列表
+        b_lines: 日志B的行列表
+        max_display_lines: 最大显示行数
+        ignore_prefix_length: 对比时忽略每行开头的字符数（用于忽略时间戳等）
+    """
+    import difflib
+    
+    # 如果设置了忽略前缀，创建用于比较的行列表（去掉前缀）
+    if ignore_prefix_length > 0:
+        a_compare = [line[ignore_prefix_length:] if len(line) > ignore_prefix_length else line for line in a_lines]
+        b_compare = [line[ignore_prefix_length:] if len(line) > ignore_prefix_length else line for line in b_lines]
+    else:
+        a_compare = a_lines
+        b_compare = b_lines
+    
+    # 使用 SequenceMatcher 进行行级对比（使用处理后的行进行比较）
+    matcher = difflib.SequenceMatcher(None, a_compare, b_compare)
+    
+    left_rows = []
+    right_rows = []
+    add_cnt = 0
+    del_cnt = 0
+    mod_cnt = 0
+    
+    line_num_a = 0
+    line_num_b = 0
+    display_count = 0
+    
+    # 样式定义
+    style_normal = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex"}
+    style_deleted = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex", "backgroundColor": "#ffdddd"}
+    style_added = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex", "backgroundColor": "#ddffdd"}
+    style_modified_left = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex", "backgroundColor": "#fff3cd"}
+    style_modified_right = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex", "backgroundColor": "#d4edda"}
+    style_empty = {"padding": "1px 8px", "borderBottom": "1px solid #eee", "minHeight": "18px", "whiteSpace": "pre", "display": "flex", "backgroundColor": "#f5f5f5"}
+    style_line_num = {"color": "#999", "minWidth": "50px", "textAlign": "right", "paddingRight": "8px", "borderRight": "1px solid #ddd", "marginRight": "8px", "userSelect": "none"}
+    style_content = {"flex": "1", "overflow": "hidden", "textOverflow": "ellipsis"}
+    
+    def make_line(line_num, text, row_style, is_empty=False):
+        """创建一行的显示"""
+        text_display = text.rstrip('\n\r') if text else ""
+        return html.Div([
+            html.Span(str(line_num) if line_num else "", style=style_line_num),
+            html.Span(text_display if not is_empty else "", style=style_content)
+        ], style=row_style)
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if display_count >= max_display_lines:
+            # 添加截断提示
+            left_rows.append(html.Div("... (显示已截断)", style={"padding": "8px", "color": "#999", "textAlign": "center"}))
+            right_rows.append(html.Div("... (显示已截断)", style={"padding": "8px", "color": "#999", "textAlign": "center"}))
+            break
+            
+        if tag == 'equal':
+            # 相同的行
+            for i in range(i2 - i1):
+                if display_count >= max_display_lines:
+                    break
+                line_num_a += 1
+                line_num_b += 1
+                left_rows.append(make_line(line_num_a, a_lines[i1 + i], style_normal))
+                right_rows.append(make_line(line_num_b, b_lines[j1 + i], style_normal))
+                display_count += 1
+                
+        elif tag == 'delete':
+            # A中有但B中没有的行（删除）
+            for i in range(i2 - i1):
+                if display_count >= max_display_lines:
+                    break
+                line_num_a += 1
+                del_cnt += 1
+                left_rows.append(make_line(line_num_a, a_lines[i1 + i], style_deleted))
+                right_rows.append(make_line(None, "", style_empty, is_empty=True))
+                display_count += 1
+                
+        elif tag == 'insert':
+            # B中有但A中没有的行（新增）
+            for i in range(j2 - j1):
+                if display_count >= max_display_lines:
+                    break
+                line_num_b += 1
+                add_cnt += 1
+                left_rows.append(make_line(None, "", style_empty, is_empty=True))
+                right_rows.append(make_line(line_num_b, b_lines[j1 + i], style_added))
+                display_count += 1
+                
+        elif tag == 'replace':
+            # 修改的行
+            # 先处理配对的行
+            len_a = i2 - i1
+            len_b = j2 - j1
+            min_len = min(len_a, len_b)
+            
+            for i in range(min_len):
+                if display_count >= max_display_lines:
+                    break
+                line_num_a += 1
+                line_num_b += 1
+                mod_cnt += 1
+                left_rows.append(make_line(line_num_a, a_lines[i1 + i], style_modified_left))
+                right_rows.append(make_line(line_num_b, b_lines[j1 + i], style_modified_right))
+                display_count += 1
+            
+            # 处理A中多出的行
+            for i in range(min_len, len_a):
+                if display_count >= max_display_lines:
+                    break
+                line_num_a += 1
+                del_cnt += 1
+                left_rows.append(make_line(line_num_a, a_lines[i1 + i], style_deleted))
+                right_rows.append(make_line(None, "", style_empty, is_empty=True))
+                display_count += 1
+            
+            # 处理B中多出的行
+            for i in range(min_len, len_b):
+                if display_count >= max_display_lines:
+                    break
+                line_num_b += 1
+                add_cnt += 1
+                left_rows.append(make_line(None, "", style_empty, is_empty=True))
+                right_rows.append(make_line(line_num_b, b_lines[j1 + i], style_added))
+                display_count += 1
+    
+    left_content = html.Div(left_rows)
+    right_content = html.Div(right_rows)
+    
+    return left_content, right_content, add_cnt, del_cnt, mod_cnt
+
+
 # 过滤进度轮询
 @app.callback(
     [Output("filter-progress-bar", "value", allow_duplicate=True),
@@ -3251,6 +3587,239 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
     inline_progress = ""  # 不再显示顶部内联进度条
     return (percent, progress_text, dash.no_update, inline_progress, progress_footer_show, False, session_id, dash.no_update,
             dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+
+
+@app.callback(
+    [Output("compare-session-store", "data"),
+     Output("compare-progress-interval", "disabled"),
+     Output("compare-progress-interval", "n_intervals"),
+     Output("compare-loading-spinner", "spinner_style"),
+     Output("compare-btn-text", "children"),
+     Output("compare-execute-btn", "disabled"),
+     Output("compare-progress-a", "value"),
+     Output("compare-progress-b", "value"),
+     Output("compare-progress-text-a", "children"),
+     Output("compare-progress-text-b", "children"),
+     Output("compare-diff-summary", "children"),
+     Output("compare-diff-results", "children"),
+     Output("compare-progress-container", "style"),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("compare-execute-btn", "n_clicks")],
+    [State("compare-tab-strings-store", "data"),
+     State("temp-keywords-store", "data"),
+     State("compare-log-file-a-selector", "value"),
+     State("compare-log-file-b-selector", "value"),
+     State("compare-session-store", "data"),
+     State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def start_compare(n_clicks, compare_strings, temp_keywords, log_a, log_b, existing_sessions, active_tab):
+    if active_tab != "tab-compare" or not n_clicks:
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update)
+
+    if not log_a or not log_b:
+        return (dash.no_update, dash.no_update, dash.no_update,
+                {"display": "none", "marginLeft": "5px"}, "过滤并对比", False,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, html.Script("if(window.showToast) window.showToast('请选择两份日志文件', 'warning');"))
+
+    if existing_sessions and isinstance(existing_sessions, dict):
+        sid_a = existing_sessions.get("a")
+        sid_b = existing_sessions.get("b")
+        if sid_a:
+            _clear_filter_task(sid_a, delete_files=False)
+        if sid_b:
+            _clear_filter_task(sid_b, delete_files=False)
+
+    session_a = _start_filter_task_for_log(compare_strings, temp_keywords, log_a, session_prefix="compare:A")
+    session_b = _start_filter_task_for_log(compare_strings, temp_keywords, log_b, session_prefix="compare:B")
+    if not session_a or not session_b:
+        return (dash.no_update, True, 0,
+                {"display": "none", "marginLeft": "5px"}, "过滤并对比", False,
+                0, 0, "", "", "", "",
+                {"display": "none"}, html.Script("if(window.showToast) window.showToast('启动对比失败', 'error');"))
+
+    return (
+        {"a": session_a, "b": session_b},
+        False,
+        0,
+        {"display": "inline-block", "marginLeft": "5px"},
+        "处理中...",
+        True,
+        0,
+        0,
+        "",
+        "",
+        "",
+        "",
+        {"display": "block"},  # 显示进度条
+        dash.no_update
+    )
+
+
+@app.callback(
+    [Output("compare-progress-a", "value", allow_duplicate=True),
+     Output("compare-progress-b", "value", allow_duplicate=True),
+     Output("compare-progress-text-a", "children", allow_duplicate=True),
+     Output("compare-progress-text-b", "children", allow_duplicate=True),
+     Output("compare-diff-summary", "children", allow_duplicate=True),
+     Output("compare-diff-results", "children", allow_duplicate=True),
+     Output("compare-progress-interval", "disabled", allow_duplicate=True),
+     Output("compare-loading-spinner", "spinner_style", allow_duplicate=True),
+     Output("compare-btn-text", "children", allow_duplicate=True),
+     Output("compare-execute-btn", "disabled", allow_duplicate=True),
+     Output("compare-progress-container", "style", allow_duplicate=True)],
+    [Input("compare-progress-interval", "n_intervals")],
+    [State("compare-session-store", "data"),
+     State("compare-log-file-a-selector", "value"),
+     State("compare-log-file-b-selector", "value"),
+     State("compare-ignore-prefix-length", "value"),
+     State("main-tabs", "active_tab")],
+    prevent_initial_call=True
+)
+def poll_compare_progress(n_intervals, sessions, log_a, log_b, ignore_prefix_length, active_tab):
+    spinner_hide = {"display": "none", "marginLeft": "5px"}
+    progress_hide = {"display": "none"}
+    if active_tab != "tab-compare":
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                True, spinner_hide, "过滤并对比", False, progress_hide)
+
+    if not sessions or not isinstance(sessions, dict):
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                True, spinner_hide, "过滤并对比", False, progress_hide)
+
+    sid_a = sessions.get("a")
+    sid_b = sessions.get("b")
+    if not sid_a or not sid_b:
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                True, spinner_hide, "过滤并对比", False, progress_hide)
+
+    task_a = _get_filter_task(sid_a)
+    task_b = _get_filter_task(sid_b)
+    if not task_a or not task_b:
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+
+    if task_a.get("status") == "error" or task_b.get("status") == "error":
+        err_a = task_a.get("error") if task_a.get("status") == "error" else ""
+        err_b = task_b.get("error") if task_b.get("status") == "error" else ""
+        msg = "对比失败"
+        if err_a or err_b:
+            msg = f"对比失败: {err_a or err_b}"
+        return (0, 0, "过滤失败", "过滤失败",
+                msg, html.Pre(msg, className="small text-danger"),
+                True, spinner_hide, "过滤并对比", False, progress_hide)
+
+    def _pct(task):
+        done = task.get("done_lines") or 0
+        total = task.get("total_lines")
+        if total:
+            return min(100, int(done / total * 100)), f"{done} 行/约{total}行"
+        return (1 if done else 0), f"{done} 行"
+
+    pct_a, txt_a = _pct(task_a)
+    pct_b, txt_b = _pct(task_b)
+
+    if task_a.get("finished") and task_b.get("finished"):
+        temp_a = task_a.get("temp_file")
+        temp_b = task_b.get("temp_file")
+        enc_a = task_a.get("encoding") or "utf-8"
+        enc_b = task_b.get("encoding") or "utf-8"
+
+        max_lines = 20000
+        a_lines, a_total, a_trunc = _read_lines_for_diff(temp_a, enc_a, max_lines=max_lines)
+        b_lines, b_total, b_trunc = _read_lines_for_diff(temp_b, enc_b, max_lines=max_lines)
+
+        if not a_lines and not b_lines:
+            empty_content = html.Div([
+                html.Div([
+                    html.Div([
+                        html.Strong("日志A", className="me-2"),
+                        html.Span(str(log_a or ""), className="text-muted small")
+                    ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "borderRight": "1px solid #dee2e6", "fontFamily": "sans-serif"}),
+                    html.Div([
+                        html.Strong("日志B", className="me-2"),
+                        html.Span(str(log_b or ""), className="text-muted small")
+                    ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "fontFamily": "sans-serif"})
+                ], style={"display": "flex", "borderBottom": "2px solid #dee2e6"}),
+                html.Div([
+                    html.Div("过滤结果为空", style={"flex": "1", "padding": "20px", "textAlign": "center", "color": "#999", "borderRight": "2px solid #dee2e6"}),
+                    html.Div("过滤结果为空", style={"flex": "1", "padding": "20px", "textAlign": "center", "color": "#999"})
+                ], style={"display": "flex", "maxHeight": "calc(100vh - 380px)", "border": "1px solid #dee2e6", "borderTop": "none"})
+            ], style={"border": "1px solid #dee2e6", "borderRadius": "5px", "overflow": "hidden"})
+            return (100, 100, "完成", "完成",
+                    "过滤结果为空或读取失败", empty_content,
+                    True, spinner_hide, "过滤并对比", False, {"display": "none"})
+
+        # 使用左右对比显示（支持忽略行首指定长度）
+        prefix_len = int(ignore_prefix_length) if ignore_prefix_length else 0
+        left_content, right_content, add_cnt, del_cnt, mod_cnt = build_side_by_side_diff(
+            a_lines, b_lines, ignore_prefix_length=prefix_len
+        )
+
+        summary = f"日志A: {a_total}行 | 日志B: {b_total}行 | 新增 {add_cnt} 行 / 删除 {del_cnt} 行 / 修改 {mod_cnt} 行"
+        if prefix_len > 0:
+            summary += f" | 忽略行首 {prefix_len} 字符"
+        if a_trunc or b_trunc:
+            summary += f"（单侧最多读取 {max_lines} 行，建议收窄关键字）"
+
+        # 构建完整的左右对比布局
+        diff_display = html.Div([
+            # 左右对比容器
+            html.Div([
+                # 左右标题栏
+                html.Div([
+                    html.Div([
+                        html.Strong("日志A", className="me-2"),
+                        html.Span(str(log_a or ""), className="text-muted small")
+                    ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "borderRight": "1px solid #dee2e6", "fontFamily": "sans-serif"}),
+                    html.Div([
+                        html.Strong("日志B", className="me-2"),
+                        html.Span(str(log_b or ""), className="text-muted small")
+                    ], style={"flex": "1", "padding": "8px 12px", "backgroundColor": "#e9ecef", "fontFamily": "sans-serif"})
+                ], style={"display": "flex", "borderBottom": "2px solid #dee2e6"}),
+                # 左右内容区域（同步滚动）
+                html.Div([
+                    # 左侧内容
+                    html.Div(left_content, id="compare-diff-left", style={
+                        "flex": "1",
+                        "overflowY": "auto",
+                        "overflowX": "auto",
+                        "backgroundColor": "#fafafa",
+                        "borderRight": "2px solid #dee2e6",
+                        "fontFamily": "monospace",
+                        "fontSize": "12px",
+                        "lineHeight": "1.4"
+                    }),
+                    # 右侧内容
+                    html.Div(right_content, id="compare-diff-right", style={
+                        "flex": "1",
+                        "overflowY": "auto",
+                        "overflowX": "auto",
+                        "backgroundColor": "#fafafa",
+                        "fontFamily": "monospace",
+                        "fontSize": "12px",
+                        "lineHeight": "1.4"
+                    })
+                ], id="compare-diff-content", style={
+                    "display": "flex",
+                    "maxHeight": "calc(100vh - 380px)",
+                    "border": "1px solid #dee2e6",
+                    "borderTop": "none"
+                })
+            ], style={"border": "1px solid #dee2e6", "borderRadius": "5px", "overflow": "hidden"}),
+            # 同步滚动的逻辑现已移至 assets/compare_sync.js
+        ])
+
+        return (100, 100, "完成", "完成",
+                summary, diff_display,
+                True, spinner_hide, "过滤并对比", False, {"display": "none"})
+
+    return (pct_a, pct_b, txt_a, txt_b,
+            dash.no_update, dash.no_update,
+            False, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
 
 def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords=None):
     """执行源文件逻辑，包含临时关键字"""
@@ -4681,6 +5250,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
 # Tab切换回调函数 - 控制显示/隐藏
 @app.callback(
     [Output("tab-1-content", "style"),
+     Output("tab-compare-content", "style"),
      Output("tab-2-content", "style"),
      Output("tab-3-content", "style"),
      Output("tab-4-content", "style")],
@@ -4689,16 +5259,18 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
 def toggle_tab_visibility(active_tab):
     """切换标签页的显示/隐藏，而不是重新渲染内容，以保留状态"""
     if active_tab == "tab-1":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    elif active_tab == "tab-compare":
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-2":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-3":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
     elif active_tab == "tab-4":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
     
     # 默认显示tab-1
-    return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
 
 # 日志管理tab的回调函数
 
@@ -5320,6 +5892,174 @@ def handle_config_file_selection(config_btn_clicks, clear_click, selected_group,
         return current_selection
     
     return dash.no_update
+
+
+@app.callback(
+    Output('compare-config-files-container', 'children'),
+    [Input('main-tabs', 'active_tab'),
+     Input('compare-selected-config-files', 'data'),
+     Input('compare-config-group-selector', 'value')],
+    prevent_initial_call='initial_duplicate'
+)
+def update_compare_config_files_display(active_tab, selected_config_files, selected_group):
+    if active_tab != "tab-compare":
+        return dash.no_update
+    all_config_files = get_config_files()
+
+    files_to_display = all_config_files
+    if selected_group:
+        config_groups = load_config_groups()
+        if selected_group in config_groups:
+            group_files = config_groups[selected_group]
+            files_to_display = [f for f in all_config_files if f in group_files]
+            if not files_to_display:
+                return html.P(f"配置组 {selected_group} 中没有可用的配置文件", className="text-muted text-center")
+
+    if not files_to_display:
+        if not all_config_files:
+            return html.P("暂无配置文件，请在配置管理页面创建配置文件", className="text-muted text-center")
+        return html.Div()
+
+    selected_config_files = selected_config_files or []
+    config_buttons = []
+    for config_file in files_to_display:
+        is_selected = config_file in selected_config_files
+        config_buttons.append(
+            dbc.Button(
+                config_file,
+                id={"type": "compare-config-file-btn", "index": config_file},
+                color="primary" if is_selected else "outline-primary",
+                size="sm",
+                className="m-1",
+                style={"whiteSpace": "nowrap", "flexShrink": 0}
+            )
+        )
+
+    return html.Div(
+        config_buttons,
+        className="d-flex flex-wrap gap-2",
+        style={"minHeight": "50px"}
+    )
+
+
+@app.callback(
+    Output('compare-selected-config-files', 'data'),
+    [Input({"type": "compare-config-file-btn", "index": dash.ALL}, 'n_clicks'),
+     Input('compare-clear-config-selection-btn', 'n_clicks'),
+     Input('compare-config-group-selector', 'value')],
+    [State('compare-selected-config-files', 'data'),
+     State('main-tabs', 'active_tab')],
+    prevent_initial_call=True
+)
+def handle_compare_config_file_selection(config_btn_clicks, clear_click, selected_group, current_selection, active_tab):
+    if active_tab != "tab-compare":
+        return dash.no_update
+
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    if current_selection is None:
+        current_selection = []
+
+    if ctx.triggered and ctx.triggered[0]['prop_id'] == 'compare-config-group-selector.value':
+        return []
+
+    if ctx.triggered and ctx.triggered[0]['prop_id'] == 'compare-clear-config-selection-btn.n_clicks':
+        return []
+
+    if ctx.triggered and 'compare-config-file-btn' in ctx.triggered[0]['prop_id']:
+        prop_id = ctx.triggered[0]['prop_id']
+        config_file = prop_id.rsplit('.', 1)[0].split('"index":"')[1].split('"')[0]
+        if config_file in current_selection:
+            current_selection.remove(config_file)
+        else:
+            current_selection.append(config_file)
+        return current_selection
+
+    return dash.no_update
+
+
+@app.callback(
+    [Output('compare-tab-strings-store', 'data', allow_duplicate=True),
+     Output('toast-container', 'children', allow_duplicate=True)],
+    [Input('compare-selected-config-files', 'data')],
+    [State('main-tabs', 'active_tab')],
+    prevent_initial_call=True
+)
+def load_compare_selected_config_files(selected_config_files, active_tab):
+    if active_tab != "tab-compare":
+        return dash.no_update, dash.no_update
+
+    if not selected_config_files:
+        return [], dash.no_update
+
+    try:
+        keyword_file_map = {}
+        keyword_type_map = {}
+        global_keyword_category_map = {}
+        loaded_configs = []
+
+        for selected_config_file in selected_config_files:
+            config_path = get_config_path(selected_config_file)
+            if not os.path.exists(config_path):
+                return dash.no_update, html.Script(f"if(window.showToast) window.showToast('配置文件 {selected_config_file} 不存在', 'error');")
+
+            with open(config_path, 'r', encoding='utf-8') as f:
+                saved_selections = json.load(f)
+
+            file_keywords = set()
+            keyword_category_map_local = {}
+
+            for category, content in saved_selections.items():
+                if isinstance(content, dict):
+                    if "keep" in content:
+                        for string_text in content["keep"]:
+                            file_keywords.add((string_text, "keep"))
+                            if string_text not in keyword_category_map_local:
+                                keyword_category_map_local[string_text] = category
+                    if "filter" in content:
+                        for string_text in content["filter"]:
+                            file_keywords.add((string_text, "filter"))
+                            if string_text not in keyword_category_map_local:
+                                keyword_category_map_local[string_text] = category
+                else:
+                    cat_name = os.path.splitext(selected_config_file)[0]
+                    for string_text in content:
+                        file_keywords.add((string_text, "keep"))
+                        if string_text not in keyword_category_map_local:
+                            keyword_category_map_local[string_text] = cat_name
+
+            for string_text, string_type in file_keywords:
+                if string_text not in keyword_file_map:
+                    keyword_file_map[string_text] = set()
+                keyword_file_map[string_text].add(selected_config_file)
+                keyword_type_map[string_text] = string_type
+                if string_text in keyword_category_map_local and string_text not in global_keyword_category_map:
+                    global_keyword_category_map[string_text] = keyword_category_map_local[string_text]
+
+            loaded_configs.append(selected_config_file)
+
+        loaded_strings = []
+        for string_text, file_set in keyword_file_map.items():
+            item = {
+                "text": string_text,
+                "type": keyword_type_map[string_text],
+                "count": len(file_set),
+                "files": list(file_set)
+            }
+            if string_text in global_keyword_category_map:
+                item["category"] = global_keyword_category_map[string_text]
+            loaded_strings.append(item)
+
+        if len(loaded_configs) == 1:
+            message = f"成功加载配置文件: {loaded_configs[0]}"
+        else:
+            message = f"成功加载 {len(loaded_configs)} 个配置文件: {', '.join(loaded_configs)}"
+
+        return loaded_strings, html.Script(f"if(window.showToast) window.showToast('{message}', 'success');")
+    except Exception as e:
+        return dash.no_update, html.Script(f"if(window.showToast) window.showToast('加载配置文件失败: {str(e)}', 'error');")
 
 # 为日志过滤tab创建独立的数据存储
 # 日志过滤tab的选中字符串存储
@@ -6143,6 +6883,30 @@ def update_log_filter_group_selector(active_tab, save_clicks, delete_clicks):
     # 只要Tab切换或组发生变化，就重新加载选项
     config_groups = load_config_groups()
     return [{'label': name, 'value': name} for name in config_groups.keys()]
+
+
+@app.callback(
+    Output('compare-config-group-selector', 'options'),
+    [Input('main-tabs', 'active_tab'),
+     Input('save-config-group-btn', 'n_clicks'),
+     Input('delete-config-group-btn', 'n_clicks')]
+)
+def update_compare_group_selector(active_tab, save_clicks, delete_clicks):
+    config_groups = load_config_groups()
+    return [{'label': name, 'value': name} for name in config_groups.keys()]
+
+
+# 测量文本长度的回调
+@app.callback(
+    Output('compare-prefix-measure-length', 'children'),
+    [Input('compare-prefix-measure-input', 'value')],
+    prevent_initial_call=True
+)
+def measure_prefix_length(text):
+    if not text:
+        return "0"
+    return str(len(text))
+
 
 # 处理日志过滤Tab中的配置文件组选择
 @app.callback(

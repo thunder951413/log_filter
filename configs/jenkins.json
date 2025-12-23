@@ -1,0 +1,11 @@
+{
+  "jenkins": {
+    "keep": [
+      "error:",
+      "make ",
+      "git ",
+      "repo "
+    ],
+    "filter": []
+  }
+}

@@ -147,7 +147,14 @@
       "[aud.ctrl.dec.fmt]",
       "[cecq.",
       "[ciplus",
-      "writeTsData failed"
+      "writeTsData failed",
+      "dscmb."
+    ],
+    "jenkins": [
+      "error:",
+      "make ",
+      "git ",
+      "repo "
     ]
   }
 }
