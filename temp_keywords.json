@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "text": "recording",
+    "type": "keep"
+  },
+  {
+    "text": "ReferenceWidgetRecordings",
+    "type": "filter"
+  },
+  {
+    "text": "isVirtualFrontend",
+    "type": "filter"
+  }
+]

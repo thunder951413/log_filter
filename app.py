@@ -16,6 +16,18 @@ import time
 import threading
 from datetime import datetime
 
+# 预编译正则模式，避免在循环中重复编译
+LOG_PREFIX_PATTERNS = [
+    re.compile(r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*'),
+    re.compile(r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s*:\s*'),
+    re.compile(r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+[A-Z]/\w+\s*:\s*'),
+    re.compile(r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\s+'),
+    re.compile(r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+'),
+    re.compile(r'^\d{2}:\d{2}:\d{2}\s+'),
+    re.compile(r'^\[\w+\]\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s+'),
+    re.compile(r'^\[\d{10,13}\]\s+'),
+]
+
 # 高亮缓存系统
 class HighlightCache:
     def __init__(self, max_size=100):
@@ -28,15 +40,31 @@ class HighlightCache:
         self.total_requests = 0
     
     def get_cache_key(self, text, selected_strings, data):
-        """生成缓存键（优化版本，处理时间戳变化）"""
-        # 优化：对文本进行预处理，移除时间戳等变化内容
-        processed_text = self._preprocess_text(text)
-        
-        # 使用处理后的文本内容、选中的字符串和配置数据的哈希作为键
-        text_hash = hashlib.md5(processed_text.encode('utf-8')).hexdigest()
-        strings_hash = hashlib.md5(str(selected_strings).encode('utf-8')).hexdigest()
-        data_hash = hashlib.md5(json.dumps(data, sort_keys=True).encode('utf-8')).hexdigest()
-        return f"{text_hash}:{strings_hash}:{data_hash}"
+        """生成缓存键（稳定且高效：有限采样 + 结构化哈希）"""
+        if not text:
+            text_part = ""
+        else:
+            # 仅采样头尾有限长度，避免对超大文本全量哈希
+            head = text[:200]
+            tail = text[-200:] if len(text) > 200 else ""
+            text_part = f"{len(text)}:{head}:{tail}"
+
+        # 规范化选中字符串和数据结构，以内容为准生成稳定哈希
+        try:
+            # selected_strings 可能是 list/dict，统一转为 JSON 字符串（有序）
+            strings_norm = json.dumps(selected_strings, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            # 遇到不可序列化对象时退化为 str 表示
+            strings_norm = str(selected_strings)
+
+        try:
+            data_norm = json.dumps(data, sort_keys=True, ensure_ascii=False)
+        except TypeError:
+            data_norm = str(data)
+
+        key_source = "|".join([text_part, strings_norm, data_norm])
+        key_hash = hashlib.sha1(key_source.encode("utf-8")).hexdigest()
+        return key_hash
     
     def _preprocess_text(self, text):
         """预处理文本，移除时间戳等变化内容"""
@@ -47,45 +75,18 @@ class HighlightCache:
         processed_lines = []
         
         for line in lines:
-            # 移除常见时间戳格式
+            # 使用预编译的正则进行匹配
             processed_line = self._remove_timestamps(line)
             processed_lines.append(processed_line)
         
         return '\n'.join(processed_lines)
     
     def _remove_timestamps(self, line):
-        """移除行中的时间戳和进程信息"""
-        # 常见日志前缀模式
-        log_prefix_patterns = [
-            # Android/系统日志格式: 10-19 20:38:49.474   455   504 I DTV_LOG : 
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*',
-            # 简化的系统日志格式: 10-19 20:38:49.474   455   504 I : 
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s*:\s*',
-            # 带标签的系统日志: 10-19 20:38:49.474   455   504 I TAG : 
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*',
-            # 标准系统日志: 10-19 20:38:49.474 I/TAG : 
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+[A-Z]/\w+\s*:\s*',
-            # ISO 8601格式: 2024-01-15 10:30:25
-            r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\s+',
-            # 简写格式: 01-15 10:30:25
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+',
-            # 时间格式: 10:30:25
-            r'^\d{2}:\d{2}:\d{2}\s+',
-            # 日志级别格式: [INFO] [2024-01-15 10:30:25]
-            r'^\[\w+\]\s*\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s+',
-            # Unix时间戳: [1705307425]
-            r'^\[\d{10,13}\]\s+',
-        ]
-        
-        for pattern in log_prefix_patterns:
-            # 使用正则表达式移除匹配的前缀
-            import re
-            match = re.match(pattern, line)
+        """使用预编译正则移除行中的时间戳和进程信息"""
+        for pattern in LOG_PREFIX_PATTERNS:
+            match = pattern.match(line)
             if match:
-                # 返回移除前缀后的内容
                 return line[match.end():].strip()
-        
-        # 如果没有匹配的模式，返回原行
         return line
     
     def get(self, key):
@@ -185,14 +186,17 @@ app = dash.Dash(
     assets_folder=os.path.join(base_path, "assets")
 )
 
-# 配置Dash使用标准JSON序列化，避免orjson问题
+# 配置Dash序列化性能
+import os
 try:
-    import json as std_json
-    # 尝试禁用orjson
-    import os
+    import orjson
+    # 如果安装了 orjson，强制 Dash 使用更快的序列化器
+    os.environ['DASH_SERIALIZER'] = 'orjson'
+    print("[性能] 已启用 orjson 序列化器")
+except ImportError:
+    # 回退到标准 json，但设置环境变量以统一行为
     os.environ['DASH_SERIALIZER'] = 'json'
-except:
-    pass
+    print("[性能] 未找到 orjson，使用标准 json 序列化")
 
 # 数据存储文件路径
 DATA_FILE = 'string_data.json'
@@ -528,49 +532,76 @@ def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_eve
         line_count = 0
         offsets = []
         current_offset = 0
+        write_buffer = []
+        write_buffer_size = 0
+        MAX_BUFFER_SIZE = 64 * 1024  # 64KB 缓冲区
+
+        # 预先获取任务状态，减少循环内锁竞争
+        task_info = _get_filter_task(session_id)
+        if not task_info:
+            return
 
         with open(log_path, 'rb') as src, open(temp_file_path, 'wb') as dst:
             for raw_line in src:
+                # 1. 优先处理字节级过滤 (最快)
+                if filter_bytes_regex and filter_bytes_regex.search(raw_line):
+                    continue
+                
+                # 2. 只有在需要时才解码一次
                 text_line = None
-                if keep_bytes_regex:
-                    if not keep_bytes_regex.search(raw_line):
-                        continue
-                elif keep_regex:
+                if filter_regex:
                     try:
                         text_line = raw_line.decode(encoding)
                     except UnicodeDecodeError:
                         text_line = raw_line.decode(encoding, errors='replace')
-                    if not keep_regex.search(text_line):
+                    if filter_regex.search(text_line):
                         continue
 
-                if filter_bytes_regex:
-                    if filter_bytes_regex.search(raw_line):
+                # 3. 处理保留逻辑
+                if keep_bytes_regex:
+                    if not keep_bytes_regex.search(raw_line):
                         continue
-                elif filter_regex:
+                elif keep_regex:
                     if text_line is None:
                         try:
                             text_line = raw_line.decode(encoding)
                         except UnicodeDecodeError:
                             text_line = raw_line.decode(encoding, errors='replace')
-                    if filter_regex.search(text_line):
+                    if not keep_regex.search(text_line):
                         continue
 
-                dst.write(raw_line)
+                # 4. 写入缓冲区
+                write_buffer.append(raw_line)
+                write_buffer_size += len(raw_line)
+                
                 line_count += 1
                 if line_count % index_every == 1:
                     offsets.append([line_count, current_offset])
                 current_offset += len(raw_line)
 
-                if not _get_filter_task(session_id) or _get_filter_task(session_id).get("status") != "running":
-                    raise RuntimeError("任务已取消")
+                # 5. 批量刷新到磁盘
+                if write_buffer_size >= MAX_BUFFER_SIZE:
+                    dst.writelines(write_buffer)
+                    write_buffer = []
+                    write_buffer_size = 0
 
-                if not _get_filter_task(session_id).get("first_ready") and line_count >= _FILTER_CHUNK_LINES:
-                    _update_filter_task(session_id, first_ready=True)
-                    print(f"[过滤线程] session={session_id} 首片就绪, 行数={line_count}")
-
-                if line_count % 500 == 0:
+                # 6. 减少状态更新频率，降低锁开销
+                if line_count % 1000 == 0:
+                    task_now = _get_filter_task(session_id)
+                    if not task_now or task_now.get("status") != "running":
+                        raise RuntimeError("任务已取消")
                     _update_filter_task(session_id, done_lines=line_count)
-                    # print(f"[过滤线程] session={session_id} 进度行数={line_count}")
+
+                if line_count == _FILTER_CHUNK_LINES:
+                    # 首片就绪逻辑保持
+                    dst.writelines(write_buffer) # 立即刷新首片
+                    write_buffer = []
+                    write_buffer_size = 0
+                    _update_filter_task(session_id, first_ready=True)
+
+            # 循环结束后的最终刷新
+            if write_buffer:
+                dst.writelines(write_buffer)
 
         # 写索引
         try:
