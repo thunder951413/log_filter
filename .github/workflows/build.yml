@@ -88,21 +88,21 @@ jobs:
       
       - name: Upload artifact (macOS)
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: LogFilter-macOS
           path: LogFilter-macOS.zip
       
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: LogFilter-Windows
           path: LogFilter-Windows.zip
       
       - name: Upload artifact (Linux)
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: LogFilter-Linux
           path: LogFilter-Linux.tar.gz
@@ -114,7 +114,7 @@ jobs:
     
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
       
       - name: Create Release
         uses: softprops/action-gh-release@v1
