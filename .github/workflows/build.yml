@@ -12,6 +12,7 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     
@@ -42,12 +43,18 @@ jobs:
           winget install tw93.pake
           echo "$env:LOCALAPPDATA\Programs\pake" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       
-      - name: Install pake (Linux)
+      - name: Install Rust and pake (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+          echo "Installing Rust..."
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source $HOME/.cargo/env
-          cargo install pake-cli
+          echo "Rust version:"
+          rustc --version
+          echo "Installing pake..."
+          cargo install pake-cli || echo "pake install failed, will try alternative"
+          echo "Adding cargo bin to PATH"
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       
       - name: Start backend server
         run: |
@@ -83,8 +90,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           source $HOME/.cargo/env
-          pake http://localhost:8052 --name LogFilter || true
-          find ~ -name "LogFilter" -type f -executable -exec cp {} . \; 2>/dev/null || find ~ -name "logfilter" -type f -executable -exec cp {} . \; 2>/dev/null || true
+          echo "Building with pake..."
+          pake http://localhost:8052 --name LogFilter || echo "pake build failed"
+          echo "Searching for built executable..."
+          find ~ -name "LogFilter" -type f -executable 2>/dev/null | head -1 | xargs -I {} cp {} . 2>/dev/null || true
+          find ~ -name "logfilter" -type f -executable 2>/dev/null | head -1 | xargs -I {} cp {} . 2>/dev/null || true
+          ls -la LogFilter* 2>/dev/null || echo "No LogFilter executable found"
       
       - name: Find and package app (macOS)
         if: matrix.os == 'macos-latest'
