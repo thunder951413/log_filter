@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     strategy:
@@ -13,8 +16,6 @@ jobs:
         os: [macos-latest, windows-latest, ubuntu-latest]
     
     runs-on: ${{ matrix.os }}
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
       - name: Checkout code
@@ -53,9 +54,10 @@ jobs:
           nohup python app.py > backend.log 2>&1 &
           BACKEND_PID=$!
           echo "Backend PID: $BACKEND_PID"
+          echo "BACKEND_PID=$BACKEND_PID" >> $GITHUB_ENV
           
           for i in {1..30}; do
-            if nc -z localhost 8052 2>/dev/null || lsof -i :8052 -t > /dev/null 2>&1; then
+            if python -c "import socket; s=socket.socket(); s.connect(('localhost', 8052)); s.close()" 2>/dev/null; then
               echo "Backend is ready"
               break
             fi
@@ -63,7 +65,7 @@ jobs:
             sleep 2
           done
           
-          cat backend.log
+          cat backend.log || true
       
       - name: Build with pake (macOS)
         if: matrix.os == 'macos-latest'
@@ -117,10 +119,10 @@ jobs:
           fi
       
       - name: Stop backend server
-        if: ${{ always() }}
+        if: always()
         run: |
-          if [ -n "$BACKEND_PID" ]; then
-            kill $BACKEND_PID || true
+          if [ -n "${{ env.BACKEND_PID }}" ]; then
+            kill ${{ env.BACKEND_PID }} || true
           fi
           pkill -f "python app.py" || true
       
