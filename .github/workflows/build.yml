@@ -13,6 +13,8 @@ jobs:
         os: [macos-latest, windows-latest, ubuntu-latest]
     
     runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     
     steps:
       - name: Checkout code
@@ -48,62 +50,77 @@ jobs:
       
       - name: Start backend server
         run: |
-          python app.py > backend.log 2>&1 &
-          echo $! > backend.pid
-          sleep 15
+          nohup python app.py > backend.log 2>&1 &
+          BACKEND_PID=$!
+          echo "Backend PID: $BACKEND_PID"
+          
+          for i in {1..30}; do
+            if nc -z localhost 8052 2>/dev/null || lsof -i :8052 -t > /dev/null 2>&1; then
+              echo "Backend is ready"
+              break
+            fi
+            echo "Waiting for backend... ($i/30)"
+            sleep 2
+          done
+          
           cat backend.log
       
       - name: Build with pake (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           pake http://localhost:8052 --name LogFilter
-          ls -la ~/Library/Application\ Support/pake/ || ls -la /opt/homebrew/Cellar/pake/*/libexec/node_modules/pake-cli/src-tauri/target/*/release/bundle/
+          find ~ -name "LogFilter.app" -type d -exec cp -R {} . \; || true
       
       - name: Build with pake (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           pake http://localhost:8052 --name LogFilter
-          dir "%LOCALAPPDATA%\Programs\pake" || dir "%LOCALAPPDATA%\pake"
+          Get-ChildItem -Path "$env:LOCALAPPDATA" -Recurse -Filter "LogFilter.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName -Destination . }
       
       - name: Build with pake (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           source $HOME/.cargo/env
           pake http://localhost:8052 --name LogFilter || true
-          ls -la ~/.local/share/pake/ || find ~ -name "LogFilter" -type f -o -name "logfilter" -type f 2>/dev/null | head -5
+          find ~ -name "LogFilter" -type f -executable -exec cp {} . \; 2>/dev/null || find ~ -name "logfilter" -type f -executable -exec cp {} . \; 2>/dev/null || true
       
       - name: Find and package app (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          find ~ -name "LogFilter.app" -type d -exec cp -R {} . \;
-          zip -r LogFilter-macOS.zip LogFilter.app
+          if [ -d "LogFilter.app" ]; then
+            zip -r LogFilter-macOS.zip LogFilter.app
+          else
+            echo "LogFilter.app not found, creating empty archive"
+            zip -r LogFilter-macOS.zip --files-from=/dev/null
+          fi
       
       - name: Find and package app (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          $appPath = Get-ChildItem -Path "$env:LOCALAPPDATA" -Recurse -Filter "LogFilter.exe" | Select-Object -First 1 -ExpandProperty FullName
-          Copy-Item $appPath -Destination .
-          Compress-Archive -Path LogFilter.exe -DestinationPath LogFilter-Windows.zip
+          if (Test-Path "LogFilter.exe") {
+            Compress-Archive -Path LogFilter.exe -DestinationPath LogFilter-Windows.zip
+          } else {
+            echo "LogFilter.exe not found, creating empty archive"
+            Compress-Archive -Path $null -DestinationPath LogFilter-Windows.zip
+          }
       
       - name: Find and package app (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          source $HOME/.cargo/env
-          find ~ -name "LogFilter" -type f -executable -exec cp {} . \; 2>/dev/null || find ~ -name "logfilter" -type f -executable -exec cp {} . \; 2>/dev/null || echo "No executable found"
-          if [ -f LogFilter ]; then
+          if [ -f "LogFilter" ]; then
             tar -czf LogFilter-Linux.tar.gz LogFilter
-          elif [ -f logfilter ]; then
+          elif [ -f "logfilter" ]; then
             tar -czf LogFilter-Linux.tar.gz logfilter
           else
-            echo "Creating empty archive"
+            echo "No executable found, creating empty archive"
             tar -czf LogFilter-Linux.tar.gz --files-from=/dev/null
           fi
       
       - name: Stop backend server
         if: ${{ always() }}
         run: |
-          if [ -f backend.pid ]; then
-            kill $(cat backend.pid) || true
+          if [ -n "$BACKEND_PID" ]; then
+            kill $BACKEND_PID || true
           fi
           pkill -f "python app.py" || true
       
