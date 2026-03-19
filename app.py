@@ -1467,19 +1467,24 @@ app.layout = html.Div([
                                     dbc.Col([
                                         html.H4("选中的字符串", className="card-title"),
                                         dbc.Button("清除选择", id={"type": "clear-selection-btn", "index": "main"}, color="danger", size="sm", className="mb-2"),
-                                        html.Div(id="selected-strings-container", style={"maxHeight": "calc(100vh - 250px)", "overflowY": "auto"})
+                                        html.Div(id="selected-strings-container", style={"maxHeight": "calc(100vh - 250px)", "overflowY": "auto", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px"})
                                     ], width=6),
                                     
                                     # 右侧：已保存的字符串
                                     dbc.Col([
                                         html.H4("已保存的字符串", className="card-title"),
-                                        dcc.Dropdown(
-                                            id="category-filter",
-                                            options=[{"label": "所有分类", "value": "all"}] + 
-                                                    [{"label": cat, "value": cat} for cat in data["categories"].keys()],
-                                            value="all",
-                                            clearable=False
-                                        ),
+                                        dbc.Row([
+                                            dbc.Col([
+                                                dcc.Dropdown(
+                                                    id="category-filter",
+                                                    options=[{"label": "所有分类", "value": "all"}] + 
+                                                            [{"label": cat, "value": cat} for cat in data["categories"].keys()],
+                                                    value="all",
+                                                    clearable=False,
+                                                    placeholder="选择分类"
+                                                ),
+                                            ], width=12),
+                                        ], className="mb-2"),
                                         html.Div(className="mt-2 mb-2", children=[
                                             dbc.Label("字符串类型:", className="me-2"),
                                             dbc.RadioItems(
@@ -1492,7 +1497,7 @@ app.layout = html.Div([
                                                 inline=True
                                             )
                                         ]),
-                                        html.Div(id="saved-strings-container", style={"maxHeight": "375px", "overflowY": "auto", "marginTop": "10px"}),
+                                        html.Div(id="saved-strings-container", style={"maxHeight": "400px", "overflowY": "auto", "marginTop": "10px", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px"}),
                                         html.Div(id="duplicate-strings-container", className="mt-3")
                                     ], width=6)
                                 ]),

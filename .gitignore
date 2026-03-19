@@ -10,3 +10,5 @@ temp/
 app.spec
 log_filter_server.spec
 temp_keywords.json
+start_app.log
+*.app

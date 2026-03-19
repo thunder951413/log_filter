@@ -1,14 +1,14 @@
 [
   {
-    "text": "recording",
+    "text": "STB_DPStartDecodingByTrackSelectFlag",
     "type": "keep"
   },
   {
-    "text": "ReferenceWidgetRecordings",
-    "type": "filter"
+    "text": "STB_DPStartDecoding",
+    "type": "keep"
   },
   {
-    "text": "isVirtualFrontend",
-    "type": "filter"
+    "text": "STB_AVStartAudioDecoding",
+    "type": "keep"
   }
 ]
