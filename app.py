@@ -492,6 +492,7 @@ def _init_filter_task(session_id, log_path, keep_strings, filter_strings, select
             "keep_strings": keep_strings,
             "filter_strings": filter_strings,
             "selected_strings": selected_strings,
+            "backend": "",
         }
 
 
@@ -507,6 +508,12 @@ def _get_filter_task(session_id):
         return _filter_tasks.get(session_id, {}).copy()
 
 
+def _format_filter_backend_text(backend):
+    if not backend:
+        return ""
+    return f"当前工具: {backend}"
+
+
 def _estimate_total_lines(log_path):
     try:
         size = os.path.getsize(log_path)
@@ -518,8 +525,6 @@ def _estimate_total_lines(log_path):
 
 def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_every=500):
     try:
-        # print(f"[过滤线程] start session={session_id}, log_path={log_path}")
-        # print(f"[过滤线程] keep_strings={keep_strings}, filter_strings={filter_strings}")
         temp_file_path = get_temp_file_path(session_id)
         idx_path = get_temp_index_path(temp_file_path)
         encoding = detect_file_encoding(log_path)
@@ -540,6 +545,33 @@ def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_eve
         task_info = _get_filter_task(session_id)
         if not task_info:
             return
+
+        try:
+            temp_file_path, idx_path, line_count, output_encoding, backend = stream_filter_to_temp(
+                log_path,
+                keep_regex,
+                filter_regex,
+                keep_strings,
+                filter_strings,
+                session_id=session_id,
+                index_every=index_every
+            )
+            _update_filter_task(
+                session_id,
+                temp_file=temp_file_path,
+                idx_file=idx_path,
+                encoding=output_encoding,
+                done_lines=line_count,
+                first_ready=True,
+                finished=True,
+                status="finished",
+                backend=backend
+            )
+            print(f"[过滤线程] session={session_id} 使用外部预处理完成，行数={line_count}")
+            return
+        except Exception as external_error:
+            print(f"[过滤] 外部预处理不可用，回退 Python 流式过滤: {external_error}")
+            _update_filter_task(session_id, backend="python-fallback")
 
         with open(log_path, 'rb') as src, open(temp_file_path, 'wb') as dst:
             for raw_line in src:
@@ -1250,7 +1282,12 @@ app.layout = html.Div([
                                                 ], size="sm", style={"maxWidth": "220px"})
                                             ], className="d-flex justify-content-end align-items-center gap-2")
                                         ], width=6)
-                                    ], className="w-100")
+                                    ], className="w-100"),
+                                    html.Div(
+                                        id="filter-backend-display",
+                                        className="small text-end mt-2",
+                                        style={"color": "#0d6efd", "minHeight": "20px"}
+                                    )
                                 ], width=12)
                                     ])
                                 ], width=12)
@@ -2982,6 +3019,7 @@ def render_keyword_annotations_list(annotations_map):
      Output("filtered-result-store", "data"),
      Output("filter-progress-bar", "value", allow_duplicate=True),
      Output("filter-progress-text", "children", allow_duplicate=True),
+     Output("filter-backend-display", "children", allow_duplicate=True),
      Output("filter-progress-footer", "style", allow_duplicate=True),
      Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
      Output("filter-btn-text", "children", allow_duplicate=True),
@@ -3004,7 +3042,7 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
     if active_tab != "tab-1" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
-                dash.no_update, dash.no_update, dash.no_update)
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update)
     
     if previous_session_id:
         _clear_filter_task(previous_session_id, delete_files=False)
@@ -3022,6 +3060,7 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
         "",                             # filtered-result-store 清空
         0,                              # 重置底部进度条
         "",                             # 重置进度文字
+        "当前工具: 检测中..." if session_id else "",  # 底部工具显示
         {"display": "block"},           # 展示底部进度条区域
         {"display": "inline-block", "marginLeft": "5px"},  # spinner 显示
         "处理中...",                    # 按钮文案
@@ -3039,15 +3078,16 @@ app.clientside_callback(
     """
     function(value) {
         if (value) {
-            return [true, "secondary", "等待后端刷新...", "badge bg-warning text-dark ms-2"];
+            return [true, "secondary", "等待后端刷新...", "badge bg-warning text-dark ms-2", ""];
         }
-        return [window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update];
+        return [window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update];
     }
     """,
     [Output("execute-filter-btn", "disabled", allow_duplicate=True),
      Output("execute-filter-btn", "color", allow_duplicate=True),
      Output("log-view-status-bar", "children", allow_duplicate=True),
-     Output("log-view-status-bar", "className", allow_duplicate=True)],
+     Output("log-view-status-bar", "className", allow_duplicate=True),
+     Output("filter-backend-display", "children", allow_duplicate=True)],
     Input("log-file-selector", "value"),
     prevent_initial_call=True
 )
@@ -3150,72 +3190,130 @@ def _build_temp_index(temp_file_path, idx_path, encoding, index_every=500):
     return line_count
 
 
-def _escape_shell_pattern(pattern: str) -> str:
-    """简单转义单引号，供shell/grep使用"""
-    return pattern.replace("'", "'\"'\"'")
+def _normalize_filter_terms(values):
+    return [str(value) for value in (values or []) if str(value)]
 
 
-def _build_patterns(keep_strings, filter_strings):
-    keep_parts = [re.escape(s) for s in keep_strings or [] if s]
-    filter_parts = [re.escape(s) for s in filter_strings or [] if s]
-    keep_pattern = "|".join(keep_parts) if keep_parts else ""
-    filter_pattern = "|".join(filter_parts) if filter_parts else ""
-    return keep_pattern, filter_pattern
+def _powershell_quote(value):
+    return "'" + value.replace("'", "''") + "'"
 
 
-def _stream_filter_to_temp_unix(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, encoding, index_every):
-    """使用系统 grep 过滤（类 Unix）"""
-    # 构建管道：grep keep | grep -v filter
-    if keep_pattern:
-        cmd = f"grep -a -i -E '{_escape_shell_pattern(keep_pattern)}' \"{log_path}\""
+def _build_arg_command(base_args, patterns, log_path=None, invert=False):
+    cmd = list(base_args)
+    if invert:
+        cmd.append("-v")
+    for pattern in patterns:
+        cmd.extend(["-e", pattern])
+    if log_path:
+        cmd.append(log_path)
+    return cmd
+
+
+def _run_pipeline_to_file(commands, temp_file_path):
+    with open(temp_file_path, "wb") as output_file:
+        if len(commands) == 1:
+            result = subprocess.run(commands[0], stdout=output_file, stderr=subprocess.PIPE)
+            stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+            return [result.returncode], stderr_text
+
+        first = subprocess.Popen(commands[0], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        second = subprocess.Popen(commands[1], stdin=first.stdout, stdout=output_file, stderr=subprocess.PIPE)
+        if first.stdout:
+            first.stdout.close()
+        second_stderr = second.communicate()[1]
+        first_stderr = first.communicate()[1]
+        stderr_parts = []
+        if first_stderr:
+            stderr_parts.append(first_stderr.decode("utf-8", errors="replace"))
+        if second_stderr:
+            stderr_parts.append(second_stderr.decode("utf-8", errors="replace"))
+        return [first.returncode, second.returncode], "\n".join(part for part in stderr_parts if part)
+
+
+def _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, backend):
+    line_count = _build_temp_index(temp_file_path, idx_path, encoding, index_every=index_every)
+    print(f"[过滤] 使用 {backend} 完成，输出: {temp_file_path}, 行数: {line_count}")
+    return temp_file_path, idx_path, line_count, encoding, backend
+
+
+def _stream_filter_with_rg(log_path, temp_file_path, idx_path, keep_strings, filter_strings, encoding, index_every):
+    commands = []
+    if keep_strings:
+        commands.append(_build_arg_command(["rg", "--text", "--no-heading", "--color", "never", "-i", "-F"], keep_strings, log_path=log_path))
     else:
-        cmd = f"cat \"{log_path}\""
-    if filter_pattern:
-        cmd += f" | grep -a -i -E -v '{_escape_shell_pattern(filter_pattern)}'"
-    cmd += f" > \"{temp_file_path}\""
-    print(f"[过滤] 使用系统 grep 执行: {cmd}")
-    result = subprocess.run(cmd, shell=True)
-    # grep 无匹配时返回码 1，视为正常
-    if result.returncode not in (0, 1):
-        raise RuntimeError(f"系统过滤失败，返回码 {result.returncode}")
-    line_count = _build_temp_index(temp_file_path, idx_path, encoding, index_every=index_every)
-    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}")
-    return temp_file_path, idx_path, line_count, encoding
+        commands.append(["rg", "--text", "--no-heading", "--color", "never", "^", log_path])
+    if filter_strings:
+        commands.append(_build_arg_command(["rg", "--text", "--no-heading", "--color", "never", "-i", "-F"], filter_strings, invert=True))
+    return_codes, stderr_text = _run_pipeline_to_file(commands, temp_file_path)
+    if any(code not in (0, 1) for code in return_codes):
+        raise RuntimeError(f"rg 过滤失败: {stderr_text or return_codes}")
+    return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "rg")
 
 
-def _stream_filter_to_temp_windows(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, index_every):
-    """使用 PowerShell Select-String 过滤（Windows）"""
-    # 使用简单匹配，默认不区分大小写
-    ps_cmd = f"Get-Content -Path \"{log_path}\""
-    if keep_pattern:
-        ps_cmd += f" | Select-String -SimpleMatch -CaseSensitive:$false -Pattern '{keep_pattern}'"
-    if filter_pattern:
-        ps_cmd += f" | Select-String -SimpleMatch -CaseSensitive:$false -NotMatch -Pattern '{filter_pattern}'"
-    ps_cmd += f" | Out-File -FilePath \"{temp_file_path}\" -Encoding utf8"
-    full_cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
-    print(f"[过滤] 使用PowerShell过滤: {full_cmd}")
-    result = subprocess.run(full_cmd, shell=True)
+def _stream_filter_with_grep(log_path, temp_file_path, idx_path, keep_strings, filter_strings, encoding, index_every):
+    commands = []
+    if keep_strings:
+        commands.append(_build_arg_command(["grep", "-a", "-i", "-F"], keep_strings, log_path=log_path))
+    else:
+        commands.append(["grep", "-a", "-E", "^", log_path])
+    if filter_strings:
+        commands.append(_build_arg_command(["grep", "-a", "-i", "-F"], filter_strings, invert=True))
+    return_codes, stderr_text = _run_pipeline_to_file(commands, temp_file_path)
+    if any(code not in (0, 1) for code in return_codes):
+        raise RuntimeError(f"grep 过滤失败: {stderr_text or return_codes}")
+    return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "grep")
+
+
+def _stream_filter_with_powershell(log_path, temp_file_path, idx_path, keep_strings, filter_strings, index_every, shell_cmd):
+    keep_array = "@(" + ", ".join(_powershell_quote(pattern) for pattern in keep_strings) + ")" if keep_strings else "@()"
+    filter_array = "@(" + ", ".join(_powershell_quote(pattern) for pattern in filter_strings) + ")" if filter_strings else "@()"
+    script = "\n".join([
+        f"$keepPatterns = {keep_array}",
+        f"$filterPatterns = {filter_array}",
+        f"$inputPath = {_powershell_quote(log_path)}",
+        f"$outputPath = {_powershell_quote(temp_file_path)}",
+        "$content = Get-Content -Path $inputPath",
+        "if ($keepPatterns.Count -gt 0) { $content = $content | Select-String -SimpleMatch -CaseSensitive:$false -Pattern $keepPatterns }",
+        "if ($filterPatterns.Count -gt 0) { $content = $content | Select-String -SimpleMatch -CaseSensitive:$false -NotMatch -Pattern $filterPatterns }",
+        "$content | Set-Content -Path $outputPath -Encoding utf8"
+    ])
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run([shell_cmd, "-NoProfile", "-EncodedCommand", encoded], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode not in (0, 1):
-        raise RuntimeError(f"PowerShell 过滤失败，返回码 {result.returncode}")
-    # 输出为utf-8
-    encoding = "utf-8"
-    line_count = _build_temp_index(temp_file_path, idx_path, encoding, index_every=index_every)
-    print(f"[过滤] 完成，输出: {temp_file_path}, 行数: {line_count}")
-    return temp_file_path, idx_path, line_count, encoding
+        stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+        raise RuntimeError(f"{shell_cmd} 过滤失败: {stderr_text or result.returncode}")
+    return _finalize_filtered_output(temp_file_path, idx_path, "utf-8", index_every, shell_cmd)
+
+
+def _copy_source_to_temp(log_path, temp_file_path, idx_path, encoding, index_every):
+    shutil.copyfile(log_path, temp_file_path)
+    return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "python-copy")
 
 
 def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500):
-    """使用系统 grep/PowerShell 过滤日志到临时文件，并生成索引"""
     ensure_temp_dir()
     temp_file_path = get_temp_file_path(session_id)
     idx_path = get_temp_index_path(temp_file_path)
-    keep_pattern, filter_pattern = _build_patterns(keep_strings, filter_strings)
     encoding = detect_file_encoding(log_path)
-    
+    normalized_keep = _normalize_filter_terms(keep_strings)
+    normalized_filter = _normalize_filter_terms(filter_strings)
+
+    if not normalized_keep and not normalized_filter:
+        return _copy_source_to_temp(log_path, temp_file_path, idx_path, encoding, index_every)
+
+    if shutil.which("rg"):
+        return _stream_filter_with_rg(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
+
+    if os.name != "nt" and shutil.which("grep"):
+        return _stream_filter_with_grep(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
+
     if os.name == "nt":
-        return _stream_filter_to_temp_windows(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, index_every)
-    else:
-        return _stream_filter_to_temp_unix(log_path, temp_file_path, idx_path, keep_pattern, filter_pattern, encoding, index_every)
+        if shutil.which("pwsh"):
+            return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, "pwsh")
+        if shutil.which("powershell"):
+            return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, "powershell")
+
+    raise RuntimeError("未找到可用的外部预处理工具")
 
 
 def build_rolling_display(temp_file_path, line_count, session_id, selected_strings, data, encoding):
@@ -3545,6 +3643,7 @@ def build_side_by_side_diff(a_lines, b_lines, max_display_lines=10000, ignore_pr
 @app.callback(
     [Output("filter-progress-bar", "value", allow_duplicate=True),
      Output("filter-progress-text", "children", allow_duplicate=True),
+     Output("filter-backend-display", "children", allow_duplicate=True),
      Output("filter-partial-display", "children", allow_duplicate=True),
      Output("filter-progress-inline", "children", allow_duplicate=True),
      Output("filter-progress-footer", "style", allow_duplicate=True),
@@ -3567,16 +3666,17 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
     progress_footer_hide = {"display": "none"}
     if active_tab != "tab-1" or not session_id:
         print(f"[进度] 跳过轮询 active_tab={active_tab} session_id={session_id}")
-        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update)
     
     task = _get_filter_task(session_id)
     if not task:
         print(f"[进度] session={session_id} 未找到任务(可能是旧轮询)，暂不停止轮询")
-        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+        return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+    backend_text = _format_filter_backend_text(task.get("backend"))
     
     # 错误处理
     if task.get("status") == "error":
@@ -3585,7 +3685,7 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
             html.Pre(task.get("error"), className="text-danger small")
         ])
         print(f"[进度] session={session_id} 状态=error, err={task.get('error')}")
-        return (0, "过滤失败", err_div, "", progress_footer_show, True, "", True, err_div, err_div,
+        return (0, "过滤失败", backend_text, err_div, "", progress_footer_show, True, "", True, err_div, err_div,
                 spinner_hide, "过滤", False)
     
     done = task.get("done_lines") or 0
@@ -3601,7 +3701,7 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         data = load_data()
         partial_display = highlight_keywords_dash(chunk_text, task.get("selected_strings"), data)
         print(f"[进度] session={session_id} 首片已就绪，返回部分内容，percent={percent}")
-        return (percent if percent is not None else 1, progress_text, partial_display, "", progress_footer_show, False, session_id, True,
+        return (percent if percent is not None else 1, progress_text, backend_text, partial_display, "", progress_footer_show, False, session_id, True,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
     
     # 完成
@@ -3616,12 +3716,12 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         final_display = build_rolling_display(temp_file, line_count, session_id, selected_strings, data, encoding)
         print(f"[进度] session={session_id} 完成，行数={line_count}，停止轮询")
         inline_progress = ""  # 完成后隐藏内联进度条
-        return (100, "完成", dash.no_update, inline_progress, progress_footer_hide, True, "", "",
+        return (100, "完成", backend_text, dash.no_update, inline_progress, progress_footer_hide, True, "", "",
                 final_display, final_display, spinner_hide, "过滤", False)
     
     # 仍在进行，但未到首片
     inline_progress = ""  # 不再显示顶部内联进度条
-    return (percent, progress_text, dash.no_update, inline_progress, progress_footer_show, False, session_id, dash.no_update,
+    return (percent, progress_text, backend_text, dash.no_update, inline_progress, progress_footer_show, False, session_id, dash.no_update,
             dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
 
 
