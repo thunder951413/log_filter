@@ -24,8 +24,17 @@ function exists(cmd) {
   try { const which = process.platform === 'win32' ? 'where' : 'which'; const r = spawnSync(which, [cmd], { stdio: 'ignore' }); return r.status === 0 } catch (e) { return false }
 }
 
+function execName(cmd) {
+  if (process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx')) return `${cmd}.cmd`
+  return cmd
+}
+
 function run(cmd, args, cwd) {
-  const r = spawnSync(cmd, args, { stdio: 'inherit', cwd: cwd || process.cwd() })
+  const r = spawnSync(execName(cmd), args, { stdio: 'inherit', cwd: cwd || process.cwd() })
+  if (r.error) {
+    console.error(r.error.message)
+    process.exit(1)
+  }
   if (r.status !== 0) { process.exit(r.status || 1) }
 }
 
@@ -35,7 +44,7 @@ function buildBackend(platform, dry) {
   if (exists('pyinstaller')) { run('pyinstaller', args) } else { run('python', ['-m', 'PyInstaller'].concat(args)) }
 }
 
-function buildFrontendMac(dry) { const args = ['--mac', 'dmg,zip']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
+function buildFrontendMac(dry) { const args = ['--mac', 'dmg', 'zip']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 function buildFrontendWin(dry) { const args = ['--win', 'nsis']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 function buildFrontendLinux(dry) { const args = ['--linux', 'AppImage']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 

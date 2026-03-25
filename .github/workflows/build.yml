@@ -30,6 +30,8 @@ jobs:
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}/.cache/pyinstaller
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
     steps:
       - name: Checkout code
@@ -137,6 +139,7 @@ jobs:
           path: |
             package-build.log
             dist/builder-debug.yml
+            dist/builder-effective-config.yaml
             dist/*.yml
             dist/*.blockmap
           if-no-files-found: ignore
