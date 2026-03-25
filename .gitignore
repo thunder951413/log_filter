@@ -5,10 +5,13 @@ configs/default.json
 .DS_Store
 build/
 dist/
+.cache/
 node_modules/
 temp/
 app.spec
 log_filter_server.spec
 temp_keywords.json
 start_app.log
+runtime_logs/
+vendor/ripgrep/windows-x64/
 *.app

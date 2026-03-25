@@ -251,7 +251,10 @@ function startPython() {
   ensureDir(getRuntimeDataDir())
   const bin = resolveServerBinary()
   const runtimeDir = getRuntimeDataDir()
-  const env = Object.assign({}, process.env, { LOG_FILTER_RUNTIME_DIR: runtimeDir })
+  const env = Object.assign({}, process.env, {
+    LOG_FILTER_RUNTIME_DIR: runtimeDir,
+    LOG_FILTER_RESOURCES_DIR: process.resourcesPath || process.cwd()
+  })
   lastPythonState = 'starting'
 
   log.info('Starting backend server', { bin, runtimeDir, serverUrl: SERVER_URL })

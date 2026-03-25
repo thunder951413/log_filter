@@ -1,6 +1,6 @@
 {
   "name": "log_filter",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -38,6 +38,17 @@
     "win": {
       "target": [
         "nsis"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/ripgrep/windows-x64",
+          "to": "tools/rg",
+          "filter": [
+            "rg.exe",
+            "LICENSE-MIT",
+            "UNLICENSE"
+          ]
+        }
       ]
     },
     "linux": {

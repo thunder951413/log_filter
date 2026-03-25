@@ -234,6 +234,99 @@ def _powershell_fallback_reason(min_version=(5, 1)):
     return "powershell unavailable"
 
 
+def _normalize_filter_backend_preference(value):
+    normalized = str(value or "auto").strip().lower()
+    if normalized in {"auto", "rg", "grep", "findstr", "powershell"}:
+        return normalized
+    return "auto"
+
+
+def _can_use_windows_findstr():
+    return os.name == "nt" and bool(shutil.which("findstr"))
+
+
+def _get_bundled_rg_path():
+    if os.name != "nt":
+        return None
+    candidates = []
+    if RUNTIME_RESOURCES_DIR:
+        candidates.append(os.path.join(RUNTIME_RESOURCES_DIR, "tools", "rg", "rg.exe"))
+    executable_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidates.append(os.path.abspath(os.path.join(executable_dir, os.pardir, "tools", "rg", "rg.exe")))
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor", "ripgrep", "windows-x64", "rg.exe"))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _get_rg_command():
+    bundled_rg = _get_bundled_rg_path()
+    if bundled_rg:
+        return bundled_rg
+    return shutil.which("rg")
+
+
+def _get_filter_backend_selector_options():
+    options = [{"label": "自动", "value": "auto"}]
+    if os.name == "nt":
+        options.extend([
+            {"label": "rg", "value": "rg", "disabled": not bool(_get_rg_command())},
+            {"label": "findstr", "value": "findstr", "disabled": not _can_use_windows_findstr()},
+            {
+                "label": "PowerShell",
+                "value": "powershell",
+                "disabled": not bool(_detect_windows_powershell_runtime().get("cmd") and _detect_windows_powershell_runtime().get("meets_minimum"))
+            }
+        ])
+    else:
+        options.extend([
+            {"label": "rg", "value": "rg", "disabled": not bool(_get_rg_command())},
+            {"label": "grep", "value": "grep", "disabled": not bool(shutil.which("grep"))}
+        ])
+    return options
+
+
+def _resolve_filter_backend(preferred_backend="auto"):
+    preferred_backend = _normalize_filter_backend_preference(preferred_backend)
+    if os.name == "nt":
+        runtime = _detect_windows_powershell_runtime()
+        availability = {
+            "rg": bool(_get_rg_command()),
+            "findstr": _can_use_windows_findstr(),
+            "powershell": bool(runtime.get("cmd") and runtime.get("meets_minimum"))
+        }
+        if preferred_backend == "auto":
+            for backend_name in ("rg", "findstr", "powershell"):
+                if availability.get(backend_name):
+                    return backend_name
+            return "python"
+        if preferred_backend == "powershell":
+            if availability["powershell"]:
+                return "powershell"
+            raise RuntimeError(f"Windows PowerShell 不可用: {_powershell_fallback_reason()}")
+        if preferred_backend in ("rg", "findstr"):
+            if availability.get(preferred_backend):
+                return preferred_backend
+            raise RuntimeError(f"未找到可用的 {preferred_backend}")
+        return "python"
+
+    availability = {
+        "rg": bool(_get_rg_command()),
+        "grep": bool(shutil.which("grep"))
+    }
+    if preferred_backend == "auto":
+        for backend_name in ("rg", "grep"):
+            if availability.get(backend_name):
+                return backend_name
+        return "python"
+    if preferred_backend in ("rg", "grep"):
+        if availability.get(preferred_backend):
+            return preferred_backend
+        raise RuntimeError(f"未找到可用的 {preferred_backend}")
+    return "python"
+
+
 def _clear_filter_task(session_id, delete_files=False):
     """删除指定session的任务记录，可选删除临时文件"""
     with _filter_tasks_lock:
@@ -260,6 +353,7 @@ def _clear_all_filter_tasks(delete_files=False):
 # 初始化 Dash 应用，使用 Bootstrap 主题
 base_path = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
 RUNTIME_BASE_DIR = os.environ.get("LOG_FILTER_RUNTIME_DIR") or os.getcwd()
+RUNTIME_RESOURCES_DIR = os.environ.get("LOG_FILTER_RESOURCES_DIR") or ""
 RUNTIME_LOG_DIR = os.path.join(RUNTIME_BASE_DIR, "runtime_logs")
 BACKEND_RUNTIME_LOG_FILE = os.path.join(RUNTIME_LOG_DIR, "backend.log")
 
@@ -698,7 +792,7 @@ def _estimate_total_lines(log_path):
         return None
 
 
-def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_every=500):
+def _filter_worker(session_id, log_path, keep_strings, filter_strings, preferred_backend="auto", index_every=500):
     try:
         temp_file_path = get_temp_file_path(session_id)
         idx_path = get_temp_index_path(temp_file_path)
@@ -729,7 +823,8 @@ def _filter_worker(session_id, log_path, keep_strings, filter_strings, index_eve
                 keep_strings,
                 filter_strings,
                 session_id=session_id,
-                index_every=index_every
+                index_every=index_every,
+                preferred_backend=preferred_backend
             )
             _update_filter_task(
                 session_id,
@@ -1306,6 +1401,16 @@ app.layout = html.Div([
                             placeholder="配置文件组",
                             style={"width": "120px", "fontSize": "12px", "textAlign": "left"},
                             clearable=True
+                        )
+                    ], className="d-inline-block me-2 align-middle"),
+                    html.Div([
+                        dcc.Dropdown(
+                            id="filter-backend-selector",
+                            options=_get_filter_backend_selector_options(),
+                            value="auto",
+                            clearable=False,
+                            searchable=False,
+                            style={"width": "160px", "fontSize": "12px", "textAlign": "left"}
                         )
                     ], className="d-inline-block me-2 align-middle"),
                     dbc.Button(
@@ -3241,10 +3346,11 @@ def render_keyword_annotations_list(annotations_map):
      State("temp-keywords-store", "data"),
      State("log-file-selector", "value"),
      State("filter-session-store", "data"),
+     State("filter-backend-selector", "value"),
      State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
-def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, previous_session_id, active_tab):
+def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected_log_file, previous_session_id, preferred_backend, active_tab):
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
@@ -3255,7 +3361,7 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
         _clear_filter_task(previous_session_id, delete_files=False)
     
     # 执行过滤命令，包含临时关键字
-    session_id, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file)
+    session_id, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file, preferred_backend=preferred_backend)
     try:
         print(f"[过滤UI] 启动过滤 session={session_id}, n_clicks={n_clicks}")
     except Exception:
@@ -3416,6 +3522,17 @@ def _build_arg_command(base_args, patterns, log_path=None, invert=False):
     return cmd
 
 
+def _build_findstr_command(patterns, log_path=None, invert=False):
+    cmd = ["findstr", "/i", "/l"]
+    if invert:
+        cmd.append("/v")
+    for pattern in patterns:
+        cmd.append(f"/c:{pattern}")
+    if log_path:
+        cmd.append(log_path)
+    return cmd
+
+
 def _run_pipeline_to_file(commands, temp_file_path):
     with open(temp_file_path, "wb") as output_file:
         if len(commands) == 1:
@@ -3444,13 +3561,16 @@ def _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, b
 
 
 def _stream_filter_with_rg(log_path, temp_file_path, idx_path, keep_strings, filter_strings, encoding, index_every):
+    rg_cmd = _get_rg_command()
+    if not rg_cmd:
+        raise RuntimeError("未找到可用的 rg")
     commands = []
     if keep_strings:
-        commands.append(_build_arg_command(["rg", "--text", "--no-heading", "--color", "never", "-i", "-F"], keep_strings, log_path=log_path))
+        commands.append(_build_arg_command([rg_cmd, "--text", "--no-heading", "--color", "never", "-i", "-F"], keep_strings, log_path=log_path))
     else:
-        commands.append(["rg", "--text", "--no-heading", "--color", "never", "^", log_path])
+        commands.append([rg_cmd, "--text", "--no-heading", "--color", "never", "^", log_path])
     if filter_strings:
-        commands.append(_build_arg_command(["rg", "--text", "--no-heading", "--color", "never", "-i", "-F"], filter_strings, invert=True))
+        commands.append(_build_arg_command([rg_cmd, "--text", "--no-heading", "--color", "never", "-i", "-F"], filter_strings, invert=True))
     return_codes, stderr_text = _run_pipeline_to_file(commands, temp_file_path)
     if any(code not in (0, 1) for code in return_codes):
         raise RuntimeError(f"rg 过滤失败: {stderr_text or return_codes}")
@@ -3469,6 +3589,20 @@ def _stream_filter_with_grep(log_path, temp_file_path, idx_path, keep_strings, f
     if any(code not in (0, 1) for code in return_codes):
         raise RuntimeError(f"grep 过滤失败: {stderr_text or return_codes}")
     return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "grep")
+
+
+def _stream_filter_with_findstr(log_path, temp_file_path, idx_path, keep_strings, filter_strings, encoding, index_every):
+    commands = []
+    if keep_strings:
+        commands.append(_build_findstr_command(keep_strings, log_path=log_path))
+    else:
+        commands.append(["cmd", "/d", "/s", "/c", f'type "{log_path}"'])
+    if filter_strings:
+        commands.append(_build_findstr_command(filter_strings, invert=True))
+    return_codes, stderr_text = _run_pipeline_to_file(commands, temp_file_path)
+    if any(code not in (0, 1) for code in return_codes):
+        raise RuntimeError(f"findstr 过滤失败: {stderr_text or return_codes}")
+    return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "findstr")
 
 
 def _stream_filter_with_powershell(log_path, temp_file_path, idx_path, keep_strings, filter_strings, index_every, shell_cmd):
@@ -3497,7 +3631,7 @@ def _copy_source_to_temp(log_path, temp_file_path, idx_path, encoding, index_eve
     return _finalize_filtered_output(temp_file_path, idx_path, encoding, index_every, "python-copy")
 
 
-def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500):
+def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filter_strings, session_id=None, index_every=500, preferred_backend="auto"):
     ensure_temp_dir()
     temp_file_path = get_temp_file_path(session_id)
     idx_path = get_temp_index_path(temp_file_path)
@@ -3508,17 +3642,25 @@ def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filt
     if not normalized_keep and not normalized_filter:
         return _copy_source_to_temp(log_path, temp_file_path, idx_path, encoding, index_every)
 
-    if shutil.which("rg"):
+    resolved_backend = _resolve_filter_backend(preferred_backend)
+
+    if resolved_backend == "rg":
         return _stream_filter_with_rg(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
 
-    if os.name != "nt" and shutil.which("grep"):
+    if resolved_backend == "grep":
         return _stream_filter_with_grep(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
 
-    if os.name == "nt":
+    if resolved_backend == "findstr":
+        return _stream_filter_with_findstr(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
+
+    if resolved_backend == "powershell":
         runtime = _detect_windows_powershell_runtime()
         if runtime.get("cmd") and runtime.get("meets_minimum"):
             return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, runtime["cmd"])
         raise RuntimeError(f"Windows PowerShell 版本过低，切换 Python 过滤: {_powershell_fallback_reason()}")
+
+    if resolved_backend == "python":
+        raise RuntimeError("切换 Python 过滤")
 
     raise RuntimeError("未找到可用的外部预处理工具")
 
@@ -3606,7 +3748,7 @@ def build_rolling_display(temp_file_path, line_count, session_id, selected_strin
     return result_display
 
 
-def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
+def execute_filter_logic(selected_strings, temp_keywords, selected_log_file, preferred_backend="auto"):
     """执行过滤逻辑，包含临时关键字（异步流式过滤）"""
     # 合并选中的字符串和临时关键字
     normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
@@ -3641,7 +3783,7 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     
     # 初始化任务并启动后台线程
     _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
-    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings))
+    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings, preferred_backend))
     thread.daemon = True
     thread.start()
     
@@ -3653,7 +3795,7 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file):
     return session_id, progress_component
 
 
-def _start_filter_task_for_log(selected_strings, temp_keywords, selected_log_file, session_prefix=""):
+def _start_filter_task_for_log(selected_strings, temp_keywords, selected_log_file, session_prefix="", preferred_backend="auto"):
     normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
     all_strings = []
     if selected_strings:
@@ -3682,7 +3824,7 @@ def _start_filter_task_for_log(selected_strings, temp_keywords, selected_log_fil
         session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
 
     _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
-    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings))
+    thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings, preferred_backend))
     thread.daemon = True
     thread.start()
     return session_id
@@ -3953,10 +4095,11 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
      State("compare-log-file-a-selector", "value"),
      State("compare-log-file-b-selector", "value"),
      State("compare-session-store", "data"),
+     State("filter-backend-selector", "value"),
      State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
-def start_compare(n_clicks, compare_strings, temp_keywords, log_a, log_b, existing_sessions, active_tab):
+def start_compare(n_clicks, compare_strings, temp_keywords, log_a, log_b, existing_sessions, preferred_backend, active_tab):
     if active_tab != "tab-compare" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
@@ -3976,8 +4119,8 @@ def start_compare(n_clicks, compare_strings, temp_keywords, log_a, log_b, existi
         if sid_b:
             _clear_filter_task(sid_b, delete_files=False)
 
-    session_a = _start_filter_task_for_log(compare_strings, temp_keywords, log_a, session_prefix="compare:A")
-    session_b = _start_filter_task_for_log(compare_strings, temp_keywords, log_b, session_prefix="compare:B")
+    session_a = _start_filter_task_for_log(compare_strings, temp_keywords, log_a, session_prefix="compare:A", preferred_backend=preferred_backend)
+    session_b = _start_filter_task_for_log(compare_strings, temp_keywords, log_b, session_prefix="compare:B", preferred_backend=preferred_backend)
     if not session_a or not session_b:
         return (dash.no_update, True, 0,
                 {"display": "none", "marginLeft": "5px"}, "过滤并对比", False,
