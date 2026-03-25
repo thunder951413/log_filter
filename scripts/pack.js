@@ -24,13 +24,10 @@ function exists(cmd) {
   try { const which = process.platform === 'win32' ? 'where' : 'which'; const r = spawnSync(which, [cmd], { stdio: 'ignore' }); return r.status === 0 } catch (e) { return false }
 }
 
-function execName(cmd) {
-  if (process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx')) return `${cmd}.cmd`
-  return cmd
-}
+function useShell(cmd) { return process.platform === 'win32' && (cmd === 'npm' || cmd === 'npx') }
 
 function run(cmd, args, cwd) {
-  const r = spawnSync(execName(cmd), args, { stdio: 'inherit', cwd: cwd || process.cwd() })
+  const r = spawnSync(cmd, args, { stdio: 'inherit', cwd: cwd || process.cwd(), shell: useShell(cmd) })
   if (r.error) {
     console.error(r.error.message)
     process.exit(1)
