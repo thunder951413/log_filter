@@ -14,7 +14,119 @@ log.info('App starting...')
 // 设置自动下载为 false，让用户决定是否更新
 autoUpdater.autoDownload = false
 
+const PORT = parseInt(process.env.LOG_FILTER_PORT || '8052', 10)
+const HOST = '127.0.0.1'
+const SERVER_URL = 'http://' + HOST + ':' + PORT + '/'
+const SERVER_WAIT_RETRIES = 180
+const SERVER_WAIT_INTERVAL = 500
+
+let pyProc = null
+let mainWindow = null
+let autoUpdaterEnabled = false
+let lastPythonState = 'not started'
+
+process.on('unhandledRejection', function (reason) {
+  log.error('Unhandled promise rejection', reason)
+})
+
+process.on('uncaughtException', function (error) {
+  log.error('Uncaught exception', error)
+})
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function createInlinePage(title, message, detail) {
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f8fafc;color:#0f172a}main{max-width:760px;margin:0 auto;padding:48px 32px}h1{font-size:26px;margin:0 0 16px}p{font-size:15px;line-height:1.7;margin:0 0 12px;white-space:pre-wrap}pre{font-size:13px;line-height:1.6;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:12px;overflow:auto;white-space:pre-wrap}</style></head><body><main><h1>' + escapeHtml(title) + '</h1><p>' + escapeHtml(message) + '</p>' + (detail ? '<pre>' + escapeHtml(detail) + '</pre>' : '') + '</main></body></html>'
+  return 'data:text/html;charset=UTF-8,' + encodeURIComponent(html)
+}
+
+function getRuntimeDataDir() {
+  if (app.isPackaged) return app.getPath('userData')
+  return process.cwd()
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+}
+
+function getAppSubdir(name) {
+  const dir = path.join(getRuntimeDataDir(), name)
+  ensureDir(dir)
+  return dir
+}
+
+function getLogFilePath() {
+  try {
+    return log.transports.file.getFile().path
+  } catch (error) {
+    return ''
+  }
+}
+
+function showLoadingScreen(win) {
+  return win.loadURL(createInlinePage('LogFilter 正在启动', '正在启动后端服务。首次打开或冷启动通常需要 20~40 秒，请稍候。'))
+}
+
+function showStartupError(win, error) {
+  const detail = [
+    '后端地址: ' + SERVER_URL,
+    '运行目录: ' + getRuntimeDataDir(),
+    '后端状态: ' + lastPythonState,
+    getLogFilePath() ? '主进程日志: ' + getLogFilePath() : '',
+    error ? '错误信息: ' + (error.stack || error.message || String(error)) : ''
+  ].filter(Boolean).join('\n')
+  return win.loadURL(createInlinePage('LogFilter 启动失败', '后端服务未能在预期时间内启动，因此没有加载主界面。请关闭应用后重试；如果问题持续，请把这里的信息和日志一并反馈。', detail))
+}
+
+function readUpdaterFeedUrl() {
+  if (!app.isPackaged) return ''
+  const filePath = path.join(process.resourcesPath || '', 'app-update.yml')
+  try {
+    if (!fs.existsSync(filePath)) return ''
+    const content = fs.readFileSync(filePath, 'utf8')
+    const match = content.match(/^\s*url:\s*(.+)\s*$/m)
+    return match ? match[1].trim() : ''
+  } catch (error) {
+    log.warn('Unable to read updater config', error)
+    return ''
+  }
+}
+
+function shouldEnableAutoUpdater() {
+  if (!app.isPackaged) return false
+  const feedUrl = readUpdaterFeedUrl()
+  if (!feedUrl) return false
+  return !/^https?:\/\/(localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(feedUrl)
+}
+
+async function checkForUpdatesSafely() {
+  if (!autoUpdaterEnabled) {
+    const feedUrl = readUpdaterFeedUrl()
+    log.info('Skip auto update check because update feed is unavailable or local only', feedUrl || '(missing)')
+    return { skipped: true, reason: 'updater_disabled', feedUrl }
+  }
+  try {
+    return await autoUpdater.checkForUpdatesAndNotify()
+  } catch (error) {
+    log.error('Auto update check failed', error)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-error', error.toString())
+    }
+    return { skipped: false, error: error.message || String(error) }
+  }
+}
+
 function setupAutoUpdater() {
+  autoUpdaterEnabled = shouldEnableAutoUpdater()
+  log.info('Auto updater enabled:', autoUpdaterEnabled, 'feed:', readUpdaterFeedUrl() || '(missing)')
+
   autoUpdater.on('checking-for-update', () => {
     log.info('Checking for update...')
   })
@@ -59,24 +171,31 @@ function setupAutoUpdater() {
   })
 
   // 监听渲染进程触发的检查更新
-  ipcMain.handle('checkForUpdates', () => {
-    autoUpdater.checkForUpdatesAndNotify()
+  ipcMain.handle('checkForUpdates', async () => {
+    return checkForUpdatesSafely()
   })
 
   // 监听渲染进程触发的下载更新
-  ipcMain.handle('downloadUpdate', () => {
-    autoUpdater.downloadUpdate()
+  ipcMain.handle('downloadUpdate', async () => {
+    if (!autoUpdaterEnabled) return { skipped: true, reason: 'updater_disabled' }
+    try {
+      return await autoUpdater.downloadUpdate()
+    } catch (error) {
+      log.error('Auto update download failed', error)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-error', error.toString())
+      }
+      return { skipped: false, error: error.message || String(error) }
+    }
   })
 
   // 监听渲染进程触发的退出并安装
-  ipcMain.handle('quitAndInstall', () => {
+  ipcMain.handle('quitAndInstall', async () => {
+    if (!autoUpdaterEnabled) return { skipped: true, reason: 'updater_disabled' }
     autoUpdater.quitAndInstall()
+    return { ok: true }
   })
 }
-
-let pyProc = null
-const PORT = parseInt(process.env.LOG_FILTER_PORT || '8052', 10)
-const HOST = '127.0.0.1'
 
 function resolveServerBinary() {
   const devCandidates = [
@@ -84,7 +203,7 @@ function resolveServerBinary() {
     path.join(process.cwd(), 'dist', 'log_filter_server.exe')
   ]
   for (const p of devCandidates) {
-    try { if (require('fs').existsSync(p)) return p } catch (e) {}
+    try { if (fs.existsSync(p)) return p } catch (e) {}
   }
   const res = process.resourcesPath || process.cwd()
   const prodCandidates = [
@@ -92,20 +211,63 @@ function resolveServerBinary() {
     path.join(res, 'python', 'log_filter_server.exe')
   ]
   for (const p of prodCandidates) {
-    try { if (require('fs').existsSync(p)) return p } catch (e) {}
+    try { if (fs.existsSync(p)) return p } catch (e) {}
   }
   return null
 }
 
+function wirePythonLogging(stream, level, prefix) {
+  if (!stream) return
+  let buffer = ''
+  stream.on('data', function (chunk) {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() || ''
+    for (const line of lines) {
+      const message = line.trim()
+      if (message) log[level](prefix + message)
+    }
+  })
+  stream.on('end', function () {
+    const message = buffer.trim()
+    if (message) log[level](prefix + message)
+  })
+}
+
 function startPython() {
+  if (pyProc) return pyProc
+
+  ensureDir(getRuntimeDataDir())
   const bin = resolveServerBinary()
+  const runtimeDir = getRuntimeDataDir()
+  const env = Object.assign({}, process.env, { LOG_FILTER_RUNTIME_DIR: runtimeDir })
+  lastPythonState = 'starting'
+
+  log.info('Starting backend server', { bin, runtimeDir, serverUrl: SERVER_URL })
   if (bin) {
-    pyProc = spawn(bin, ['--port', String(PORT), '--host', HOST], { cwd: process.cwd(), env: process.env })
+    pyProc = spawn(bin, ['--port', String(PORT), '--host', HOST], { cwd: runtimeDir, env })
   } else {
     const script = path.join(process.cwd(), 'app.py')
-    pyProc = spawn('python', [script, '--port', String(PORT), '--host', HOST], { cwd: process.cwd(), env: process.env })
+    pyProc = spawn('python', [script, '--port', String(PORT), '--host', HOST], { cwd: runtimeDir, env })
   }
-  pyProc.on('exit', function () { pyProc = null })
+
+  pyProc.on('spawn', function () {
+    lastPythonState = 'running pid=' + pyProc.pid
+    log.info('Backend process started with pid', pyProc.pid)
+  })
+  pyProc.on('error', function (error) {
+    lastPythonState = 'spawn error: ' + error.message
+    log.error('Backend process failed to start', error)
+  })
+  pyProc.on('exit', function (code, signal) {
+    lastPythonState = 'exited code=' + code + ' signal=' + signal
+    log.info('Backend process exited', { code, signal })
+    pyProc = null
+  })
+  wirePythonLogging(pyProc.stdout, 'info', '[backend] ')
+  wirePythonLogging(pyProc.stderr, 'error', '[backend] ')
+
+  return pyProc
 }
 
 function waitForServer(retries, interval) {
@@ -118,7 +280,7 @@ function waitForServer(retries, interval) {
         resolve()
       })
       req.on('error', function () {
-        if (attempts >= retries) reject(new Error('server not ready'))
+        if (attempts >= retries) reject(new Error('server not ready after ' + attempts + ' attempts; ' + lastPythonState))
         else setTimeout(tick, interval)
       })
       req.end()
@@ -126,8 +288,6 @@ function waitForServer(retries, interval) {
     tick()
   })
 }
-
-let mainWindow = null
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -141,17 +301,30 @@ function createWindow() {
       webSecurity: true
     }
   })
-  win.loadURL('http://' + HOST + ':' + PORT + '/')
+  win.loadURL(createInlinePage('LogFilter 正在启动', '正在准备界面...'))
   mainWindow = win
   return win
 }
 
-function createMenu(win) {
+async function loadMainApp(win, queryString) {
+  if (!win || win.isDestroyed()) return
+  const url = queryString ? SERVER_URL + queryString : SERVER_URL
+  await win.loadURL(url)
+}
+
+async function bootstrapRenderer(win) {
+  await showLoadingScreen(win)
+  startPython()
+  await waitForServer(SERVER_WAIT_RETRIES, SERVER_WAIT_INTERVAL)
+  await loadMainApp(win)
+}
+
+function createMenu() {
   const template = [
     { label: 'File', submenu: [
-      { label: 'Open Logs Folder', click: function () { shell.openPath(path.join(process.cwd(), 'logs')) } },
-      { label: 'Open Configs Folder', click: function () { const dir = path.join(process.cwd(), 'configs'); if (!fs.existsSync(dir)) { try { fs.mkdirSync(dir, { recursive: true }) } catch (e) {} } shell.openPath(dir) } },
-      { label: 'Open Config Groups Folder', click: function () { const dir = path.join(process.cwd(), 'config_groups'); if (!fs.existsSync(dir)) { try { fs.mkdirSync(dir, { recursive: true }) } catch (e) {} } shell.openPath(dir) } },
+      { label: 'Open Logs Folder', click: function () { shell.openPath(getAppSubdir('logs')) } },
+      { label: 'Open Configs Folder', click: function () { shell.openPath(getAppSubdir('configs')) } },
+      { label: 'Open Config Groups Folder', click: function () { shell.openPath(getAppSubdir('config_groups')) } },
       { role: 'quit' }
     ] },
     { label: 'View', submenu: [
@@ -172,27 +345,41 @@ function createMenu(win) {
 
 app.on('ready', async function () {
   setupAutoUpdater()
-  startPython()
-  try { await waitForServer(50, 200) } catch (e) {}
   const win = createWindow()
-  createMenu(win)
-  // 启动时自动检查更新
+  createMenu()
+  try {
+    await bootstrapRenderer(win)
+  } catch (error) {
+    log.error('Application bootstrap failed', error)
+    await showStartupError(win, error)
+  }
   if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify()
+    checkForUpdatesSafely()
   }
 })
 
 app.on('window-all-closed', function () { if (process.platform !== 'darwin') app.quit() })
-app.on('activate', function () { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+app.on('activate', async function () {
+  if (BrowserWindow.getAllWindows().length !== 0) return
+  const win = createWindow()
+  createMenu()
+  try {
+    await showLoadingScreen(win)
+    await waitForServer(SERVER_WAIT_RETRIES, SERVER_WAIT_INTERVAL)
+    await loadMainApp(win)
+  } catch (error) {
+    log.error('Failed to restore main window', error)
+    await showStartupError(win, error)
+  }
+})
 app.on('quit', function () { if (pyProc) { pyProc.kill(); pyProc = null } })
 
-ipcMain.handle('openLogsDir', async function () { return shell.openPath(path.join(process.cwd(), 'logs')) })
+ipcMain.handle('openLogsDir', async function () { return shell.openPath(getAppSubdir('logs')) })
 
 ipcMain.handle('handleDropFiles', async function (_evt, files) {
   try {
     if (!files || !files.length) return { ok: false }
-    const destDir = path.join(process.cwd(), 'logs')
-    try { if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true }) } catch (e) {}
+    const destDir = getAppSubdir('logs')
     const now = new Date()
     function pad(n) { return String(n).padStart(2, '0') }
     let opened = null
@@ -207,7 +394,9 @@ ipcMain.handle('handleDropFiles', async function (_evt, files) {
       break
     }
     if (opened && mainWindow) {
-      mainWindow.loadURL('http://' + HOST + ':' + PORT + '/?open=' + encodeURIComponent(opened))
+      loadMainApp(mainWindow, '?open=' + encodeURIComponent(opened)).catch(function (error) {
+        log.error('Failed to open dropped file', error)
+      })
       try { new Notification({ title: '日志复制成功', body: '已复制并重命名为: ' + opened }).show() } catch (_) {}
     }
     return { ok: !!opened, file: opened }
@@ -219,8 +408,7 @@ ipcMain.handle('handleDropFiles', async function (_evt, files) {
 ipcMain.handle('handleDropBinary', async function (_evt, payload) {
   try {
     if (!payload || !payload.data) return { ok: false }
-    const destDir = path.join(process.cwd(), 'logs')
-    try { if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true }) } catch (e) {}
+    const destDir = getAppSubdir('logs')
     const now = new Date()
     function pad(n) { return String(n).padStart(2, '0') }
     const name = (payload.name || 'log.txt')
@@ -230,7 +418,9 @@ ipcMain.handle('handleDropBinary', async function (_evt, payload) {
     const dest = path.join(destDir, stamped)
     try { fs.writeFileSync(dest, Buffer.from(payload.data)) } catch (e) { return { ok: false } }
     if (mainWindow) {
-      mainWindow.loadURL('http://' + HOST + ':' + PORT + '/?open=' + encodeURIComponent(stamped))
+      loadMainApp(mainWindow, '?open=' + encodeURIComponent(stamped)).catch(function (error) {
+        log.error('Failed to open dropped binary', error)
+      })
       try { new Notification({ title: '日志复制成功', body: '已复制并重命名为: ' + stamped }).show() } catch (_) {}
     }
     return { ok: true, file: stamped }
