@@ -37,31 +37,32 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Install pake on macOS
-        if: runner.os == 'macOS'
-        shell: bash
-        run: brew install pake
+      - name: Install pake CLI
+        run: npm install -g pake-cli
 
-      - name: Install pake on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          winget install --id tw93.pake --accept-source-agreements --accept-package-agreements
-          "$env:LOCALAPPDATA\Programs\pake" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install pake on Linux
-        if: runner.os == 'Linux'
+      - name: Verify build toolchain
         shell: bash
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          source "$HOME/.cargo/env"
-          cargo install pake-cli
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          python --version
+          node --version
+          npm --version
+          rustc --version
+          cargo --version
+          pake --version
 
       - name: Start backend server on macOS/Linux
         if: runner.os != 'Windows'
@@ -110,34 +111,35 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          export PAKE_CREATE_APP=1
           pake http://127.0.0.1:8052 --name LogFilter
-          app_path="$(find "$HOME" -name 'LogFilter.app' -type d | head -n 1)"
+          app_path="$(find . "$HOME" -name 'LogFilter.app' -type d | head -n 1)"
           test -n "$app_path"
-          cp -R "$app_path" .
+          rm -rf LogFilter.app
+          cp -R "$app_path" ./LogFilter.app
 
       - name: Build with pake on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           pake http://127.0.0.1:8052 --name LogFilter
-          $app = Get-ChildItem -Path $env:LOCALAPPDATA,$env:USERPROFILE -Recurse -Filter 'LogFilter.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $app = Get-ChildItem -Path $PWD,$env:LOCALAPPDATA,$env:USERPROFILE -Recurse -Include 'LogFilter.exe','*LogFilter*.exe' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch 'uninstall' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
           if (-not $app) {
             exit 1
           }
-          Copy-Item $app.FullName -Destination .
+          Copy-Item $app.FullName -Destination 'LogFilter.exe' -Force
 
       - name: Build with pake on Linux
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          source "$HOME/.cargo/env"
-          pake http://127.0.0.1:8052 --name LogFilter
-          app_path="$(find "$HOME" -name 'LogFilter' -type f -executable | head -n 1)"
-          if [ -z "$app_path" ]; then
-            app_path="$(find "$HOME" -name 'logfilter' -type f -executable | head -n 1)"
-          fi
+          pake http://127.0.0.1:8052 --name LogFilter --targets appimage
+          app_path="$(find . "$HOME" -type f \( -name '*.AppImage' -o -name 'LogFilter' -o -name 'logfilter' \) | head -n 1)"
           test -n "$app_path"
-          cp "$app_path" .
+          cp "$app_path" ./LogFilter.AppImage
 
       - name: Package app on macOS
         if: runner.os == 'macOS'
@@ -152,12 +154,7 @@ jobs:
       - name: Package app on Linux
         if: runner.os == 'Linux'
         shell: bash
-        run: |
-          if [ -f "LogFilter" ]; then
-            tar -czf LogFilter-Linux.tar.gz LogFilter
-          else
-            tar -czf LogFilter-Linux.tar.gz logfilter
-          fi
+        run: tar -czf LogFilter-Linux.tar.gz LogFilter.AppImage
 
       - name: Stop backend server on macOS/Linux
         if: always() && runner.os != 'Windows'
