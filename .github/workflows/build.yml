@@ -23,7 +23,7 @@ jobs:
             package_path: LogFilter-Windows.zip
           - os: ubuntu-latest
             artifact_name: LogFilter-Linux
-            package_path: LogFilter-Linux.tar.gz
+            package_path: dist/*.tar.gz
 
     runs-on: ${{ matrix.os }}
     env:
@@ -127,9 +127,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/*.AppImage dist/*.yml dist/*.blockmap)
+          files=(dist/*.tar.gz)
           test "${#files[@]}" -gt 0
-          tar -czf LogFilter-Linux.tar.gz -C dist "${files[@]#dist/}"
+          ls -lh "${files[@]}"
 
       - name: Upload debug logs
         if: failure()

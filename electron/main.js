@@ -23,11 +23,18 @@ const HOST = '127.0.0.1'
 const SERVER_URL = 'http://' + HOST + ':' + PORT + '/'
 const SERVER_WAIT_RETRIES = 180
 const SERVER_WAIT_INTERVAL = 500
+const LINUX_DISABLE_SANDBOX = process.platform === 'linux'
 
 let pyProc = null
 let mainWindow = null
 let autoUpdaterEnabled = false
 let lastPythonState = 'not started'
+
+if (LINUX_DISABLE_SANDBOX) {
+  app.commandLine.appendSwitch('no-sandbox')
+  app.commandLine.appendSwitch('disable-setuid-sandbox')
+  log.info('Linux sandbox compatibility mode enabled')
+}
 
 process.on('unhandledRejection', function (reason) {
   log.error('Unhandled promise rejection', reason)
@@ -301,7 +308,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true,
+      sandbox: !LINUX_DISABLE_SANDBOX,
       webSecurity: true
     }
   })

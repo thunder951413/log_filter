@@ -43,7 +43,7 @@ function buildBackend(platform, dry) {
 
 function buildFrontendMac(dry) { const args = ['--mac', 'dmg', 'zip']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 function buildFrontendWin(dry) { const args = ['--win', 'nsis']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
-function buildFrontendLinux(dry) { const args = ['--linux', 'AppImage']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
+function buildFrontendLinux(dry) { const args = ['--linux', 'tar.gz']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 
 function main() {
   const argv = process.argv.slice(2)
