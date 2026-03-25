@@ -1359,6 +1359,7 @@ app.layout = html.Div([
     dcc.Store(id=_UI_BUSY_STORE_ID, data=False),
     dcc.Location(id="url", refresh=False),
     dcc.Download(id="runtime-log-download"),
+    html.Button(id="export-runtime-logs-btn", style={"display": "none"}),
     
     dbc.Container([
         # 状态提示 - 隐藏原始状态栏，使用toast通知
@@ -1426,15 +1427,6 @@ app.layout = html.Div([
                         size="sm",
                         className="ms-2",
                         title="使用外部程序打开当前日志"
-                    ),
-                    dbc.DropdownMenu(
-                        label="页面菜单",
-                        color="secondary",
-                        size="sm",
-                        className="ms-2",
-                        children=[
-                            dbc.DropdownMenuItem("导出运行日志", id="export-runtime-logs-btn")
-                        ]
                     ),
                     dbc.Popover([
                         dbc.PopoverHeader("添加临时关键字"),

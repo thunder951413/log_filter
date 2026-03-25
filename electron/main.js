@@ -334,14 +334,31 @@ async function bootstrapRenderer(win) {
 }
 
 function createMenu() {
+  function exportRuntimeLogs() {
+    const targetWindow = BrowserWindow.getFocusedWindow() || mainWindow
+    if (!targetWindow || targetWindow.isDestroyed()) return
+    targetWindow.webContents.executeJavaScript(`
+      (function () {
+        var btn = document.getElementById('export-runtime-logs-btn')
+        if (!btn) return false
+        btn.click()
+        return true
+      })();
+    `).catch(function (error) {
+      log.error('Failed to trigger runtime log export', error)
+    })
+  }
   const template = [
-    { label: 'File', submenu: [
-      { label: 'Open Logs Folder', click: function () { shell.openPath(getAppSubdir('logs')) } },
-      { label: 'Open Configs Folder', click: function () { shell.openPath(getAppSubdir('configs')) } },
-      { label: 'Open Config Groups Folder', click: function () { shell.openPath(getAppSubdir('config_groups')) } },
+    { label: '文件', submenu: [
+      { label: '打开日志目录', click: function () { shell.openPath(getAppSubdir('logs')) } },
+      { label: '打开配置目录', click: function () { shell.openPath(getAppSubdir('configs')) } },
+      { label: '打开配置组目录', click: function () { shell.openPath(getAppSubdir('config_groups')) } },
+      { type: 'separator' },
+      { label: '导出运行日志', click: exportRuntimeLogs },
+      { type: 'separator' },
       { role: 'quit' }
     ] },
-    { label: 'View', submenu: [
+    { label: '视图', submenu: [
       { role: 'reload' },
       { role: 'toggleDevTools' },
       { role: 'resetZoom' },
@@ -349,8 +366,8 @@ function createMenu() {
       { role: 'zoomOut' },
       { role: 'togglefullscreen' }
     ] },
-    { label: 'Help', submenu: [
-      { label: 'About', click: function () {} }
+    { label: '帮助', submenu: [
+      { label: '关于', click: function () {} }
     ] }
   ]
   const menu = Menu.buildFromTemplate(template)
