@@ -6,6 +6,10 @@ const fs = require('fs')
 const { autoUpdater } = require('electron-updater')
 const log = require('electron-log')
 
+log.transports.file.resolvePathFn = function () {
+  return path.join(getAppSubdir('runtime_logs'), 'electron-main.log')
+}
+
 // 配置 autoUpdater 日志
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'info'

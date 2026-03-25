@@ -14,6 +14,8 @@ import base64
 import hashlib
 import time
 import threading
+import io
+import zipfile
 from datetime import datetime
 
 # 预编译正则模式，避免在循环中重复编译
@@ -152,6 +154,84 @@ _FILTER_CHUNK_LINES = 200  # 首片行数（更快首屏）
 _FILTER_PROGRESS_INTERVAL_MS = 800  # 前端轮询间隔
 _SOURCE_PREVIEW_LINES = 2000  # 源文件tab预览行数上限
 _UI_BUSY_STORE_ID = "ui-busy-store"
+_windows_powershell_runtime_cache = None
+
+
+def _parse_shell_version(version_text):
+    if not version_text:
+        return None
+    match = re.search(r'(\d+)(?:\.(\d+))?', str(version_text).strip())
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2) or 0))
+
+
+def _detect_windows_powershell_runtime():
+    global _windows_powershell_runtime_cache
+    if _windows_powershell_runtime_cache is not None:
+        return _windows_powershell_runtime_cache
+
+    runtime = {
+        "cmd": None,
+        "version": None,
+        "version_text": "",
+        "meets_minimum": False,
+        "error": ""
+    }
+
+    if os.name != "nt":
+        _windows_powershell_runtime_cache = runtime
+        return runtime
+
+    for shell_cmd in ("pwsh", "powershell"):
+        if not shutil.which(shell_cmd):
+            continue
+        try:
+            result = subprocess.run(
+                [shell_cmd, "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5
+            )
+            version_text = (result.stdout or "").strip()
+            version = _parse_shell_version(version_text)
+            runtime = {
+                "cmd": shell_cmd,
+                "version": version,
+                "version_text": version_text,
+                "meets_minimum": bool(version and version >= (5, 1)),
+                "error": "" if result.returncode == 0 else (result.stderr or "").strip()
+            }
+            break
+        except Exception as exc:
+            runtime = {
+                "cmd": shell_cmd,
+                "version": None,
+                "version_text": "",
+                "meets_minimum": False,
+                "error": str(exc)
+            }
+
+    _windows_powershell_runtime_cache = runtime
+    return runtime
+
+
+def _can_use_windows_powershell(min_version=(5, 1)):
+    runtime = _detect_windows_powershell_runtime()
+    version = runtime.get("version")
+    return bool(runtime.get("cmd") and version and version >= min_version)
+
+
+def _powershell_fallback_reason(min_version=(5, 1)):
+    runtime = _detect_windows_powershell_runtime()
+    if runtime.get("cmd") and runtime.get("version_text"):
+        return f"{runtime['cmd']} {runtime['version_text']} < {min_version[0]}.{min_version[1]}"
+    if runtime.get("cmd"):
+        return f"{runtime['cmd']} version unknown"
+    if runtime.get("error"):
+        return runtime["error"]
+    return "powershell unavailable"
 
 
 def _clear_filter_task(session_id, delete_files=False):
@@ -179,6 +259,101 @@ def _clear_all_filter_tasks(delete_files=False):
 
 # 初始化 Dash 应用，使用 Bootstrap 主题
 base_path = getattr(sys, '_MEIPASS', os.path.dirname(__file__))
+RUNTIME_BASE_DIR = os.environ.get("LOG_FILTER_RUNTIME_DIR") or os.getcwd()
+RUNTIME_LOG_DIR = os.path.join(RUNTIME_BASE_DIR, "runtime_logs")
+BACKEND_RUNTIME_LOG_FILE = os.path.join(RUNTIME_LOG_DIR, "backend.log")
+
+
+class _TeeStream:
+    def __init__(self, *streams):
+        self.streams = [stream for stream in streams if stream]
+        self.encoding = getattr(self.streams[0], "encoding", "utf-8") if self.streams else "utf-8"
+        self.errors = getattr(self.streams[0], "errors", "replace") if self.streams else "replace"
+        self._log_filter_tee = True
+
+    def write(self, data):
+        for stream in self.streams:
+            try:
+                stream.write(data)
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        for stream in self.streams:
+            try:
+                if stream.isatty():
+                    return True
+            except Exception:
+                continue
+        return False
+
+
+_runtime_log_stream = None
+
+
+def _setup_runtime_logging():
+    global _runtime_log_stream
+    try:
+        os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
+        _runtime_log_stream = open(BACKEND_RUNTIME_LOG_FILE, "a", encoding="utf-8", buffering=1)
+    except Exception:
+        return
+
+    if not getattr(sys.stdout, "_log_filter_tee", False):
+        sys.stdout = _TeeStream(sys.stdout, _runtime_log_stream)
+    if not getattr(sys.stderr, "_log_filter_tee", False):
+        sys.stderr = _TeeStream(sys.stderr, _runtime_log_stream)
+
+
+def _get_runtime_log_files():
+    candidates = [
+        ("backend.log", BACKEND_RUNTIME_LOG_FILE),
+        ("electron-main.log", os.path.join(RUNTIME_LOG_DIR, "electron-main.log")),
+        ("start_app.log", os.path.join(RUNTIME_BASE_DIR, "start_app.log"))
+    ]
+    seen = set()
+    existing_files = []
+    for arcname, file_path in candidates:
+        if not file_path or file_path in seen:
+            continue
+        seen.add(file_path)
+        if os.path.isfile(file_path):
+            existing_files.append((arcname, file_path))
+    return existing_files
+
+
+def _build_runtime_logs_export():
+    runtime_log_files = _get_runtime_log_files()
+    if not runtime_log_files:
+        raise FileNotFoundError("没有可导出的运行日志")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_name = f"logfilter_runtime_logs_{timestamp}.zip"
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for arcname, file_path in runtime_log_files:
+            zip_file.write(file_path, arcname=arcname)
+        zip_file.writestr(
+            "runtime-info.txt",
+            "\n".join([
+                f"generated_at={datetime.now().isoformat()}",
+                f"runtime_base_dir={RUNTIME_BASE_DIR}",
+                f"runtime_log_dir={RUNTIME_LOG_DIR}",
+                "files=" + ", ".join([arcname for arcname, _ in runtime_log_files])
+            ])
+        )
+    return zip_buffer.getvalue(), archive_name, [arcname for arcname, _ in runtime_log_files]
+
+
+_setup_runtime_logging()
 app = dash.Dash(
     __name__, 
     external_stylesheets=[dbc.themes.BOOTSTRAP],
@@ -1088,6 +1263,7 @@ app.layout = html.Div([
     dcc.Interval(id="compare-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
     dcc.Store(id=_UI_BUSY_STORE_ID, data=False),
     dcc.Location(id="url", refresh=False),
+    dcc.Download(id="runtime-log-download"),
     
     dbc.Container([
         # 状态提示 - 隐藏原始状态栏，使用toast通知
@@ -1145,6 +1321,15 @@ app.layout = html.Div([
                         size="sm",
                         className="ms-2",
                         title="使用外部程序打开当前日志"
+                    ),
+                    dbc.DropdownMenu(
+                        label="页面菜单",
+                        color="secondary",
+                        size="sm",
+                        className="ms-2",
+                        children=[
+                            dbc.DropdownMenuItem("导出运行日志", id="export-runtime-logs-btn")
+                        ]
                     ),
                     dbc.Popover([
                         dbc.PopoverHeader("添加临时关键字"),
@@ -2531,6 +2716,28 @@ def open_log_from_query(search):
     except Exception:
         return dash.no_update, dash.no_update, html.Script("if(window.showToast) window.showToast('打开日志失败', 'error');")
 
+
+@app.callback(
+    [Output("runtime-log-download", "data"),
+     Output("toast-container", "children", allow_duplicate=True)],
+    Input("export-runtime-logs-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def export_runtime_logs(export_clicks):
+    if not export_clicks:
+        return dash.no_update, dash.no_update
+
+    try:
+        archive_bytes, archive_name, exported_files = _build_runtime_logs_export()
+        print(f"[运行日志] 已导出 {archive_name}: {', '.join(exported_files)}")
+        return (
+            dcc.send_bytes(archive_bytes, archive_name),
+            html.Script(f"if(window.showToast) window.showToast('已导出运行日志（{len(exported_files)} 个文件）', 'success');")
+        )
+    except Exception as exc:
+        print(f"[运行日志] 导出失败: {exc}")
+        return dash.no_update, html.Script(f"if(window.showToast) window.showToast('导出运行日志失败: {str(exc)}', 'error');")
+
 # 保存日志文件选择状态
 @app.callback(
     Output("selected-log-file", "data"),
@@ -3308,10 +3515,10 @@ def stream_filter_to_temp(log_path, keep_regex, filter_regex, keep_strings, filt
         return _stream_filter_with_grep(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, encoding, index_every)
 
     if os.name == "nt":
-        if shutil.which("pwsh"):
-            return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, "pwsh")
-        if shutil.which("powershell"):
-            return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, "powershell")
+        runtime = _detect_windows_powershell_runtime()
+        if runtime.get("cmd") and runtime.get("meets_minimum"):
+            return _stream_filter_with_powershell(log_path, temp_file_path, idx_path, normalized_keep, normalized_filter, index_every, runtime["cmd"])
+        raise RuntimeError(f"Windows PowerShell 版本过低，切换 Python 过滤: {_powershell_fallback_reason()}")
 
     raise RuntimeError("未找到可用的外部预处理工具")
 
@@ -3963,10 +4170,6 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
     if not selected_log_file:
         return "", html.P("请选择日志文件", className="text-danger text-center")
     log_path = get_log_path(selected_log_file)
-    if os.name == 'nt':
-        full_command = f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
-    else:
-        full_command = f"cat \"{log_path}\""
     
     # 合并选中的字符串和临时关键字
     normalized_temp_keywords = normalize_temp_keywords(temp_keywords)
@@ -3977,15 +4180,37 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
     
     # 执行命令：源文件页面的滚动、跳转与搜索基于原始日志生成的临时文件
     try:
-        session_id = hashlib.md5(full_command.encode()).hexdigest()
+        session_key = f"source:{log_path}"
+        session_id = hashlib.md5(session_key.encode()).hexdigest()
     except Exception:
         session_id = None
+
+    if os.name == 'nt' and not _can_use_windows_powershell():
+        encoding = detect_file_encoding(log_path)
+        temp_file_path = get_temp_file_path(session_id)
+        idx_path = get_temp_index_path(temp_file_path)
+        temp_file_path, idx_path, line_count, output_encoding, backend = _copy_source_to_temp(
+            log_path,
+            temp_file_path,
+            idx_path,
+            encoding,
+            500
+        )
+        data = load_data() if all_strings else None
+        result_display = build_rolling_display(temp_file_path, line_count, session_id, all_strings, data, output_encoding)
+        return f"{backend}:{log_path}", result_display
+
+    if os.name == 'nt':
+        full_command = f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
+    else:
+        full_command = f"cat \"{log_path}\""
+
     if all_strings:
-        data = load_data()  # 加载当前数据
+        data = load_data()
         result_display = execute_command(full_command, all_strings, data, save_to_temp=True, session_id=session_id)
     else:
         result_display = execute_command(full_command, save_to_temp=True, session_id=session_id)
-    
+
     return full_command, result_display
 
 
@@ -4068,6 +4293,22 @@ def _extract_notes_from_text(text, annotations_map):
             notes.append(matched_note)
     return notes
 
+
+def _extract_annotation_text_python(log_path, annotations_map):
+    keywords = [str(k) for k in (annotations_map or {}).keys() if str(k)]
+    if not keywords:
+        return ""
+    lowered_keywords = [kw.lower() for kw in keywords]
+    encoding = detect_file_encoding(log_path)
+    matched_lines = []
+    with open(log_path, 'r', encoding=encoding, errors='replace') as src:
+        for line in src:
+            line_text = line.rstrip('\n')
+            lowered_line = line_text.lower()
+            if any(keyword in lowered_line for keyword in lowered_keywords):
+                matched_lines.append(line_text)
+    return "\n".join(matched_lines)
+
 def build_annotation_match_command(selected_log_file, annotations_map):
     """构建使用所有注释关键字匹配日志的命令"""
     if not selected_log_file:
@@ -4091,8 +4332,12 @@ def build_annotation_extract_display_by_matching(selected_log_file, annotations_
         return html.P("请选择日志文件", className="text-danger text-center")
     if not annotations_map:
         return html.P("未设置关键字注释", className="text-muted")
-    cmd = build_annotation_match_command(selected_log_file, annotations_map)
-    text = _run_command_capture_text(cmd)
+    log_path = get_log_path(selected_log_file)
+    if os.name == 'nt' and not _can_use_windows_powershell():
+        text = _extract_annotation_text_python(log_path, annotations_map)
+    else:
+        cmd = build_annotation_match_command(selected_log_file, annotations_map)
+        text = _run_command_capture_text(cmd)
     if not text:
         return html.P("没有匹配到任何日志行", className="text-muted")
     notes = _extract_notes_from_text(text, annotations_map)
