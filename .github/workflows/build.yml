@@ -26,6 +26,10 @@ jobs:
             package_path: LogFilter-Linux.tar.gz
 
     runs-on: ${{ matrix.os }}
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
 
     steps:
       - name: Checkout code
@@ -43,8 +47,13 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Install Node.js dependencies
+        run: npm ci
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -52,25 +61,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            wget
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-
-      - name: Install pake CLI
-        run: npm install -g pake-cli
+            fakeroot \
+            libarchive-tools \
+            libnss3 \
+            rpm
 
       - name: Verify build toolchain
         shell: bash
@@ -78,170 +72,62 @@ jobs:
           python --version
           node --version
           npm --version
-          rustc --version
-          cargo --version
-          pake --version
+          python -m PyInstaller --version
+          npx electron-builder --version
 
-      - name: Start backend server on macOS/Linux
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          nohup python -u app.py --host 127.0.0.1 --port 8052 > backend.log 2>&1 &
-          echo "BACKEND_PID=$!" >> "$GITHUB_ENV"
-          if ! python - <<'PY'
-          import socket
-          import sys
-          import time
-          import urllib.request
-
-          last_error = ""
-
-          for _ in range(60):
-              try:
-                  with urllib.request.urlopen("http://127.0.0.1:8052", timeout=2) as response:
-                      if response.status < 500:
-                          sys.exit(0)
-              except Exception as exc:
-                  last_error = str(exc)
-
-              try:
-                  with socket.create_connection(("127.0.0.1", 8052), timeout=1):
-                      sys.exit(0)
-              except OSError as exc:
-                  last_error = str(exc)
-
-              time.sleep(2)
-
-          print(last_error)
-          sys.exit(1)
-          PY
-          then
-            cat backend.log || true
-            exit 1
-          fi
-          cat backend.log || true
-
-      - name: Start backend server on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $python = (Get-Command python).Source
-          $arguments = @('-u', 'app.py', '--host', '127.0.0.1', '--port', '8052')
-          $process = Start-Process -FilePath $python -ArgumentList $arguments -RedirectStandardOutput 'backend.log' -RedirectStandardError 'backend.err.log' -PassThru
-          "BACKEND_PID=$($process.Id)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          $ready = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            python -c "import sys, urllib.request; urllib.request.urlopen('http://127.0.0.1:8052', timeout=2); sys.exit(0)"
-            if ($LASTEXITCODE -eq 0) {
-              $ready = $true
-              break
-            }
-            $process.Refresh()
-            if ($process.HasExited) {
-              break
-            }
-            Start-Sleep -Seconds 2
-          }
-          Get-Content backend.log -ErrorAction SilentlyContinue
-          Get-Content backend.err.log -ErrorAction SilentlyContinue
-          if (-not $ready) {
-            $process.Refresh()
-            if ($process.HasExited) {
-              Write-Host "Backend exited with code $($process.ExitCode)"
-            } else {
-              Write-Host "Backend did not become ready before timeout"
-            }
-            netstat -ano | Select-String ':8052'
-            exit 1
-          }
-
-      - name: Build with pake on macOS
+      - name: Build desktop app on macOS
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          export PAKE_CREATE_APP=1
-          xcode-select -p
-          xcrun --sdk macosx --show-sdk-path
-          if ! pake http://127.0.0.1:8052 --name LogFilter --debug 2>&1 | tee pake-build.log; then
-            find "$PWD" "$HOME/Applications" "$HOME/Downloads" -maxdepth 5 -name 'LogFilter.app' -type d -print || true
-            exit 1
-          fi
-          app_path="$(find "$PWD" "$HOME/Applications" "$HOME/Downloads" -maxdepth 5 -name 'LogFilter.app' -type d -print | head -n 1)"
-          test -n "$app_path"
-          rm -rf LogFilter.app
-          cp -R "$app_path" ./LogFilter.app
+          npm run pack:mac 2>&1 | tee package-build.log
 
-      - name: Build with pake on Windows
+      - name: Build desktop app on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & pake http://127.0.0.1:8052 --name LogFilter --debug *>&1 | Tee-Object -FilePath 'pake-build.log'
-          if ($LASTEXITCODE -ne 0) {
-            Get-ChildItem -Path $PWD,(Join-Path $env:LOCALAPPDATA 'Programs'),(Join-Path $env:USERPROFILE 'Desktop'),(Join-Path $env:USERPROFILE 'Downloads') -Recurse -Include 'LogFilter.exe','*LogFilter*.exe' -File -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 20 FullName, LastWriteTime
-            exit $LASTEXITCODE
-          }
-          $app = Get-ChildItem -Path $PWD,(Join-Path $env:LOCALAPPDATA 'Programs'),(Join-Path $env:USERPROFILE 'Desktop'),(Join-Path $env:USERPROFILE 'Downloads') -Recurse -Include 'LogFilter.exe','*LogFilter*.exe' -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notmatch 'uninstall' } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-          if (-not $app) {
-            Get-ChildItem -Path $PWD,(Join-Path $env:LOCALAPPDATA 'Programs'),(Join-Path $env:USERPROFILE 'Desktop'),(Join-Path $env:USERPROFILE 'Downloads') -Recurse -Include 'LogFilter.exe','*LogFilter*.exe' -File -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 20 FullName, LastWriteTime
-            exit 1
-          }
-          Copy-Item $app.FullName -Destination 'LogFilter.exe' -Force
+          & npm run pack:win *>&1 | Tee-Object -FilePath 'package-build.log'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build with pake on Linux
+      - name: Build desktop app on Linux
         if: runner.os == 'Linux'
         shell: bash
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
           set -euo pipefail
-          if ! pake http://127.0.0.1:8052 --name LogFilter --targets appimage --debug 2>&1 | tee pake-build.log; then
-            find "$PWD" "$HOME/.cache" "$HOME/.local/share" "$HOME/Downloads" -maxdepth 5 -type f \( -name '*.AppImage' -o -name 'LogFilter' -o -name 'logfilter' \) -print || true
-            exit 1
-          fi
-          app_path="$(find "$PWD" "$HOME/.cache" "$HOME/.local/share" "$HOME/Downloads" -maxdepth 5 -type f \( -name '*.AppImage' -o -name 'LogFilter' -o -name 'logfilter' \) -print | head -n 1)"
-          test -n "$app_path"
-          cp "$app_path" ./LogFilter.AppImage
+          npm run pack:linux 2>&1 | tee package-build.log
 
       - name: Package app on macOS
         if: runner.os == 'macOS'
         shell: bash
-        run: zip -r LogFilter-macOS.zip LogFilter.app
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*.dmg dist/*.zip)
+          test "${#files[@]}" -gt 0
+          zip -j LogFilter-macOS.zip "${files[@]}"
 
       - name: Package app on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path LogFilter.exe -DestinationPath LogFilter-Windows.zip -Force
+        run: |
+          $artifacts = Get-ChildItem -Path (Join-Path $PWD 'dist') -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.exe', '.msi', '.yml', '.blockmap') }
+          if (-not $artifacts) {
+            Write-Host 'No Windows package artifact found in workspace'
+            Get-ChildItem -Path (Join-Path $PWD 'dist') -File -ErrorAction SilentlyContinue | Select-Object Name, Length
+            exit 1
+          }
+          Compress-Archive -Path $artifacts.FullName -DestinationPath LogFilter-Windows.zip -Force
 
       - name: Package app on Linux
         if: runner.os == 'Linux'
         shell: bash
-        run: tar -czf LogFilter-Linux.tar.gz LogFilter.AppImage
-
-      - name: Stop backend server on macOS/Linux
-        if: always() && runner.os != 'Windows'
-        shell: bash
         run: |
-          if [ -n "${{ env.BACKEND_PID }}" ]; then
-            kill "${{ env.BACKEND_PID }}" || true
-          fi
-          pkill -f "python app.py" || true
-
-      - name: Stop backend server on Windows
-        if: always() && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if ($env:BACKEND_PID) {
-            Stop-Process -Id $env:BACKEND_PID -Force -ErrorAction SilentlyContinue
-          }
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*.AppImage dist/*.yml dist/*.blockmap)
+          test "${#files[@]}" -gt 0
+          tar -czf LogFilter-Linux.tar.gz -C dist "${files[@]#dist/}"
 
       - name: Upload debug logs
         if: failure()
@@ -249,9 +135,10 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}-debug-logs
           path: |
-            backend.log
-            backend.err.log
-            pake-build.log
+            package-build.log
+            dist/builder-debug.yml
+            dist/*.yml
+            dist/*.blockmap
           if-no-files-found: ignore
 
       - name: Upload artifact
