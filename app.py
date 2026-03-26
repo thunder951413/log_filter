@@ -349,7 +349,7 @@ def _get_filter_backend_selector_options():
             {"label": "rg", "value": "rg", "disabled": not bool(_get_rg_command())},
             {"label": "findstr", "value": "findstr", "disabled": not _can_use_windows_findstr()},
             {
-                "label": "PowerShell",
+                "label": "pwsh",
                 "value": "powershell",
                 "disabled": not bool(_detect_windows_powershell_runtime().get("cmd") and _detect_windows_powershell_runtime().get("meets_minimum"))
             }
@@ -431,6 +431,7 @@ RUNTIME_BASE_DIR = os.environ.get("LOG_FILTER_RUNTIME_DIR") or os.getcwd()
 RUNTIME_RESOURCES_DIR = os.environ.get("LOG_FILTER_RESOURCES_DIR") or ""
 RUNTIME_LOG_DIR = os.path.join(RUNTIME_BASE_DIR, "runtime_logs")
 BACKEND_RUNTIME_LOG_FILE = os.path.join(RUNTIME_LOG_DIR, "backend.log")
+DEFAULT_FILTER_BACKEND = "auto"
 
 
 class _TeeStream:
@@ -1631,16 +1632,6 @@ app.layout = html.Div([
                             clearable=True
                         )
                     ], className="d-inline-block me-2 align-middle"),
-                    html.Div([
-                        dcc.Dropdown(
-                            id="filter-backend-selector",
-                            options=_get_filter_backend_selector_options(),
-                            value="auto",
-                            clearable=False,
-                            searchable=False,
-                            style={"width": "160px", "fontSize": "12px", "textAlign": "left"}
-                        )
-                    ], className="d-inline-block me-2 align-middle"),
                     dbc.Button(
                         "🔍 临时关键字", 
                         id="temp-keyword-drawer-toggle", 
@@ -1779,6 +1770,14 @@ app.layout = html.Div([
                                         ], width=6),
                                         dbc.Col([
                                             html.Div([
+                                                dcc.Dropdown(
+                                                    id="filter-backend-selector",
+                                                    options=_get_filter_backend_selector_options(),
+                                                    value=DEFAULT_FILTER_BACKEND,
+                                                    clearable=False,
+                                                    searchable=False,
+                                                    style={"width": "110px", "fontSize": "12px", "textAlign": "left"}
+                                                ),
                                                 dbc.InputGroup([
                                                     dbc.Button("查找上一个", id="global-search-prev-btn", color="secondary"),
                                                     dbc.Input(id="global-search-input", type="text", placeholder="搜索关键字...", debounce=True, list="search-suggestions"),
@@ -1793,12 +1792,6 @@ app.layout = html.Div([
                                             ], className="d-flex justify-content-end align-items-center gap-2")
                                         ], width=6)
                                     ], className="w-100"),
-                                    html.Div(
-                                        id="filter-backend-display",
-                                        children=_format_filter_backend_text(None, "auto"),
-                                        className="small text-end mt-2",
-                                        style={"color": "#0d6efd", "minHeight": "20px"}
-                                    )
                                 ], width=12)
                                     ])
                                 ], width=12)
@@ -2460,6 +2453,7 @@ app.layout = html.Div([
         ),
         
         # 存储组件 - 移到主布局中，确保所有tab都能访问
+        html.Div(id="filter-backend-display", style={"display": "none"}),
         dcc.Store(id='data-store', data=load_data()),
         dcc.Store(id='filtered-result-store', data=''),
         dcc.Store(id='source-result-store', data=''),
@@ -3584,6 +3578,7 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
     if previous_session_id:
         _clear_filter_task(previous_session_id, delete_files=False)
     
+    preferred_backend = preferred_backend or DEFAULT_FILTER_BACKEND
     # 执行过滤命令，包含临时关键字
     session_id, filtered_result = execute_filter_logic(filter_tab_strings, temp_keywords, selected_log_file, preferred_backend=preferred_backend)
     try:
@@ -3617,7 +3612,7 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
 def refresh_filter_backend_display(preferred_backend, active_tab):
     if active_tab != "tab-1":
         return dash.no_update
-    return _format_filter_backend_text(None, preferred_backend)
+    return _format_filter_backend_text(None, preferred_backend or DEFAULT_FILTER_BACKEND)
 
 
 # 选择文件后加载其他Tab内容
@@ -4328,6 +4323,7 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
     prevent_initial_call=True
 )
 def start_compare(n_clicks, compare_strings, temp_keywords, log_a, log_b, existing_sessions, preferred_backend, active_tab):
+    preferred_backend = preferred_backend or DEFAULT_FILTER_BACKEND
     if active_tab != "tab-compare" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
