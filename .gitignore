@@ -3,7 +3,8 @@ __pycache__/*
 user_selections.json
 configs/default.json
 .DS_Store
-build/
+build/*
+!build/installer.nsh
 dist/
 .cache/
 node_modules/

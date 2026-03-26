@@ -1,6 +1,6 @@
 {
   "name": "log_filter",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
@@ -52,7 +52,7 @@
       ]
     },
     "nsis": {
-      "include": "scripts/installer.nsh"
+      "include": "build/installer.nsh"
     },
     "linux": {
       "target": [
