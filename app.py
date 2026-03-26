@@ -16,6 +16,7 @@ import time
 import threading
 import io
 import zipfile
+from bisect import bisect_left
 from datetime import datetime
 
 # 预编译正则模式，避免在循环中重复编译
@@ -139,6 +140,41 @@ class HighlightCache:
 
 # 全局高亮缓存实例
 highlight_cache = HighlightCache(max_size=50)  # 最多缓存50个结果
+
+
+class SearchMatchCache:
+    def __init__(self, max_size=40):
+        self.cache = {}
+        self.access_order = []
+        self.max_size = max_size
+        self.lock = threading.Lock()
+
+    def get(self, key):
+        with self.lock:
+            value = self.cache.get(key)
+            if value is None:
+                return None
+            if key in self.access_order:
+                self.access_order.remove(key)
+            self.access_order.append(key)
+            return value
+
+    def put(self, key, value):
+        with self.lock:
+            if key in self.cache:
+                self.cache[key] = value
+                if key in self.access_order:
+                    self.access_order.remove(key)
+                self.access_order.append(key)
+                return
+            if len(self.cache) >= self.max_size and self.access_order:
+                oldest_key = self.access_order.pop(0)
+                self.cache.pop(oldest_key, None)
+            self.cache[key] = value
+            self.access_order.append(key)
+
+
+search_match_cache = SearchMatchCache(max_size=40)
 
 # 会话高亮信息（供滚动窗口分片高亮使用）
 highlight_session_info = {}
@@ -265,6 +301,45 @@ def _get_rg_command():
     if bundled_rg:
         return bundled_rg
     return shutil.which("rg")
+
+
+def _get_rg_runtime_info():
+    bundled_rg = _get_bundled_rg_path()
+    if bundled_rg:
+        return {"available": True, "source": "内置", "path": bundled_rg}
+    path_rg = shutil.which("rg")
+    if path_rg:
+        return {"available": True, "source": "PATH", "path": path_rg}
+    return {"available": False, "source": "未检测到", "path": ""}
+
+
+def _get_filter_backend_runtime_info(preferred_backend="auto"):
+    preferred_backend = _normalize_filter_backend_preference(preferred_backend)
+    resolved_backend = None
+    resolve_error = ""
+    try:
+        resolved_backend = _resolve_filter_backend(preferred_backend)
+    except Exception as e:
+        resolve_error = str(e)
+
+    if os.name == "nt":
+        runtime = _detect_windows_powershell_runtime()
+        return {
+            "preferred_backend": preferred_backend,
+            "resolved_backend": resolved_backend,
+            "resolve_error": resolve_error,
+            "rg": _get_rg_runtime_info(),
+            "findstr": _can_use_windows_findstr(),
+            "powershell": bool(runtime.get("cmd") and runtime.get("meets_minimum"))
+        }
+
+    return {
+        "preferred_backend": preferred_backend,
+        "resolved_backend": resolved_backend,
+        "resolve_error": resolve_error,
+        "rg": _get_rg_runtime_info(),
+        "grep": bool(shutil.which("grep"))
+    }
 
 
 def _get_filter_backend_selector_options():
@@ -471,6 +546,7 @@ except ImportError:
 DATA_FILE = 'string_data.json'
 ANNOTATIONS_FILE = 'keyword_annotations.json'
 FLOWS_CONFIG_FILE = 'flows.json'
+ALLOWED_LOG_EXTENSIONS = ('.txt', '.log', '.text')
 
 # 获取所有配置文件
 CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
@@ -500,7 +576,7 @@ def load_external_program_config():
 def save_external_program_config(path):
     try:
         with open(EXTERNAL_PROGRAM_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"path": path}, f, ensure_ascii=False, indent=2)
+            json.dump({"path": str(path or "").strip()}, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"Saving external program config failed: {e}")
@@ -576,6 +652,124 @@ def ensure_log_dir():
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
 
+def get_log_dir_path():
+    ensure_log_dir()
+    return os.path.abspath(LOG_DIR)
+
+def _normalize_log_filename(filename):
+    value = str(filename or "").strip()
+    if not value:
+        raise ValueError("文件名不能为空")
+    if "\x00" in value:
+        raise ValueError("文件名包含非法字符")
+    if os.path.isabs(value):
+        raise ValueError("文件名不能是绝对路径")
+    if "/" in value or "\\" in value:
+        raise ValueError("文件名不能包含路径分隔符")
+    normalized = os.path.basename(value)
+    if normalized in {"", ".", ".."}:
+        raise ValueError("文件名无效")
+    return normalized
+
+def _ensure_allowed_log_extension(filename):
+    normalized = _normalize_log_filename(filename)
+    if not normalized.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+        allowed_text = "、".join(ALLOWED_LOG_EXTENSIONS)
+        raise ValueError(f"仅支持 {allowed_text} 文件")
+    return normalized
+
+def _resolve_log_file_path(filename, must_exist=False, allowed_extensions=None):
+    normalized = _normalize_log_filename(filename)
+    if allowed_extensions and not normalized.lower().endswith(tuple(ext.lower() for ext in allowed_extensions)):
+        allowed_text = "、".join(allowed_extensions)
+        raise ValueError(f"仅支持 {allowed_text} 文件")
+    log_dir = get_log_dir_path()
+    file_path = os.path.abspath(os.path.join(log_dir, normalized))
+    if os.path.commonpath([log_dir, file_path]) != log_dir:
+        raise ValueError("日志路径无效")
+    if must_exist and not os.path.exists(file_path):
+        raise FileNotFoundError(f"日志文件不存在: {normalized}")
+    return normalized, file_path
+
+def _build_available_log_filename(filename):
+    normalized = _ensure_allowed_log_extension(filename)
+    stem, ext = os.path.splitext(normalized)
+    candidate = normalized
+    counter = 1
+    while True:
+        _, candidate_path = _resolve_log_file_path(candidate, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+        if not os.path.exists(candidate_path):
+            return candidate, candidate_path
+        candidate = f"{stem}_{counter}{ext}"
+        counter += 1
+
+def _parse_external_program_command(value):
+    import shlex
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        raise ValueError("请输入有效的程序路径")
+    try:
+        args = shlex.split(raw_value)
+    except ValueError:
+        raise ValueError("外部程序路径格式无效")
+    if not args:
+        raise ValueError("请输入有效的程序路径")
+    program = args[0]
+    resolved_program = program if os.path.isabs(program) else shutil.which(program)
+    if not resolved_program or not os.path.exists(resolved_program):
+        raise ValueError(f"找不到外部程序: {program}")
+    args[0] = resolved_program
+    return raw_value, args
+
+def _toast_script(message, level):
+    return html.Script(
+        f"if(window.showToast) window.showToast({json.dumps(str(message), ensure_ascii=False)}, {json.dumps(level)});"
+    )
+
+
+def _make_log_view_ui_state(phase="idle"):
+    normalized_phase = str(phase or "idle")
+    state = {
+        "phase": normalized_phase,
+        "button_disabled": False,
+        "button_color": "success",
+        "button_text": "过滤",
+        "status_text": "Ready",
+        "status_class": "badge bg-secondary ms-3",
+        "spinner_style": {"display": "none", "marginLeft": "5px"}
+    }
+    if normalized_phase == "loading_file":
+        state.update({
+            "button_disabled": True,
+            "button_color": "secondary",
+            "status_text": "加载中...",
+            "status_class": "badge bg-warning text-dark ms-3"
+        })
+    elif normalized_phase in {"source_ready", "filter_done"}:
+        state.update({
+            "button_disabled": False,
+            "button_color": "success",
+            "status_text": "Ready",
+            "status_class": "badge bg-success ms-3"
+        })
+    elif normalized_phase in {"filter_running", "filter_partial_ready"}:
+        state.update({
+            "button_disabled": True,
+            "button_color": "success",
+            "button_text": "处理中...",
+            "status_text": "处理中...",
+            "status_class": "badge bg-info text-dark ms-3",
+            "spinner_style": {"display": "inline-block", "marginLeft": "5px"}
+        })
+    elif normalized_phase == "error":
+        state.update({
+            "button_disabled": False,
+            "button_color": "danger",
+            "status_text": "错误",
+            "status_class": "badge bg-danger ms-3"
+        })
+    return state
+
 def get_annotations_path():
     """获取关键字注释文件的完整路径（优先可写目录，回退到随包默认）"""
     writable_path = os.path.join(os.path.dirname(DATA_FILE) or os.getcwd(), ANNOTATIONS_FILE)
@@ -640,8 +834,9 @@ def get_log_files():
                 return _log_files_cache["data"]
             log_files = [
                 file for file in os.listdir(LOG_DIR)
-                if file.endswith(('.txt', '.log', '.text'))
+                if file.lower().endswith(ALLOWED_LOG_EXTENSIONS)
             ]
+            log_files = sorted(log_files)
             _log_files_cache["mtime"] = mtime
             _log_files_cache["data"] = log_files
             return log_files
@@ -745,7 +940,7 @@ def save_default_config(selected_strings):
 
 
 # ------------------- 异步过滤任务 -------------------
-def _init_filter_task(session_id, log_path, keep_strings, filter_strings, selected_strings):
+def _init_filter_task(session_id, log_path, keep_strings, filter_strings, selected_strings, preferred_backend="auto"):
     with _filter_tasks_lock:
         _filter_tasks[session_id] = {
             "status": "running",
@@ -762,6 +957,7 @@ def _init_filter_task(session_id, log_path, keep_strings, filter_strings, select
             "filter_strings": filter_strings,
             "selected_strings": selected_strings,
             "backend": "",
+            "preferred_backend": _normalize_filter_backend_preference(preferred_backend),
         }
 
 
@@ -777,10 +973,45 @@ def _get_filter_task(session_id):
         return _filter_tasks.get(session_id, {}).copy()
 
 
-def _format_filter_backend_text(backend):
-    if not backend:
-        return ""
-    return f"当前工具: {backend}"
+def _format_filter_backend_text(backend=None, preferred_backend="auto", pending=False):
+    info = _get_filter_backend_runtime_info(preferred_backend)
+    preferred_backend = info.get("preferred_backend") or "auto"
+    resolved_backend = info.get("resolved_backend")
+
+    if pending:
+        text = "当前工具: 检测中"
+        if preferred_backend != "auto":
+            text += f"（偏好 {preferred_backend}）"
+    elif backend:
+        text = f"当前工具: {backend}"
+        if preferred_backend != "auto":
+            text += f"（偏好 {preferred_backend}）"
+    else:
+        if preferred_backend == "auto":
+            text = f"当前工具: 自动 → {(resolved_backend or 'python')}"
+        else:
+            text = f"当前工具: {preferred_backend}"
+            if resolved_backend and resolved_backend != preferred_backend:
+                text += f" → {resolved_backend}"
+
+    if os.name == "nt":
+        rg_info = info.get("rg") or {}
+        detail_parts = [
+            f"rg: {rg_info.get('source') or '未检测到'}",
+            f"findstr: {'可用' if info.get('findstr') else '不可用'}",
+            f"PowerShell: {'可用' if info.get('powershell') else '不可用'}"
+        ]
+    else:
+        rg_info = info.get("rg") or {}
+        detail_parts = [
+            f"rg: {rg_info.get('source') or '未检测到'}",
+            f"grep: {'可用' if info.get('grep') else '不可用'}"
+        ]
+
+    resolve_error = info.get("resolve_error")
+    if resolve_error:
+        detail_parts.append(f"回退原因: {resolve_error}")
+    return f"{text} · " + " · ".join(detail_parts)
 
 
 def _estimate_total_lines(log_path):
@@ -1092,12 +1323,8 @@ def load_rolling_config():
 
 def get_log_path(log_filename):
     """获取日志文件的完整路径"""
-    ensure_log_dir()
-    # 确保文件名是字符串类型，并正确处理空格
-    if not isinstance(log_filename, str):
-        log_filename = str(log_filename)
-    # 使用os.path.join正确处理路径，包括文件名中的空格
-    return os.path.join(LOG_DIR, log_filename)
+    _, file_path = _resolve_log_file_path(log_filename, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+    return file_path
 
 # 加载已保存的数据
 def load_data():
@@ -1356,7 +1583,7 @@ app.layout = html.Div([
     dcc.Interval(id="filter-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
     dcc.Store(id="compare-session-store", data={"a": "", "b": ""}),
     dcc.Interval(id="compare-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
-    dcc.Store(id=_UI_BUSY_STORE_ID, data=False),
+    dcc.Store(id=_UI_BUSY_STORE_ID, data=_make_log_view_ui_state("idle")),
     dcc.Location(id="url", refresh=False),
     dcc.Download(id="runtime-log-download"),
     html.Button(id="export-runtime-logs-btn", style={"display": "none"}),
@@ -1558,6 +1785,7 @@ app.layout = html.Div([
                                                     html.Datalist(id="search-suggestions", children=[]),
                                                     dbc.Button("查找/下一个", id="global-search-btn", color="info")
                                                 ], size="sm", className="me-2", style={"maxWidth": "420px"}),
+                                                html.Span("( - / - )", id="search-hit-status", className="text-muted small", style={"minWidth": "90px", "textAlign": "center"}),
                                                 dbc.InputGroup([
                                                     dbc.Input(id="jump-line-input", type="number", placeholder="行号", min=1, step=1),
                                                     dbc.Button("跳转", id="jump-line-btn", color="primary")
@@ -1567,6 +1795,7 @@ app.layout = html.Div([
                                     ], className="w-100"),
                                     html.Div(
                                         id="filter-backend-display",
+                                        children=_format_filter_backend_text(None, "auto"),
                                         className="small text-end mt-2",
                                         style={"color": "#0d6efd", "minHeight": "20px"}
                                     )
@@ -2116,7 +2345,7 @@ app.layout = html.Div([
                                     },
                                     className="upload-area mb-3",
                                     multiple=False,
-                                    accept='.txt,.log'
+                                    accept='.txt,.log,.text'
                                 ),
                                 html.Div(id='upload-status', className="text-center small")
                             ])
@@ -2369,7 +2598,7 @@ def toggle_config_files(n_clicks, is_open):
     return is_open
 
 
-# 文件选择后，标记 UI 正在忙（禁用分组按钮等）
+# 文件选择后，标记过滤页 UI 正在加载
 @app.callback(
     Output(_UI_BUSY_STORE_ID, "data"),
     [Input("log-file-selector", "value")],
@@ -2377,8 +2606,8 @@ def toggle_config_files(n_clicks, is_open):
 )
 def mark_ui_busy_on_file_change(selected_log_file):
     if selected_log_file:
-        return True
-    return False
+        return _make_log_view_ui_state("loading_file")
+    return _make_log_view_ui_state("idle")
 
 
 
@@ -2805,13 +3034,14 @@ def open_log_from_query(search):
         target = unquote((q.get('open') or [''])[0])
         if not target:
             return dash.no_update, dash.no_update, dash.no_update
+        target = _normalize_log_filename(target)
         files = get_log_files()
         options = [{"label": f, "value": f} for f in files]
         if target not in files:
-            options.append({"label": target, "value": target})
-        return options, target, html.Script("if(window.showToast) window.showToast('已打开日志', 'success');")
-    except Exception:
-        return dash.no_update, dash.no_update, html.Script("if(window.showToast) window.showToast('打开日志失败', 'error');")
+            return dash.no_update, dash.no_update, _toast_script("打开的日志文件不存在或名称无效", "error")
+        return options, target, _toast_script("已打开日志", "success")
+    except Exception as e:
+        return dash.no_update, dash.no_update, _toast_script(f"打开日志失败: {str(e)}", "error")
 
 
 @app.callback(
@@ -3189,20 +3419,25 @@ def toggle_selected_string(n_clicks, button_ids, selected_strings, selected_log_
 
 
 
-# 过滤按钮加载状态控制回调
 @app.callback(
     [Output("filter-loading-spinner", "spinner_style"),
      Output("filter-btn-text", "children"),
-     Output("execute-filter-btn", "disabled")],
-    [Input("execute-filter-btn", "n_clicks")],
-    [State("filter-loading-spinner", "spinner_style")],
-    prevent_initial_call=True
+     Output("execute-filter-btn", "disabled"),
+     Output("execute-filter-btn", "color"),
+     Output("log-view-status-bar", "children"),
+     Output("log-view-status-bar", "className")],
+    [Input(_UI_BUSY_STORE_ID, "data")]
 )
-def toggle_filter_loading(n_clicks, current_style):
-    if n_clicks:
-        # 显示加载状态
-        return {"display": "inline-block", "marginLeft": "5px"}, "处理中...", True
-    return current_style, "过滤", False
+def render_log_view_ui_state(ui_state):
+    ui_state = ui_state or _make_log_view_ui_state("idle")
+    return (
+        ui_state.get("spinner_style", {"display": "none", "marginLeft": "5px"}),
+        ui_state.get("button_text", "过滤"),
+        bool(ui_state.get("button_disabled")),
+        ui_state.get("button_color", "success"),
+        ui_state.get("status_text", "Ready"),
+        ui_state.get("status_class", "badge bg-secondary ms-3")
+    )
 
 # 关键字注释控件：保存注释
 @app.callback(
@@ -3325,14 +3560,11 @@ def render_keyword_annotations_list(annotations_map):
      Output("filter-progress-text", "children", allow_duplicate=True),
      Output("filter-backend-display", "children", allow_duplicate=True),
      Output("filter-progress-footer", "style", allow_duplicate=True),
-     Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
-     Output("filter-btn-text", "children", allow_duplicate=True),
-     Output("execute-filter-btn", "disabled", allow_duplicate=True),
-     Output("execute-filter-btn", "color", allow_duplicate=True),
      Output("filter-session-store", "data"),
      Output("filter-progress-interval", "disabled", allow_duplicate=True),
      Output("filter-progress-interval", "n_intervals", allow_duplicate=True),
-     Output("filter-first-chunk-ready", "data")],
+     Output("filter-first-chunk-ready", "data"),
+     Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True)],
     [Input("execute-filter-btn", "n_clicks")],
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
@@ -3346,8 +3578,8 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
     # 只有在日志过滤tab激活时才处理回调
     if active_tab != "tab-1" or not n_clicks:
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
-                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
-                dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+                dash.no_update, dash.no_update, dash.no_update, dash.no_update,
+                dash.no_update, dash.no_update)
     
     if previous_session_id:
         _clear_filter_task(previous_session_id, delete_files=False)
@@ -3359,43 +3591,33 @@ def execute_filter_command(n_clicks, filter_tab_strings, temp_keywords, selected
     except Exception:
         pass
     
+    ui_state = _make_log_view_ui_state("filter_running") if session_id else _make_log_view_ui_state("source_ready" if selected_log_file else "idle")
     # 启动进度轮询，首片尚未就绪；重置存储、启用interval、按钮置忙，并重置 interval 计数
     return (
         filtered_result,                # log-filter-results 显示进度组件
         "",                             # filtered-result-store 清空
         0,                              # 重置底部进度条
         "",                             # 重置进度文字
-        "当前工具: 检测中..." if session_id else "",  # 底部工具显示
+        _format_filter_backend_text(None, preferred_backend, pending=True) if session_id else _format_filter_backend_text(None, preferred_backend),  # 底部工具显示
         {"display": "block"},           # 展示底部进度条区域
-        {"display": "inline-block", "marginLeft": "5px"},  # spinner 显示
-        "处理中...",                    # 按钮文案
-        True,                           # 按钮禁用
-        "success",                      # 按钮颜色设为绿色
         session_id or "",               # 会话
         False,                          # interval 启用 (disabled=False)
         0,                              # 重置轮询计数
-        False                           # 首片未就绪
+        False,                          # 首片未就绪
+        ui_state
     )
 
 
-# 客户端回调：选择文件后立即禁用过滤按钮并显示等待
-app.clientside_callback(
-    """
-    function(value) {
-        if (value) {
-            return [true, "secondary", "等待后端刷新...", "badge bg-warning text-dark ms-2", ""];
-        }
-        return [window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update, window.dash_clientside.no_update];
-    }
-    """,
-    [Output("execute-filter-btn", "disabled", allow_duplicate=True),
-     Output("execute-filter-btn", "color", allow_duplicate=True),
-     Output("log-view-status-bar", "children", allow_duplicate=True),
-     Output("log-view-status-bar", "className", allow_duplicate=True),
-     Output("filter-backend-display", "children", allow_duplicate=True)],
-    Input("log-file-selector", "value"),
+@app.callback(
+    Output("filter-backend-display", "children", allow_duplicate=True),
+    [Input("filter-backend-selector", "value"),
+     Input("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
+def refresh_filter_backend_display(preferred_backend, active_tab):
+    if active_tab != "tab-1":
+        return dash.no_update
+    return _format_filter_backend_text(None, preferred_backend)
 
 
 # 选择文件后加载其他Tab内容
@@ -3416,7 +3638,7 @@ app.clientside_callback(
 )
 def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp_keywords, annotations_map, active_tab):
     if not selected_log_file:
-        return "", "", "", "", "", "", False
+        return "", "", "", "", "", "", _make_log_view_ui_state("idle")
         
     # 源文件视图使用滚动窗口，便于查找/跳转
     source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
@@ -3435,8 +3657,7 @@ def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp
     # 流程视图
     flows_component = build_flows_display(selected_log_file)
     
-    # 过滤按钮状态已由客户端回调和rolling.js处理，此处无需重复设置
-    return source_result, highlight_result, annotation_component, flows_component, source_result, "", False
+    return source_result, highlight_result, annotation_component, flows_component, source_result, "", _make_log_view_ui_state("loading_file")
 
  
 
@@ -3488,6 +3709,7 @@ def _build_temp_index(temp_file_path, idx_path, encoding, index_every=500):
             json.dump({
                 "encoding": encoding,
                 "index_every": index_every,
+                "line_count": line_count,
                 "offsets": offsets
             }, idx_file, ensure_ascii=False)
     except Exception as e:
@@ -3512,6 +3734,24 @@ def _build_arg_command(base_args, patterns, log_path=None, invert=False):
     if log_path:
         cmd.append(log_path)
     return cmd
+
+
+def _build_powershell_encoded_command(script):
+    runtime = _detect_windows_powershell_runtime()
+    shell_cmd = runtime.get("cmd")
+    if not shell_cmd or not runtime.get("meets_minimum"):
+        raise RuntimeError(f"Windows PowerShell 不可用: {_powershell_fallback_reason()}")
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return [shell_cmd, "-NoProfile", "-EncodedCommand", encoded]
+
+
+def _normalize_command_args(command):
+    if isinstance(command, (list, tuple)):
+        return [str(part) for part in command]
+    if not command:
+        raise ValueError("命令不能为空")
+    import shlex
+    return shlex.split(str(command), posix=(os.name != "nt"))
 
 
 def _build_findstr_command(patterns, log_path=None, invert=False):
@@ -3610,8 +3850,7 @@ def _stream_filter_with_powershell(log_path, temp_file_path, idx_path, keep_stri
         "if ($filterPatterns.Count -gt 0) { $content = $content | Select-String -SimpleMatch -CaseSensitive:$false -NotMatch -Pattern $filterPatterns }",
         "$content | Set-Content -Path $outputPath -Encoding utf8"
     ])
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    result = subprocess.run([shell_cmd, "-NoProfile", "-EncodedCommand", encoded], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(_build_powershell_encoded_command(script), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode not in (0, 1):
         stderr_text = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
         raise RuntimeError(f"{shell_cmd} 过滤失败: {stderr_text or result.returncode}")
@@ -3774,7 +4013,7 @@ def execute_filter_logic(selected_strings, temp_keywords, selected_log_file, pre
         session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
     
     # 初始化任务并启动后台线程
-    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
+    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings, preferred_backend=preferred_backend)
     thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings, preferred_backend))
     thread.daemon = True
     thread.start()
@@ -3815,7 +4054,7 @@ def _start_filter_task_for_log(selected_strings, temp_keywords, selected_log_fil
     except Exception:
         session_id = hashlib.md5(str(time.time()).encode()).hexdigest()
 
-    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings)
+    _init_filter_task(session_id, log_path, keep_strings, filter_strings, all_strings, preferred_backend=preferred_backend)
     thread = threading.Thread(target=_filter_worker, args=(session_id, log_path, keep_strings, filter_strings, preferred_backend))
     thread.daemon = True
     thread.start()
@@ -3993,31 +4232,28 @@ def build_side_by_side_diff(a_lines, b_lines, max_display_lines=10000, ignore_pr
      Output("filter-first-chunk-ready", "data", allow_duplicate=True),
      Output("log-filter-results", "children", allow_duplicate=True),
      Output("filtered-result-store", "data", allow_duplicate=True),
-     Output("filter-loading-spinner", "spinner_style", allow_duplicate=True),
-     Output("filter-btn-text", "children", allow_duplicate=True),
-     Output("execute-filter-btn", "disabled", allow_duplicate=True)],
+     Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True)],
     [Input("filter-progress-interval", "n_intervals")],
     [State("filter-session-store", "data"),
      State("main-tabs", "active_tab")],
     prevent_initial_call=True
 )
 def poll_filter_progress(n_intervals, session_id, active_tab):
-    spinner_hide = {"display": "none", "marginLeft": "5px"}
     progress_footer_show = {"display": "block"}
     progress_footer_hide = {"display": "none"}
     if active_tab != "tab-1" or not session_id:
         print(f"[进度] 跳过轮询 active_tab={active_tab} session_id={session_id}")
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, True,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update,
-                dash.no_update, dash.no_update, dash.no_update)
+                dash.no_update)
     
     task = _get_filter_task(session_id)
     if not task:
         print(f"[进度] session={session_id} 未找到任务(可能是旧轮询)，暂不停止轮询")
         return (dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update,
                 dash.no_update, dash.no_update, dash.no_update, dash.no_update,
-                dash.no_update, dash.no_update, dash.no_update, dash.no_update)
-    backend_text = _format_filter_backend_text(task.get("backend"))
+                dash.no_update)
+    backend_text = _format_filter_backend_text(task.get("backend"), task.get("preferred_backend"))
     
     # 错误处理
     if task.get("status") == "error":
@@ -4027,7 +4263,7 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         ])
         print(f"[进度] session={session_id} 状态=error, err={task.get('error')}")
         return (0, "过滤失败", backend_text, err_div, "", progress_footer_show, True, "", True, err_div, err_div,
-                spinner_hide, "过滤", False)
+                _make_log_view_ui_state("error"))
     
     done = task.get("done_lines") or 0
     total = task.get("total_lines")
@@ -4043,7 +4279,7 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         partial_display = highlight_keywords_dash(chunk_text, task.get("selected_strings"), data)
         print(f"[进度] session={session_id} 首片已就绪，返回部分内容，percent={percent}")
         return (percent if percent is not None else 1, progress_text, backend_text, partial_display, "", progress_footer_show, False, session_id, True,
-                dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+                dash.no_update, dash.no_update, _make_log_view_ui_state("filter_partial_ready"))
     
     # 完成
     if task.get("finished"):
@@ -4058,12 +4294,12 @@ def poll_filter_progress(n_intervals, session_id, active_tab):
         print(f"[进度] session={session_id} 完成，行数={line_count}，停止轮询")
         inline_progress = ""  # 完成后隐藏内联进度条
         return (100, "完成", backend_text, dash.no_update, inline_progress, progress_footer_hide, True, "", "",
-                final_display, final_display, spinner_hide, "过滤", False)
+                final_display, final_display, _make_log_view_ui_state("filter_done"))
     
     # 仍在进行，但未到首片
     inline_progress = ""  # 不再显示顶部内联进度条
     return (percent, progress_text, backend_text, dash.no_update, inline_progress, progress_footer_show, False, session_id, dash.no_update,
-            dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update)
+            dash.no_update, dash.no_update, _make_log_view_ui_state("filter_running"))
 
 
 @app.callback(
@@ -4313,40 +4549,25 @@ def execute_source_logic(selected_log_file, selected_strings=None, temp_keywords
         all_strings.extend(selected_strings)
     all_strings.extend(normalized_temp_keywords)
     
-    # 执行命令：源文件页面的滚动、跳转与搜索基于原始日志生成的临时文件
     try:
         session_key = f"source:{log_path}"
         session_id = hashlib.md5(session_key.encode()).hexdigest()
     except Exception:
         session_id = None
 
-    if os.name == 'nt' and not _can_use_windows_powershell():
-        encoding = detect_file_encoding(log_path)
-        temp_file_path = get_temp_file_path(session_id)
-        idx_path = get_temp_index_path(temp_file_path)
-        temp_file_path, idx_path, line_count, output_encoding, backend = _copy_source_to_temp(
-            log_path,
-            temp_file_path,
-            idx_path,
-            encoding,
-            500
-        )
-        data = load_data() if all_strings else None
-        result_display = build_rolling_display(temp_file_path, line_count, session_id, all_strings, data, output_encoding)
-        return f"{backend}:{log_path}", result_display
-
-    if os.name == 'nt':
-        full_command = f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
-    else:
-        full_command = f"cat \"{log_path}\""
-
-    if all_strings:
-        data = load_data()
-        result_display = execute_command(full_command, all_strings, data, save_to_temp=True, session_id=session_id)
-    else:
-        result_display = execute_command(full_command, save_to_temp=True, session_id=session_id)
-
-    return full_command, result_display
+    encoding = detect_file_encoding(log_path)
+    temp_file_path = get_temp_file_path(session_id)
+    idx_path = get_temp_index_path(temp_file_path)
+    temp_file_path, idx_path, line_count, output_encoding, backend = _copy_source_to_temp(
+        log_path,
+        temp_file_path,
+        idx_path,
+        encoding,
+        500
+    )
+    data = load_data() if all_strings else None
+    result_display = build_rolling_display(temp_file_path, line_count, session_id, all_strings, data, output_encoding)
+    return f"{backend}:{log_path}", result_display
 
 
 def execute_source_preview(selected_log_file, selected_strings=None, temp_keywords=None, max_lines=_SOURCE_PREVIEW_LINES):
@@ -4382,10 +4603,10 @@ def execute_source_preview(selected_log_file, selected_strings=None, temp_keywor
 
     return f"preview:{log_path}", result_display
 
-def _run_command_capture_text(full_command):
+def _run_command_capture_text(command):
     """执行命令并返回解码后的文本（最佳努力解码）"""
     try:
-        result = subprocess.run(full_command, shell=True, capture_output=True, text=False, timeout=30)
+        result = subprocess.run(_normalize_command_args(command), capture_output=True, text=False, timeout=30)
         output_bytes = result.stdout if result.returncode == 0 else b""
         if not output_bytes:
             return ""
@@ -4447,19 +4668,27 @@ def _extract_annotation_text_python(log_path, annotations_map):
 def build_annotation_match_command(selected_log_file, annotations_map):
     """构建使用所有注释关键字匹配日志的命令"""
     if not selected_log_file:
-        return ""
+        return None
     log_path = get_log_path(selected_log_file)
     keywords = [str(k) for k in (annotations_map or {}).keys() if str(k)]
     if not keywords:
-        if os.name == 'nt':
-            return f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\"\""
-        return f"cat \"{log_path}\""
-    escaped = [re.escape(k) for k in keywords]
-    pattern = escaped[0] if len(escaped) == 1 else f"({'|'.join(escaped)})"
+        return None
     if os.name == 'nt':
-        p = pattern.replace("'", "''")
-        return f"powershell -NoProfile -Command \"Get-Content -Path \"{log_path}\" | Select-String -Pattern '{p}' | ForEach-Object {{ $_.Line }}\""
-    return f"grep -E '{pattern}' \"{log_path}\""
+        if not _can_use_windows_powershell():
+            return None
+        patterns = "@(" + ", ".join(_powershell_quote(keyword) for keyword in keywords) + ")"
+        script = "\n".join([
+            f"$inputPath = {_powershell_quote(log_path)}",
+            f"$patterns = {patterns}",
+            "Get-Content -LiteralPath $inputPath | Select-String -SimpleMatch -CaseSensitive:$false -Pattern $patterns | ForEach-Object { $_.Line }"
+        ])
+        return _build_powershell_encoded_command(script)
+    rg_cmd = _get_rg_command()
+    if rg_cmd:
+        return _build_arg_command([rg_cmd, "--text", "--no-heading", "--color", "never", "-i", "-F"], keywords, log_path=log_path)
+    if shutil.which("grep"):
+        return _build_arg_command(["grep", "-a", "-i", "-F"], keywords, log_path=log_path)
+    return None
 
 def build_annotation_extract_display_by_matching(selected_log_file, annotations_map):
     """使用所有注释关键字匹配日志并显示对应注释列表"""
@@ -4468,10 +4697,10 @@ def build_annotation_extract_display_by_matching(selected_log_file, annotations_
     if not annotations_map:
         return html.P("未设置关键字注释", className="text-muted")
     log_path = get_log_path(selected_log_file)
-    if os.name == 'nt' and not _can_use_windows_powershell():
+    cmd = build_annotation_match_command(selected_log_file, annotations_map)
+    if not cmd:
         text = _extract_annotation_text_python(log_path, annotations_map)
     else:
-        cmd = build_annotation_match_command(selected_log_file, annotations_map)
         text = _run_command_capture_text(cmd)
     if not text:
         return html.P("没有匹配到任何日志行", className="text-muted")
@@ -5468,13 +5697,150 @@ def detect_file_encoding(file_path, default_encoding="utf-8"):
         print(f"[滚动窗口] 探测编码失败，使用默认编码 {default_encoding}: {e}")
     return default_encoding
 
-def get_file_line_count(file_path):
-    """获取文件的总行数"""
+def _load_temp_index_metadata(file_path):
+    idx_path = get_temp_index_path(file_path)
+    if not os.path.exists(idx_path):
+        return None
     try:
-        print(f"[滚动窗口] 开始计算文件行数: {file_path}")
+        with open(idx_path, 'r', encoding='utf-8') as idx_file:
+            data = json.load(idx_file)
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        print(f"[滚动窗口] 读取索引元数据失败: {e}")
+    return None
+
+
+def _get_search_cache_key(file_path, keyword, case_sensitive):
+    try:
+        stat = os.stat(file_path)
+        return (
+            os.path.abspath(file_path),
+            stat.st_mtime_ns,
+            stat.st_size,
+            str(keyword or ""),
+            bool(case_sensitive)
+        )
+    except Exception:
+        return (
+            os.path.abspath(file_path),
+            None,
+            None,
+            str(keyword or ""),
+            bool(case_sensitive)
+        )
+
+
+def _get_search_encoding_candidates(file_path, idx_data=None):
+    candidates = []
+    idx_data = idx_data or {}
+    idx_encoding = idx_data.get("encoding")
+    if idx_encoding:
+        candidates.append(idx_encoding)
+    detected = detect_file_encoding(file_path)
+    if detected and detected not in candidates:
+        candidates.append(detected)
+    for enc in ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']:
+        if enc not in candidates:
+            candidates.append(enc)
+    return candidates
+
+
+def _can_use_binary_search(keyword, case_sensitive):
+    if not keyword:
+        return False
+    if case_sensitive:
+        return True
+    return keyword.isascii() or keyword.lower() == keyword.upper()
+
+
+def _scan_search_matches_binary(file_path, keyword, encodings, case_sensitive, idx_data=None):
+    matches = []
+    total_lines = int((idx_data or {}).get("line_count") or 0)
+    last_error = None
+    for enc in encodings:
+        try:
+            keyword_bytes = str(keyword).encode(enc)
+            if not keyword_bytes:
+                continue
+            regex = re.compile(re.escape(keyword_bytes), 0 if case_sensitive else re.IGNORECASE)
+            with open(file_path, 'rb') as f:
+                current_total = 0
+                for current_total, raw_line in enumerate(f, start=1):
+                    if regex.search(raw_line):
+                        matches.append(current_total)
+                if current_total > 0:
+                    total_lines = current_total
+            return {
+                "matches": matches,
+                "total_matches": len(matches),
+                "total_lines": total_lines,
+                "encoding": enc,
+                "mode": "binary"
+            }
+        except Exception as e:
+            matches = []
+            last_error = e
+            continue
+    raise last_error or RuntimeError("二进制搜索初始化失败")
+
+
+def _scan_search_matches_text(file_path, keyword, encodings, case_sensitive, idx_data=None):
+    matches = []
+    total_lines = int((idx_data or {}).get("line_count") or 0)
+    normalized_keyword = str(keyword or "")
+    keyword_probe = normalized_keyword if case_sensitive else normalized_keyword.lower()
+    last_error = None
+    used_encoding = encodings[0] if encodings else 'utf-8'
+    for enc in encodings:
+        try:
+            used_encoding = enc
+            with open(file_path, 'r', encoding=enc, errors='replace') as f:
+                current_total = 0
+                for current_total, line in enumerate(f, start=1):
+                    haystack = line if case_sensitive else line.lower()
+                    if keyword_probe in haystack:
+                        matches.append(current_total)
+                if current_total > 0:
+                    total_lines = current_total
+            return {
+                "matches": matches,
+                "total_matches": len(matches),
+                "total_lines": total_lines,
+                "encoding": used_encoding,
+                "mode": "text"
+            }
+        except Exception as e:
+            matches = []
+            last_error = e
+            continue
+    raise last_error or RuntimeError("文本搜索初始化失败")
+
+
+def _get_search_match_index(file_path, keyword, case_sensitive=False):
+    cache_key = _get_search_cache_key(file_path, keyword, case_sensitive)
+    cached = search_match_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    idx_data = _load_temp_index_metadata(file_path) or {}
+    encoding_candidates = _get_search_encoding_candidates(file_path, idx_data)
+    if _can_use_binary_search(str(keyword or ""), case_sensitive):
+        result = _scan_search_matches_binary(file_path, keyword, encoding_candidates, case_sensitive, idx_data=idx_data)
+    else:
+        result = _scan_search_matches_text(file_path, keyword, encoding_candidates, case_sensitive, idx_data=idx_data)
+    search_match_cache.put(cache_key, result)
+    return result
+
+
+def get_file_line_count(file_path):
+    try:
+        idx_data = _load_temp_index_metadata(file_path)
+        if idx_data and isinstance(idx_data.get("line_count"), int):
+            count = max(0, int(idx_data.get("line_count") or 0))
+            return count
         with open(file_path, 'rb') as f:
             count = sum(1 for _ in f)
-        print(f"[滚动窗口] 文件总行数: {count}")
         return count
     except Exception as e:
         print(f"[滚动窗口] 获取文件行数失败: {e}")
@@ -5487,22 +5853,18 @@ def get_file_lines_range(file_path, start_line, end_line, encoding=None):
         tuple: (内容字符串, 检测到的编码)
     """
     try:
-        print(f"[滚动窗口] 读取文件行范围: {file_path}, 行 {start_line} - {end_line}")
         if start_line > end_line:
             return "", encoding or "utf-8"
         
-        idx_path = get_temp_index_path(file_path)
-        has_index = os.path.exists(idx_path)
-        
-        # 加载索引信息（如果存在）
+        idx_data = _load_temp_index_metadata(file_path)
+        has_index = bool(idx_data)
+
         idx_encoding = None
         offsets = []
         if has_index:
             try:
-                with open(idx_path, 'r', encoding='utf-8') as idx_file:
-                    idx_data = json.load(idx_file)
-                    offsets = idx_data.get("offsets", [])
-                    idx_encoding = idx_data.get("encoding")
+                offsets = idx_data.get("offsets", [])
+                idx_encoding = idx_data.get("encoding")
             except Exception as e:
                 print(f"[滚动窗口] 读取索引失败，回退全文件读取: {e}")
                 offsets = []
@@ -5542,7 +5904,6 @@ def get_file_lines_range(file_path, start_line, end_line, encoding=None):
                     break
         
         result_text = '\n'.join(lines)
-        print(f"[滚动窗口] 返回内容长度: {len(result_text)} 字符，使用编码 {detected_encoding}，索引 {'命中' if has_index else '未命中'}")
         return result_text, detected_encoding
     except Exception as e:
         print(f"[滚动窗口] 读取文件行范围失败: {e}")
@@ -5574,11 +5935,12 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
         return data_bytes.decode('latin-1', errors='replace')
     
     try:
+        command_args = _normalize_command_args(full_command)
         # save_to_temp 为 True 时改为流式写入临时文件，避免一次性加载大输出
         if save_to_temp:
             ensure_temp_dir()
             if session_id is None:
-                session_id = hashlib.md5((full_command + str(time.time())).encode()).hexdigest()
+                session_id = hashlib.md5((repr(command_args) + str(time.time())).encode()).hexdigest()
             temp_file_path = get_temp_file_path(session_id)
             
             line_count = 0
@@ -5589,8 +5951,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
             
             try:
                 proc = subprocess.Popen(
-                    full_command,
-                    shell=True,
+                    command_args,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE
                 )
@@ -5704,8 +6065,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
         
         # 非临时文件模式：保持原有逻辑（目前主要兼容未来调用）
         result = subprocess.run(
-            full_command,
-            shell=True,
+            command_args,
             capture_output=True,
             text=False,
             timeout=30
@@ -5811,11 +6171,7 @@ def handle_file_upload(contents, filename, last_modified):
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
         
-        # 保存文件到logs目录
-        # 确保文件名是字符串类型，并正确处理空格
-        if not isinstance(filename, str):
-            filename = str(filename)
-        file_path = os.path.join(LOG_DIR, filename)
+        filename, file_path = _build_available_log_filename(filename)
         with open(file_path, 'wb') as f:
             f.write(decoded)
         
@@ -5855,12 +6211,7 @@ def delete_log_file(n_clicks):
     try:
         button_id_dict = json.loads(button_id_str)
         filename = button_id_dict['index']
-        
-        # 确保文件名是字符串类型，并正确处理空格
-        if not isinstance(filename, str):
-            filename = str(filename)
-            
-        file_path = os.path.join(LOG_DIR, filename)
+        filename, file_path = _resolve_log_file_path(filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
         
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -5944,53 +6295,33 @@ def execute_rename(n_clicks, target_filename, new_filename):
         return dash.no_update, dash.no_update, dash.no_update
         
     if not target_filename or not new_filename:
-        return dash.no_update, html.Script(f"""
-            if (typeof window.showToast === 'function') {{
-                window.showToast('文件名不能为空', 'warning');
-            }}
-        """), True
+        return dash.no_update, _toast_script("文件名不能为空", "warning"), True
         
     # 如果文件名没有变化
     if target_filename == new_filename:
         return dash.no_update, dash.no_update, False
         
     try:
-        old_path = os.path.join(LOG_DIR, target_filename)
-        new_path = os.path.join(LOG_DIR, new_filename)
+        target_filename, old_path = _resolve_log_file_path(target_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+        new_filename, new_path = _resolve_log_file_path(new_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
         
         # 检查原文件是否存在
         if not os.path.exists(old_path):
-             return dash.no_update, html.Script(f"""
-                if (typeof window.showToast === 'function') {{
-                    window.showToast('原文件不存在', 'error');
-                }}
-            """), False # 关闭模态框，因为原文件都没了
+             return dash.no_update, _toast_script("原文件不存在", "error"), False
             
         # 检查新文件名是否已存在
         if os.path.exists(new_path):
-            return dash.no_update, html.Script(f"""
-                if (typeof window.showToast === 'function') {{
-                    window.showToast('文件名 {new_filename} 已存在', 'error');
-                }}
-            """), True # 保持打开，让用户修改
+            return dash.no_update, _toast_script(f"文件名 {new_filename} 已存在", "error"), True
             
         # 重命名文件
         os.rename(old_path, new_path)
         
         # 更新文件列表
         log_files = get_log_files()
-        return _create_file_list_table(log_files), html.Script(f"""
-            if (typeof window.showToast === 'function') {{
-                window.showToast('文件已重命名为 {new_filename}', 'success');
-            }}
-        """), False # 成功，关闭模态框
+        return _create_file_list_table(log_files), _toast_script(f"文件已重命名为 {new_filename}", "success"), False
         
     except Exception as e:
-        return dash.no_update, html.Script(f"""
-            if (typeof window.showToast === 'function') {{
-                window.showToast('重命名失败: {str(e)}', 'error');
-            }}
-        """), True
+        return dash.no_update, _toast_script(f"重命名失败: {str(e)}", "error"), True
 
 # 更新配置文件选择器选项
 @app.callback(
@@ -6920,38 +7251,17 @@ def get_log_window():
     """获取临时文件的指定行范围"""
     try:
         from flask import request, jsonify
-        import json as std_json
-        
-        print(f"[API端点] 收到获取日志窗口请求")
         data = request.get_json()
-        print(f"[API端点] 请求数据: {data}")
-        
         session_id = data.get('session_id')
         start_line = int(data.get('start_line', 1))
         end_line = int(data.get('end_line', 500))
-        
-        print(f"[API端点] 解析参数 - session_id: {session_id}, start_line: {start_line}, end_line: {end_line}")
-        
         if not session_id:
-            print(f"[API端点] 错误: 缺少session_id")
             return jsonify({'success': False, 'error': '缺少session_id'})
-        
-        # 获取临时文件路径
         temp_file_path = get_temp_file_path(session_id)
-        print(f"[API端点] 临时文件路径: {temp_file_path}")
-        
         if not os.path.exists(temp_file_path):
-            print(f"[API端点] 错误: 临时文件不存在: {temp_file_path}")
             return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
-        
-        # 获取文件总行数
         total_lines = get_file_line_count(temp_file_path)
-        print(f"[API端点] 文件总行数: {total_lines}")
-        
-        # 获取指定行范围
-        print(f"[API端点] 开始读取行范围: {start_line} - {end_line}")
         content, encoding = get_file_lines_range(temp_file_path, start_line, end_line)
-        print(f"[API端点] 读取完成，内容长度: {len(content)}, 编码: {encoding}")
 
         # 分片高亮（基于会话记录的关键字和颜色映射）
         is_html = False
@@ -7033,9 +7343,6 @@ def get_log_window():
             'encoding': encoding,
             'is_html': is_html
         }
-        print(f"[API端点] 返回成功响应，内容长度: {len(content)}")
-        
-        # 使用标准json模块序列化，然后返回
         response = jsonify(response_data)
         return response
     except Exception as e:
@@ -7065,47 +7372,32 @@ def search_next():
         if not os.path.exists(temp_file_path):
             return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
 
-        total_lines = get_file_line_count(temp_file_path)
+        search_index = _get_search_match_index(temp_file_path, keyword, case_sensitive)
+        total_lines = search_index.get("total_lines") or get_file_line_count(temp_file_path)
         if start_line < 1:
             start_line = 1
         if start_line > total_lines:
-            # 起始位置超过末尾，直接返回未找到
-            return jsonify({'success': True, 'match_line': None, 'total_lines': total_lines})
+            return jsonify({
+                'success': True,
+                'match_line': None,
+                'match_index': None,
+                'cursor_match_index': search_index.get("total_matches", 0),
+                'total_matches': search_index.get("total_matches", 0),
+                'total_lines': total_lines
+            })
 
-        # 行扫描查找
-        match_line = None
-        try:
-            # 尝试以utf-8读取，失败则回退latin-1
-            try_encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
-            opened = False
-            for enc in try_encodings:
-                try:
-                    f = open(temp_file_path, 'r', encoding=enc, errors='replace')
-                    opened = True
-                    break
-                except Exception:
-                    continue
-            if not opened:
-                f = open(temp_file_path, 'r', encoding='latin-1', errors='replace')
-
-            with f:
-                for idx, line in enumerate(f, start=1):
-                    if idx < start_line:
-                        continue
-                    if case_sensitive:
-                        if keyword in line:
-                            match_line = idx
-                            break
-                    else:
-                        if keyword.lower() in line.lower():
-                            match_line = idx
-                            break
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'搜索失败: {str(e)}'})
+        matches = search_index.get("matches") or []
+        match_pos = bisect_left(matches, start_line)
+        match_line = matches[match_pos] if match_pos < len(matches) else None
+        match_index = (match_pos + 1) if match_line is not None else None
+        cursor_match_index = match_index if match_index is not None else len(matches)
 
         return jsonify({
             'success': True,
             'match_line': match_line,
+            'match_index': match_index,
+            'cursor_match_index': cursor_match_index,
+            'total_matches': search_index.get("total_matches", 0),
             'total_lines': total_lines
         })
     except Exception as e:
@@ -7133,40 +7425,32 @@ def search_prev():
         if not os.path.exists(temp_file_path):
             return jsonify({'success': False, 'error': f'临时文件不存在: {temp_file_path}'})
 
-        total_lines = get_file_line_count(temp_file_path)
+        search_index = _get_search_match_index(temp_file_path, keyword, case_sensitive)
+        total_lines = search_index.get("total_lines") or get_file_line_count(temp_file_path)
         if from_line <= 1:
-            # 顶部以上没有内容
-            return jsonify({'success': True, 'match_line': None, 'total_lines': total_lines})
+            return jsonify({
+                'success': True,
+                'match_line': None,
+                'match_index': None,
+                'cursor_match_index': 0,
+                'total_matches': search_index.get("total_matches", 0),
+                'total_lines': total_lines
+            })
 
-        match_line = None
-        try:
-            try_encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
-            opened = False
-            for enc in try_encodings:
-                try:
-                    f = open(temp_file_path, 'r', encoding=enc, errors='replace')
-                    opened = True
-                    break
-                except Exception:
-                    continue
-            if not opened:
-                f = open(temp_file_path, 'r', encoding='latin-1', errors='replace')
+        matches = search_index.get("matches") or []
+        match_pos = bisect_left(matches, from_line) - 1
+        match_line = matches[match_pos] if match_pos >= 0 else None
+        match_index = (match_pos + 1) if match_line is not None else None
+        cursor_match_index = match_index if match_index is not None else max(0, bisect_left(matches, from_line))
 
-            with f:
-                # 顺序遍历并记录最后一个不超过 from_line-1 的匹配
-                for idx, line in enumerate(f, start=1):
-                    if idx >= from_line:
-                        break
-                    if case_sensitive:
-                        if keyword in line:
-                            match_line = idx
-                    else:
-                        if keyword.lower() in line.lower():
-                            match_line = idx
-        except Exception as e:
-            return jsonify({'success': False, 'error': f'搜索失败: {str(e)}'})
-
-        return jsonify({'success': True, 'match_line': match_line, 'total_lines': total_lines})
+        return jsonify({
+            'success': True,
+            'match_line': match_line,
+            'match_index': match_index,
+            'cursor_match_index': cursor_match_index,
+            'total_matches': search_index.get("total_matches", 0),
+            'total_lines': total_lines
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -7446,17 +7730,18 @@ def apply_config_group_selection(group_name):
 
 # 同步前端滚动窗口Ready状态到Dash状态
 @app.callback(
-    [Output("execute-filter-btn", "disabled", allow_duplicate=True),
-     Output("execute-filter-btn", "color", allow_duplicate=True),
-     Output("log-view-status-bar", "children", allow_duplicate=True),
-     Output("log-view-status-bar", "className", allow_duplicate=True)],
+    Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True),
     [Input("log-view-ready-signal-btn", "n_clicks")],
+    [State(_UI_BUSY_STORE_ID, "data")],
     prevent_initial_call=True
 )
-def sync_log_view_ready_state(n_clicks):
+def sync_log_view_ready_state(n_clicks, current_ui_state):
     if n_clicks:
-        return False, "success", "Ready", "badge bg-success ms-2"
-    return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+        current_phase = (current_ui_state or {}).get("phase")
+        if current_phase in {"filter_running", "filter_partial_ready"}:
+            return dash.no_update
+        return _make_log_view_ui_state("source_ready")
+    return dash.no_update
 
 # -----------------------------------------------------------------------------
 # 外部程序调用相关回调
@@ -7472,10 +7757,12 @@ def save_external_program_config_callback(n_clicks, path):
     if not n_clicks:
         return dash.no_update
     
-    if not path:
-        return dbc.Alert("请输入有效的程序路径", color="warning", dismissable=True)
+    try:
+        normalized_path, _ = _parse_external_program_command(path)
+    except ValueError as e:
+        return dbc.Alert(str(e), color="warning", dismissable=True)
         
-    if save_external_program_config(path):
+    if save_external_program_config(normalized_path):
         return dbc.Alert("配置保存成功", color="success", dismissable=True)
     else:
         return dbc.Alert("配置保存失败", color="danger", dismissable=True)
@@ -7491,33 +7778,28 @@ def open_external_program_callback(n_clicks, selected_log_file):
         return dash.no_update
         
     if not selected_log_file:
-         return html.Script("if(window.showToast) window.showToast('请先选择一个日志文件', 'warning');")
+         return _toast_script("请先选择一个日志文件", "warning")
     
     config = load_external_program_config()
     program_path = config.get("path")
     
     if not program_path:
-         return html.Script("if(window.showToast) window.showToast('未配置外部程序路径，请在日志管理中配置', 'warning');")
-         
-    log_path = get_log_path(selected_log_file)
-    if not os.path.exists(log_path):
-         return html.Script(f"if(window.showToast) window.showToast('日志文件不存在: {selected_log_file}', 'error');")
+         return _toast_script("未配置外部程序路径，请在日志管理中配置", "warning")
          
     try:
-        # 使用 shlex to properly split command string (handle quotes/spaces)
-        import shlex
-        args = shlex.split(program_path)
+        _, args = _parse_external_program_command(program_path)
+        selected_log_file, log_path = _resolve_log_file_path(selected_log_file, must_exist=True, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
         cmd = args + [log_path]
         
         print(f"Executing external program: {cmd}")
         subprocess.Popen(cmd)
             
-        return html.Script(f"if(window.showToast) window.showToast('已请求使用外部程序打开: {selected_log_file}', 'success');")
+        return _toast_script(f"已请求使用外部程序打开: {selected_log_file}", "success")
     except FileNotFoundError:
-         return html.Script(f"if(window.showToast) window.showToast('找不到外部程序: {args[0]}', 'error');")
+         return _toast_script(f"找不到外部程序: {args[0]}", "error")
     except Exception as e:
          print(f"External program error: {e}")
-         return html.Script(f"if(window.showToast) window.showToast('打开失败: {str(e)}', 'error');")
+         return _toast_script(f"打开失败: {str(e)}", "error")
 
 if __name__ == "__main__":
     import argparse

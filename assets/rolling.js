@@ -41,16 +41,6 @@
     return preRect.top - conRect.top + container.scrollTop;
   }
 
-  function elTopInContainer(el, container) {
-    if (!container || container === window) {
-      var rect = el.getBoundingClientRect();
-      return rect.top + docScrollTop();
-    }
-    var elRect = el.getBoundingClientRect();
-    var conRect = container.getBoundingClientRect();
-    return elRect.top - conRect.top + container.scrollTop;
-  }
-
   function setup(div) {
     var sessionId = div.getAttribute('data-session-id') || parseSessionIdFromId(div.id);
     var windowSize = parseInt(div.getAttribute('data-window-size') || '500', 10);
@@ -75,7 +65,9 @@
       startLine: 1,
       endLine: Math.min(windowSize, parseInt(div.getAttribute('data-total-lines') || '0', 10) || windowSize),
       centerLine: null,
-      highlightKeyword: null
+      highlightKeyword: null,
+      lastRequestKey: null,
+      pendingRequest: null
     };
 
     console.log('[前端滚动窗口][assets] 初始化:', { sessionId: sessionId, windowSize: windowSize, state: state });
@@ -141,8 +133,6 @@
 
     function updateView(data, anchorArg) {
       if (data && data.success) {
-        var prevStart = state.startLine;
-        var prevEnd = state.endLine;
         state.startLine = data.start_line; state.endLine = data.end_line; state.totalLines = data.total_lines || state.totalLines;
 
         var nodes = ensureStructure();
@@ -195,20 +185,35 @@
           offsetWithinPre = (anchorCenterLine - data.start_line) * lh - ((viewportHeight / 2) - lh / 2);
         }
         var isTopMode = isOpts && opts && opts.mode === 'top';
+        var scrollBehavior = (isOpts && opts && opts.behavior === 'smooth') ? 'smooth' : 'auto';
         if (scrollTarget === window) {
           var docH = getDocScrollHeight();
           if (docH > window.innerHeight + 1) {
             var targetScrollY = preTopInDocument(pre) + offsetWithinPre;
-            window.scrollTo(0, Math.max(0, targetScrollY));
+            var nextTop = Math.max(0, targetScrollY);
+            if (scrollBehavior === 'smooth' && window.scrollTo) {
+              window.scrollTo({ top: nextTop, behavior: 'smooth' });
+            } else {
+              window.scrollTo(0, nextTop);
+            }
           }
         } else {
           if (isTopMode) {
-            scrollTarget.scrollTop = 0;
+            if (scrollBehavior === 'smooth' && scrollTarget.scrollTo) {
+              scrollTarget.scrollTo({ top: 0, behavior: 'smooth' });
+            } else {
+              scrollTarget.scrollTop = 0;
+            }
           } else {
             var preTop = preTopInContainer(pre, scrollTarget);
             var targetScrollTop = preTop + offsetWithinPre;
             if (scrollTarget.scrollHeight > scrollTarget.clientHeight + 1) {
-              scrollTarget.scrollTop = Math.max(0, targetScrollTop);
+              var nextScrollTop = Math.max(0, targetScrollTop);
+              if (scrollBehavior === 'smooth' && scrollTarget.scrollTo) {
+                scrollTarget.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
+              } else {
+                scrollTarget.scrollTop = nextScrollTop;
+              }
             }
           }
         }
@@ -223,25 +228,71 @@
       }
     }
 
-    function loadRange(startLine, endLine, anchorArg) {
-      if (state.isLoading) return;
-      state.isLoading = true;
-      
-      // Update UI: Show Loading and Disable Filter Button
+    function triggerReadySignal() {
       try {
-        var statusEl = document.getElementById('log-view-status-bar');
-        if (statusEl) {
-            statusEl.textContent = 'Loading';
-            statusEl.className = 'badge bg-warning text-dark ms-2';
-        }
-        var filterBtn = document.getElementById('execute-filter-btn');
-        if (filterBtn) {
-            filterBtn.disabled = true;
-            // Optionally change text or style to indicate disabled state visibly if needed
+        var signalBtn = document.getElementById('log-view-ready-signal-btn');
+        if (signalBtn) {
+          signalBtn.click();
         }
       } catch(e) {}
+    }
 
-      var payload = { session_id: sessionId, start_line: startLine, end_line: endLine };
+    function normalizeRange(startLine, endLine) {
+      var start = parseInt(startLine, 10);
+      var end = parseInt(endLine, 10);
+      if (!isFinite(start) || start < 1) start = 1;
+      if (!isFinite(end) || end < start) end = start;
+      var total = parseInt(state.totalLines || 0, 10) || 0;
+      if (total > 0) {
+        if (start > total) start = total;
+        if (end > total) end = total;
+        if (start < 1) start = 1;
+        if (end < start) end = start;
+      }
+      return { start: start, end: end };
+    }
+
+    function buildRequestKey(startLine, endLine) {
+      return [
+        parseInt(startLine, 10) || 1,
+        parseInt(endLine, 10) || 1,
+        state.highlightKeyword || ''
+      ].join('|');
+    }
+
+    function flushPendingRequest() {
+      if (state.isLoading || !state.pendingRequest) return;
+      var pending = state.pendingRequest;
+      state.pendingRequest = null;
+      requestRange(pending.startLine, pending.endLine, pending.anchorArg, pending.forceReload === true);
+    }
+
+    function requestRange(startLine, endLine, anchorArg, forceReload) {
+      var normalized = normalizeRange(startLine, endLine);
+      var requestKey = buildRequestKey(normalized.start, normalized.end);
+      if (state.isLoading) {
+        state.pendingRequest = {
+          startLine: normalized.start,
+          endLine: normalized.end,
+          anchorArg: anchorArg,
+          forceReload: forceReload === true
+        };
+        return;
+      }
+      if (!forceReload && requestKey === state.lastRequestKey && normalized.start === state.startLine && normalized.end === state.endLine) {
+        updateView({
+          success: true,
+          content: null,
+          start_line: state.startLine,
+          end_line: state.endLine,
+          total_lines: state.totalLines
+        }, anchorArg);
+        triggerReadySignal();
+        return;
+      }
+      state.isLoading = true;
+
+      var payload = { session_id: sessionId, start_line: normalized.start, end_line: normalized.end };
       if (state.highlightKeyword) {
         payload.highlight_keyword = state.highlightKeyword;
       }
@@ -251,31 +302,14 @@
       })
       .then(function(r){ return r.json(); })
       .then(function(data){
+        state.lastRequestKey = requestKey;
         updateView(data, anchorArg);
       })
       .catch(function(err){ console.error('[前端滚动窗口][assets] 请求异常:', err); })
       .finally(function(){ 
         state.isLoading = false; 
-        
-        // Update UI: Show Ready and Enable Filter Button
-        try {
-            var statusEl = document.getElementById('log-view-status-bar');
-            if (statusEl) {
-                statusEl.textContent = 'Ready';
-                statusEl.className = 'badge bg-success ms-2';
-            }
-            var filterBtn = document.getElementById('execute-filter-btn');
-            if (filterBtn) {
-                filterBtn.disabled = false;
-                filterBtn.classList.remove('btn-secondary');
-                filterBtn.classList.add('btn-success');
-            }
-            // Trigger Dash callback to sync state
-            var signalBtn = document.getElementById('log-view-ready-signal-btn');
-            if (signalBtn) {
-                signalBtn.click();
-            }
-        } catch(e) {}
+        triggerReadySignal();
+        flushPendingRequest();
       });
     }
 
@@ -301,35 +335,7 @@
       try { window.__savedCentersBySession[sessionId] = centerGlobal; } catch(e) {}
       updateStatusDisplay();
 
-      // 后端调试打印
-      try {
-        fetch('/api/scroll-debug', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            center_line: centerGlobal,
-            window_start: state.startLine,
-            window_end: state.endLine,
-            doc_scroll_top: currentScrollTop,
-            pre_top_in_doc: preTop,
-            top_px_in_pre: topPxInPre,
-            visible_lines: visibleLines,
-            line_height: lh
-          })
-        });
-      } catch(e) {}
-
-      // 计算当前滚动容器高度信息
       var margin = Math.min(prefetchThreshold, Math.floor(((state.endLine || 0) - (state.startLine || 0) + 1) / 3));
-      var scrollHeightNow = (scrollTarget === window) ? (function(){ var de=document.documentElement, db=document.body; return Math.max(de?de.scrollHeight:0, db?db.scrollHeight:0); })() : scrollTarget.scrollHeight;
-      var metrics = {
-        scrollTop: currentScrollTop,
-        clientHeight: viewportHeight,
-        scrollHeight: scrollHeightNow,
-        distanceToBottom: Math.max(0, scrollHeightNow - (currentScrollTop + viewportHeight))
-      };
-
-      // 若已完整加载（已加载行数 >= 总行数），则不触发窗口切换，避免“小文件”视图里滑块被自动回拉
       var loadedCountNow = Math.max(1, (state.endLine || 0) - (state.startLine || 0) + 1);
       var isFullyLoadedNow = (state.totalLines > 0) && (loadedCountNow >= state.totalLines);
 
@@ -340,21 +346,19 @@
           var ns = Math.max(1, centerGlobal - linesBefore);
           var ne = Math.min((state.totalLines || (ns + linesBefore + linesAfter)), centerGlobal + linesAfter);
           if (ne < ns) ne = ns + linesBefore + linesAfter; // fallback safety
-          // 保持底部滚动体验，默认以居中锚定
-          loadRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
+          requestRange(ns, ne, { centerLine: centerGlobal, ratio: ratio1 });
         } else if (centerGlobal < state.startLine + margin && state.startLine > 1) {
           var span2 = Math.max(1, (state.endLine || 0) - (state.startLine || 0));
           var ratio2 = Math.max(0, Math.min(1, (centerGlobal - (state.startLine || 1)) / span2));
           var ns2 = Math.max(1, centerGlobal - linesBefore);
           var ne2 = Math.min((state.totalLines || (ns2 + linesBefore + linesAfter)), centerGlobal + linesAfter);
           if (ne2 < ns2) ne2 = ns2 + linesBefore + linesAfter; // fallback safety
-          // 当用户处于容器顶部附近时，使用 'top' 模式对齐，避免自动回到底部
           var nearTopByContainer = currentScrollTop <= 2;
           var nearTopByPre = topPxInPre <= Math.max(1, Math.floor(lh / 2));
           var anchorOpts = nearTopByContainer || nearTopByPre
             ? { centerLine: centerGlobal, ratio: ratio2, mode: 'top' }
             : { centerLine: centerGlobal, ratio: ratio2 };
-          loadRange(ns2, ne2, anchorOpts);
+          requestRange(ns2, ne2, anchorOpts);
         }
       }
     }, 120);
@@ -400,27 +404,10 @@
       // skip the initial fetch, but update UI status.
       if (div.getAttribute('data-initial-loaded') === 'true') {
         console.log('[前端滚动窗口][assets] 检测到初始内容已加载，跳过首次fetch');
-        // Update UI status to ready immediately
-        try {
-            var statusEl = document.getElementById('log-view-status-bar');
-            if (statusEl) {
-                statusEl.textContent = 'Ready';
-                statusEl.className = 'badge bg-success ms-2';
-            }
-            var filterBtn = document.getElementById('execute-filter-btn');
-            if (filterBtn) {
-                filterBtn.disabled = false;
-                filterBtn.classList.remove('btn-secondary');
-                filterBtn.classList.add('btn-success');
-            }
-            // Trigger Dash callback to sync state
-            var signalBtn = document.getElementById('log-view-ready-signal-btn');
-            if (signalBtn) {
-                signalBtn.click();
-            }
-        } catch(e) {}
+        state.lastRequestKey = buildRequestKey(state.startLine, state.endLine);
+        triggerReadySignal();
       } else {
-        loadRange(state.startLine, state.endLine, { centerLine: initialCenter, mode: initialMode });
+        requestRange(state.startLine, state.endLine, { centerLine: initialCenter, mode: initialMode }, true);
       }
     } catch (e) {}
 
@@ -428,23 +415,47 @@
     try {
       window.__rollingRegistry = window.__rollingRegistry || {};
       window.__rollingRegistry[sessionId] = {
-        // Set temporary highlight keyword for search
-        setHighlightKeyword: function(kw) { state.highlightKeyword = kw; },
-        // Jump to make targetLine the visual center (within available bounds)
-        jumpToLine: function(targetLine) {
+        setHighlightKeyword: function(kw, options) {
+          var nextKeyword = kw ? String(kw) : null;
+          var changed = state.highlightKeyword !== nextKeyword;
+          state.highlightKeyword = nextKeyword;
+          if (changed && options && options.refresh === true) {
+            requestRange(state.startLine, state.endLine, { centerLine: state.centerLine || state.startLine }, true);
+          }
+        },
+        jumpToLine: function(targetLine, jumpOptions) {
           var tl = parseInt(targetLine, 10);
           if (!isFinite(tl)) return;
           if (tl < 1) tl = 1;
           var total = state.totalLines || (state.endLine || 0);
           if (total && tl > total) tl = total;
+          var anchorOptions = {
+            centerLine: tl,
+            behavior: jumpOptions && jumpOptions.behavior === 'smooth' ? 'smooth' : 'auto'
+          };
+          if (!state.isLoading && tl >= state.startLine && tl <= state.endLine) {
+            if (state.lastRequestKey !== buildRequestKey(state.startLine, state.endLine)) {
+              requestRange(state.startLine, state.endLine, anchorOptions, true);
+              return;
+            }
+            updateView({
+              success: true,
+              content: null,
+              start_line: state.startLine,
+              end_line: state.endLine,
+              total_lines: state.totalLines
+            }, anchorOptions);
+            return;
+          }
           var ns = Math.max(1, tl - linesBefore);
           var ne = Math.min(total || (ns + linesBefore + linesAfter), tl + linesAfter);
           if (ne < ns) ne = ns + linesBefore + linesAfter;
-          loadRange(ns, ne, { centerLine: tl });
+          requestRange(ns, ne, anchorOptions);
         },
-        // Current loaded window state (copy)
-        getState: function() { return { startLine: state.startLine, endLine: state.endLine, totalLines: state.totalLines, isLoading: state.isLoading }; },
-        // Rolling parameters
+        reloadCurrentWindow: function() {
+          requestRange(state.startLine, state.endLine, { centerLine: state.centerLine || state.startLine }, true);
+        },
+        getState: function() { return { startLine: state.startLine, endLine: state.endLine, totalLines: state.totalLines, isLoading: state.isLoading, centerLine: state.centerLine, highlightKeyword: state.highlightKeyword }; },
         getConfig: function() { return { linesBefore: linesBefore, linesAfter: linesAfter, prefetchThreshold: prefetchThreshold }; }
       };
     } catch(e) { console.warn('[前端滚动窗口][assets] 注册外部控制失败:', e); }
@@ -478,4 +489,3 @@
     bootstrap();
   }
 })();
-

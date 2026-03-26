@@ -91,6 +91,22 @@ jobs:
           & npm run pack:win *>&1 | Tee-Object -FilePath 'package-build.log'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify Windows bundled resources
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vendorRg = Join-Path $PWD 'vendor/ripgrep/windows-x64/rg.exe'
+          $packedRg = Join-Path $PWD 'dist/win-unpacked/resources/tools/rg/rg.exe'
+          $serverExe = Join-Path $PWD 'dist/log_filter_server.exe'
+          $serverPackedExe = Join-Path $PWD 'dist/win-unpacked/resources/python/log_filter_server.exe'
+          foreach ($target in @($vendorRg, $packedRg, $serverExe, $serverPackedExe)) {
+            if (-not (Test-Path $target)) {
+              Write-Error "Missing expected build output: $target"
+              exit 1
+            }
+          }
+          Get-Item $vendorRg, $packedRg, $serverExe, $serverPackedExe | Select-Object FullName, Length
+
       - name: Build desktop app on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -131,8 +147,8 @@ jobs:
           test "${#files[@]}" -gt 0
           ls -lh "${files[@]}"
 
-      - name: Upload debug logs
-        if: failure()
+      - name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}-debug-logs

@@ -61,6 +61,13 @@ function copyFile(source, target) {
   fs.copyFileSync(source, target)
 }
 
+function assertFileExists(target, label) {
+  if (!fs.existsSync(target)) {
+    console.error(`${label} 缺失: ${target}`)
+    process.exit(1)
+  }
+}
+
 function psQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`
 }
@@ -100,6 +107,12 @@ function prepareBundledRgWindows(dry) {
   }
 }
 
+function validateBundledRgWindows(dry) {
+  if (process.platform !== 'win32' || dry) return
+  const bundleDir = path.join(process.cwd(), 'vendor', 'ripgrep', 'windows-x64')
+  assertFileExists(path.join(bundleDir, 'rg.exe'), '打包前 ripgrep 可执行文件')
+}
+
 function buildBackend(platform, dry) {
   const args = buildPyArgs(platform)
   if (dry) { console.log(['pyinstaller'].concat(args).join(' ')); return }
@@ -107,7 +120,7 @@ function buildBackend(platform, dry) {
 }
 
 function buildFrontendMac(dry) { const args = ['--mac', 'dmg', 'zip']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
-function buildFrontendWin(dry) { const args = ['--win', 'nsis', '--x64']; if (dry) { prepareBundledRgWindows(true); console.log(['electron-builder'].concat(args).join(' ')); return } prepareBundledRgWindows(false); run('npx', ['electron-builder'].concat(args)) }
+function buildFrontendWin(dry) { const args = ['--win', 'nsis', '--x64']; if (dry) { prepareBundledRgWindows(true); console.log(['electron-builder'].concat(args).join(' ')); return } prepareBundledRgWindows(false); validateBundledRgWindows(false); run('npx', ['electron-builder'].concat(args)) }
 function buildFrontendLinux(dry) { const args = ['--linux', 'tar.gz']; if (dry) { console.log(['electron-builder'].concat(args).join(' ')); return } run('npx', ['electron-builder'].concat(args)) }
 
 function main() {

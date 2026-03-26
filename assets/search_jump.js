@@ -1,5 +1,14 @@
 // search_jump.js - wire keyword search and line jump controls to rolling window
 (function(){
+  var searchState = {
+    requestToken: 0,
+    busy: false,
+    cache: {},
+    cacheOrder: [],
+    cacheLimit: 40,
+    highlightTimer: null
+  };
+
   function isVisible(el) {
     if (!el) return false;
     var style = window.getComputedStyle(el);
@@ -34,6 +43,8 @@
       if (!reg) return null;
       var st = reg.getState();
       if (!st) return null;
+      var actualCenter = parseInt(st.centerLine || 0, 10);
+      if (actualCenter > 0) return actualCenter;
       var start = parseInt(st.startLine || 1, 10);
       var end = parseInt(st.endLine || start, 10);
       var center = Math.floor((start + end) / 2);
@@ -42,91 +53,168 @@
     } catch(e){ return null; }
   }
 
-  function handleSearchNext() {
+  function getActiveRegistry() {
     var div = getActiveLogWindow();
-    if (!div) { window.showToast && window.showToast('请先生成日志视图', 'warning'); return; }
+    if (!div) return null;
     var sessionId = getSessionId(div);
     var reg = (window.__rollingRegistry || {})[sessionId];
-    if (!sessionId || !reg) { window.showToast && window.showToast('滚动窗口未初始化', 'error'); return; }
+    if (!sessionId || !reg) return null;
+    return { div: div, sessionId: sessionId, reg: reg };
+  }
+
+  function makeCacheKey(sessionId, direction, keyword, fromLine) {
+    return [sessionId || '', direction || '', keyword || '', parseInt(fromLine || 0, 10) || 0].join('|');
+  }
+
+  function readCachedResult(sessionId, direction, keyword, fromLine) {
+    var key = makeCacheKey(sessionId, direction, keyword, fromLine);
+    return searchState.cache[key];
+  }
+
+  function writeCachedResult(sessionId, direction, keyword, fromLine, result) {
+    var key = makeCacheKey(sessionId, direction, keyword, fromLine);
+    if (!searchState.cache[key]) {
+      searchState.cacheOrder.push(key);
+      if (searchState.cacheOrder.length > searchState.cacheLimit) {
+        delete searchState.cache[searchState.cacheOrder.shift()];
+      }
+    }
+    searchState.cache[key] = result;
+  }
+
+  function applySearchHighlight(keyword, refresh) {
+    var active = getActiveRegistry();
+    if (!active) return;
+    if (!active.reg.setHighlightKeyword) return;
+    active.reg.setHighlightKeyword(keyword || null, { refresh: refresh === true });
+  }
+
+  function setSearchStatus(text, titleText) {
+    var el = document.getElementById('search-hit-status');
+    if (!el) return;
+    el.textContent = text || '( - / - )';
+    el.title = titleText || '';
+  }
+
+  function resetSearchStatus() {
+    setSearchStatus('( - / - )', '');
+  }
+
+  function updateSearchStatus(result, direction, keyword) {
+    var totalMatches = parseInt((result && result.total_matches) || 0, 10) || 0;
+    var matchIndex = parseInt((result && result.match_index) || 0, 10) || 0;
+    var cursorIndex = parseInt((result && result.cursor_match_index) || 0, 10) || 0;
+    var keywordText = keyword ? ('关键字: ' + keyword) : '';
+    if (totalMatches <= 0) {
+      setSearchStatus('( 0 / 0 )', keywordText);
+      return;
+    }
+    if (matchIndex > 0) {
+      setSearchStatus('( ' + matchIndex + ' / ' + totalMatches + ' )', keywordText + ' · 第 ' + matchIndex + ' 个命中');
+      return;
+    }
+    if (direction === 'prev') {
+      setSearchStatus('( 0 / ' + totalMatches + ' )', keywordText + ' · 已到第一个命中之前');
+      return;
+    }
+    setSearchStatus('( ' + cursorIndex + ' / ' + totalMatches + ' )', keywordText + ' · 已到最后一个命中之后');
+  }
+
+  function scheduleHighlightRefresh() {
+    if (searchState.highlightTimer) {
+      clearTimeout(searchState.highlightTimer);
+    }
+    searchState.highlightTimer = setTimeout(function(){
+      var input = document.getElementById('global-search-input');
+      var keyword = input ? String(input.value || '').trim() : '';
+      applySearchHighlight(keyword, true);
+      if (!keyword) {
+        resetSearchStatus();
+      } else {
+        setSearchStatus('( - / - )', '关键字: ' + keyword);
+      }
+    }, 180);
+  }
+
+  function performSearch(direction) {
+    var active = getActiveRegistry();
+    if (!active) { window.showToast && window.showToast('滚动窗口未初始化', 'error'); return; }
+    var sessionId = active.sessionId;
+    var reg = active.reg;
 
     var input = document.getElementById('global-search-input');
     var kw = input ? String(input.value || '').trim() : '';
     if (!kw) { window.showToast && window.showToast('请输入关键字', 'warning'); return; }
+    if (searchState.busy) { return; }
 
     var center = getCenterLine(sessionId) || 1;
-    var fromLine = center + 1;
+    var fromLine = direction === 'prev' ? Math.max(1, center) : (center + 1);
+    var endpoint = direction === 'prev' ? '/api/search-prev' : '/api/search-next';
+    var token = ++searchState.requestToken;
+    var cached = readCachedResult(sessionId, direction, kw, fromLine);
+    applySearchHighlight(kw, false);
+    if (cached) {
+      updateSearchStatus(cached, direction, kw);
+      if (cached.match_line && cached.match_line > 0) {
+        reg.jumpToLine(cached.match_line, { behavior: 'smooth' });
+        window.showToast && window.showToast('定位到第 ' + cached.match_line + ' 行', 'success', 2500);
+      } else {
+        window.showToast && window.showToast('未找到匹配项', 'info');
+      }
+      return;
+    }
+    searchState.busy = true;
 
-    fetch('/api/search-next', {
+    fetch(endpoint, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, keyword: kw, from_line: fromLine })
     })
     .then(function(r){ return r.json(); })
     .then(function(res){
+      if (token !== searchState.requestToken) return;
       if (!res || res.success !== true) {
+        resetSearchStatus();
         window.showToast && window.showToast('搜索失败: ' + (res && res.error ? res.error : '未知错误'), 'error');
         return;
       }
+      writeCachedResult(sessionId, direction, kw, fromLine, res);
+      updateSearchStatus(res, direction, kw);
       if (!res.match_line || res.match_line < 1) {
         window.showToast && window.showToast('未找到匹配项', 'info');
         return;
       }
-      if (reg.setHighlightKeyword) {
-        reg.setHighlightKeyword(kw);
-      }
-      reg.jumpToLine(res.match_line);
+      reg.jumpToLine(res.match_line, { behavior: 'smooth' });
       window.showToast && window.showToast('定位到第 ' + res.match_line + ' 行', 'success', 2500);
     })
-    .catch(function(err){ window.showToast && window.showToast('搜索异常: ' + err, 'error'); });
+    .catch(function(err){
+      if (token !== searchState.requestToken) return;
+      resetSearchStatus();
+      window.showToast && window.showToast('搜索异常: ' + err, 'error');
+    })
+    .finally(function(){
+      if (token === searchState.requestToken) {
+        searchState.busy = false;
+      }
+    });
+  }
+
+  function handleSearchNext() {
+    performSearch('next');
   }
 
   function handleSearchPrev() {
-    var div = getActiveLogWindow();
-    if (!div) { window.showToast && window.showToast('请先生成日志视图', 'warning'); return; }
-    var sessionId = getSessionId(div);
-    var reg = (window.__rollingRegistry || {})[sessionId];
-    if (!sessionId || !reg) { window.showToast && window.showToast('滚动窗口未初始化', 'error'); return; }
-
-    var input = document.getElementById('global-search-input');
-    var kw = input ? String(input.value || '').trim() : '';
-    if (!kw) { window.showToast && window.showToast('请输入关键字', 'warning'); return; }
-
-    var center = getCenterLine(sessionId) || 1;
-    var fromLine = Math.max(1, center); // 向上查找，从center之上开始（后端会用 fromLine-1 作为上界）
-
-    fetch('/api/search-prev', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, keyword: kw, from_line: fromLine })
-    })
-    .then(function(r){ return r.json(); })
-    .then(function(res){
-      if (!res || res.success !== true) {
-        window.showToast && window.showToast('搜索失败: ' + (res && res.error ? res.error : '未知错误'), 'error');
-        return;
-      }
-      if (!res.match_line || res.match_line < 1) {
-        window.showToast && window.showToast('未找到匹配项', 'info');
-        return;
-      }
-      if (reg.setHighlightKeyword) {
-        reg.setHighlightKeyword(kw);
-      }
-      reg.jumpToLine(res.match_line);
-      window.showToast && window.showToast('定位到第 ' + res.match_line + ' 行', 'success', 2500);
-    })
-    .catch(function(err){ window.showToast && window.showToast('搜索异常: ' + err, 'error'); });
+    performSearch('prev');
   }
 
   function handleJumpLine() {
-    var div = getActiveLogWindow();
-    if (!div) { window.showToast && window.showToast('请先生成日志视图', 'warning'); return; }
-    var sessionId = getSessionId(div);
-    var reg = (window.__rollingRegistry || {})[sessionId];
-    if (!sessionId || !reg) { window.showToast && window.showToast('滚动窗口未初始化', 'error'); return; }
+    var active = getActiveRegistry();
+    if (!active) { window.showToast && window.showToast('滚动窗口未初始化', 'error'); return; }
+    var reg = active.reg;
 
     var input = document.getElementById('jump-line-input');
     var val = input ? parseInt(input.value, 10) : NaN;
     if (!isFinite(val) || val < 1) { window.showToast && window.showToast('请输入有效的行号', 'warning'); return; }
-    reg.jumpToLine(val);
+    reg.jumpToLine(val, { behavior: 'smooth' });
   }
 
   function onKeyDown(e){
@@ -167,8 +255,6 @@
           if (!sessionId2 || !reg2) { var h2=(document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight||0; window.scrollTo && window.scrollTo(0,h2); return; }
           var st = reg2.getState ? reg2.getState() : null;
           var total = (st && parseInt(st.totalLines || 0, 10)) || 0;
-          var cfg = reg2.getConfig ? reg2.getConfig() : { linesAfter: 0 };
-          var linesAfter = parseInt((cfg && cfg.linesAfter) || 0, 10) || 0;
           if (!total || total < 1) {
             // fallback to current window end
             total = (st && parseInt(st.endLine || 1, 10)) || 1;
@@ -182,6 +268,8 @@
     var ji = document.getElementById('jump-line-input');
     si && si.addEventListener('keydown', onKeyDown);
     ji && ji.addEventListener('keydown', onKeyDown);
+    si && si.addEventListener('input', scheduleHighlightRefresh);
+    resetSearchStatus();
 
     // also observe DOM changes to rebind keydown if inputs re-render
     var obs = new MutationObserver(function(){
@@ -189,6 +277,7 @@
       var ji2 = document.getElementById('jump-line-input');
       si2 && si2.removeEventListener && si2.addEventListener('keydown', onKeyDown);
       ji2 && ji2.removeEventListener && ji2.addEventListener('keydown', onKeyDown);
+      si2 && si2.addEventListener('input', scheduleHighlightRefresh);
     });
     obs.observe(document.body, { childList: true, subtree: true });
   }
