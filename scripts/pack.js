@@ -10,8 +10,8 @@ const RG_LICENSE_FILES = ['LICENSE-MIT', 'UNLICENSE']
 
 function sepForPlatform(p) { return p === 'win32' ? ';' : ':' }
 
-function buildPyArgs(platform) {
-  const sep = sepForPlatform(platform)
+function buildPyArgs() {
+  const sep = sepForPlatform(process.platform)
   const addData = [
     `assets${sep}assets`,
     `configs${sep}configs`,
@@ -114,7 +114,7 @@ function validateBundledRgWindows(dry) {
 }
 
 function buildBackend(platform, dry) {
-  const args = buildPyArgs(platform)
+  const args = buildPyArgs()
   if (dry) { console.log(['pyinstaller'].concat(args).join(' ')); return }
   if (exists('pyinstaller')) { run('pyinstaller', args) } else { run('python', ['-m', 'PyInstaller'].concat(args)) }
 }
