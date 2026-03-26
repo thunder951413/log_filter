@@ -48,6 +48,59 @@ python app.py
 http://127.0.0.1:8052
 ```
 
+### 用 pake 打包（快速生成桌面壳）
+
+这种方式适合本地快速把 `http://127.0.0.1:8052` 打成一个可执行桌面壳（壳本身不包含后端，运行时仍需要本地后端服务）。
+
+安装 pake：
+
+```bash
+# macOS
+brew install pake
+
+# Linux
+cargo install pake-cli
+```
+
+```cmd
+REM Windows
+winget install tw93.pake
+```
+
+打包步骤：
+
+```bash
+# 终端 1：启动后端
+python app.py
+
+# 终端 2：打包桌面壳
+pake http://127.0.0.1:8052 --name LogFilter
+```
+
+产物：
+
+- macOS：`LogFilter.app`
+- Windows：`LogFilter.exe`
+- Linux：`LogFilter`
+
+如果你希望用脚本一键启动后端 + 桌面壳，把产物放到脚本可搜索的位置后运行：
+
+- macOS：项目根目录 / `~/Applications/` / `/Applications/`
+- Windows：项目根目录 / `%LOCALAPPDATA%\\Programs\\LogFilter\\` / 桌面
+- Linux：项目根目录 / `~/.local/bin/`
+
+然后执行：
+
+```bash
+python start_app.py
+```
+
+或（Windows）：
+
+```cmd
+start_app.bat
+```
+
 ## 核心能力
 
 ### 日志分析
