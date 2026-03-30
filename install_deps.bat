@@ -47,28 +47,9 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo [成功] 依赖安装完成！
-echo.
-
-echo [检查] 检查是否需要安装 pake...
-pake --version >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo [成功] pake 已安装
-    pake --version
-    echo.
-    echo [提示] 如果需要重新打包应用，请运行：
-    echo [命令] pake http://localhost:8052 --name LogFilter
-) else (
-    echo [信息] pake 未安装
-    echo [提示] 如果需要打包应用，请先安装 pake：
-    echo [命令] winget install tw93.pake
-    echo [下载] https://github.com/tw93/pake
-)
-
-echo.
 echo =================================================
 echo [完成] 所有依赖已安装完成！
-echo [完成] 现在可以运行 start_app.bat 启动应用
+echo [完成] 现在可以运行 python app.py 启动应用
 echo =================================================
 echo.
 

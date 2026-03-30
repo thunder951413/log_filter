@@ -42,18 +42,6 @@
 4. 将 `LogFilter.app` 拖到 `应用程序` 文件夹
 5. 双击运行 `LogFilter.app`
 
-#### 方法 2：使用启动脚本（推荐）
-
-1. 确保已安装 Python 3.10+
-2. 安装依赖：
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. 运行启动脚本：
-   ```bash
-   python start_app.py
-   ```
-
 ### Windows 用户
 
 #### 前置条件
@@ -73,13 +61,6 @@
 2. 下载 `LogFilter-Windows.zip`
 3. 解压文件
 4. 双击运行 `LogFilter.exe`
-
-#### 方法 2：使用启动脚本（推荐）
-
-1. 运行启动脚本：
-   ```cmd
-   start_app.bat
-   ```
 
 ### Linux 用户
 
@@ -109,55 +90,9 @@
    ./LogFilter
    ```
 
-#### 方法 2：使用启动脚本（推荐）
-
-1. 运行启动脚本：
-   ```bash
-   python3 start_app.py
-   ```
-
 ## 开发者指南
 
-### 本地构建
 
-#### macOS
-
-```bash
-# 1. 安装 pake
-brew install pake
-
-# 2. 启动后端
-python app.py
-
-# 3. 打包应用
-pake http://localhost:8052 --name LogFilter
-```
-
-#### Windows
-
-```cmd
-REM 1. 安装 pake
-winget install tw93.pake
-
-REM 2. 启动后端
-python app.py
-
-REM 3. 打包应用
-pake http://localhost:8052 --name LogFilter
-```
-
-#### Linux
-
-```bash
-# 1. 安装 pake
-cargo install pake-cli
-
-# 2. 启动后端
-python3 app.py
-
-# 3. 打包应用
-pake http://localhost:8052 --name LogFilter
-```
 
 ### 使用 GitHub Actions 构建
 
@@ -184,14 +119,6 @@ git push origin v1.0.0
 2. **GitHub Actions Artifacts**：每次构建的产物（保留 90 天）
 
 ## 文件说明
-
-### 启动脚本
-
-| 文件 | 平台 | 说明 |
-|------|------|------|
-| start_app.py | 跨平台 | Python 启动脚本（推荐） |
-| start_app.bat | Windows | Windows 批处理启动脚本 |
-| install_deps.bat | Windows | Windows 依赖安装脚本 |
 
 ### 配置文件
 
