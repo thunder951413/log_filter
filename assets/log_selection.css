@@ -1,0 +1,58 @@
+/* Log line selection styles for AI analysis */
+
+.log-line-wrap {
+    display: flex;
+    align-items: flex-start;
+    min-height: 1em;
+    line-height: inherit;
+    padding: 0 4px;
+    border-left: 3px solid transparent;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.log-line-wrap:hover {
+    background-color: rgba(33, 150, 243, 0.08);
+}
+
+.log-line-selected {
+    background-color: rgba(33, 150, 243, 0.15) !important;
+    border-left-color: #2196F3 !important;
+}
+
+.log-line-num {
+    display: inline-block;
+    min-width: 50px;
+    padding-right: 8px;
+    text-align: right;
+    color: #999;
+    font-size: 0.85em;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.log-line-selected .log-line-num {
+    color: #2196F3;
+    font-weight: bold;
+}
+
+.log-line-content {
+    flex: 1;
+    white-space: pre;
+}
+
+/* Selection mode indicator */
+.selection-mode-active div[id^="log-window-"] pre {
+    cursor: crosshair !important;
+}
+
+/* Selection count badge */
+.selected-lines-count {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    background-color: #2196F3;
+    color: white;
+}

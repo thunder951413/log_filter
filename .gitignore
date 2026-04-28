@@ -16,3 +16,5 @@ start_app.log
 runtime_logs/
 vendor/ripgrep/windows-x64/
 *.app
+._*
+*pyc

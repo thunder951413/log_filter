@@ -19,6 +19,8 @@ import zipfile
 from bisect import bisect_left
 from datetime import datetime
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # 预编译正则模式，避免在循环中重复编译
 LOG_PREFIX_PATTERNS = [
     re.compile(r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+\d+\s+\d+\s+[A-Z]\s+\w+\s*:\s*'),
@@ -555,6 +557,19 @@ CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
 TEMP_KEYWORDS_FILE = os.path.join(os.getcwd(), 'temp_keywords.json')
 # 外部程序配置
 EXTERNAL_PROGRAM_CONFIG_FILE = os.path.join(os.getcwd(), 'external_program_config.json')
+# LLM 分析配置
+LLM_CONFIG_FILE = os.path.join(os.getcwd(), 'llm_config.json')
+FREE_CODE_DEFAULT_ROOT = PROJECT_DIR  # bridge 和 cli 现在都放在 log_filter 目录下
+FREE_CODE_CHAT_API_PREFIX = '/api/free-code'
+FREE_CODE_DEFAULT_CWD = os.path.abspath(
+    os.environ.get('LOG_FILTER_FREE_CODE_CWD') or PROJECT_DIR
+)
+FREE_CODE_CHAT_TIMEOUT = float(os.environ.get('LOG_FILTER_FREE_CODE_TIMEOUT', '180'))
+FREE_CODE_CHAT_EXTRA_ARGS = [
+    arg.strip()
+    for arg in os.environ.get('LOG_FILTER_FREE_CODE_ARGS', '').split()
+    if arg.strip()
+]
 
 # 日志文件目录
 LOG_DIR = 'logs'
@@ -564,24 +579,260 @@ TEMP_DIR = 'temp'
 
 # ... (existing code)
 
-# 外部程序配置管理
-def load_external_program_config():
-    if os.path.exists(EXTERNAL_PROGRAM_CONFIG_FILE):
+# 通用 JSON 配置文件读写
+def _load_json_config(file_path, default=None):
+    """读取 JSON 配置文件，失败返回 default"""
+    if os.path.exists(file_path):
         try:
-            with open(EXTERNAL_PROGRAM_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Loading external program config failed: {e}")
-    return {"path": ""}
+            print(f"Loading config failed ({file_path}): {e}")
+    return default if default is not None else {}
 
-def save_external_program_config(path):
+def _save_json_config(file_path, data):
+    """保存 JSON 配置文件，返回是否成功"""
     try:
-        with open(EXTERNAL_PROGRAM_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({"path": str(path or "").strip()}, f, ensure_ascii=False, indent=2)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
-        print(f"Saving external program config failed: {e}")
+        print(f"Saving config failed ({file_path}): {e}")
         return False
+
+# 外部程序配置管理
+def load_external_program_config():
+    return _load_json_config(EXTERNAL_PROGRAM_CONFIG_FILE, default={"path": ""})
+
+def save_external_program_config(path):
+    return _save_json_config(EXTERNAL_PROGRAM_CONFIG_FILE, {"path": str(path or "").strip()})
+
+# LLM 分析配置管理
+_LLM_CONFIG_DEFAULT = {
+    "api_base": "",
+    "api_key": "",
+    "model": "",
+    "max_tokens": 4096,
+    "temperature": 0.2,
+    "max_iterations": 10,
+    "max_total_tokens": 32768,
+    "source_code_dirs": []
+}
+
+def load_llm_config():
+    """加载 LLM 配置，缺失字段用默认值填充"""
+    saved = _load_json_config(LLM_CONFIG_FILE, default={})
+    merged = dict(_LLM_CONFIG_DEFAULT)
+    merged.update(saved)
+    return merged
+
+def save_llm_config(config):
+    """保存 LLM 配置"""
+    # 只保留已知字段，避免写入无关数据
+    cleaned = {k: config.get(k, _LLM_CONFIG_DEFAULT.get(k)) for k in _LLM_CONFIG_DEFAULT}
+    return _save_json_config(LLM_CONFIG_FILE, cleaned)
+
+def mask_api_key(key):
+    """API Key 脱敏：仅显示末4位"""
+    if not key or len(key) <= 4:
+        return "****" if key else ""
+    return "*" * (len(key) - 4) + key[-4:]
+
+
+def _normalize_free_code_extra_args(extra_args):
+    """归一化 free-code CLI 额外参数配置"""
+    if isinstance(extra_args, str):
+        values = extra_args.split()
+    elif isinstance(extra_args, (list, tuple)):
+        values = extra_args
+    else:
+        values = []
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _allow_free_code_tools(event):
+    """自动放行工具权限请求，便于本地日志分析使用"""
+    request = event.get("request") or {}
+    if request.get("subtype") != "can_use_tool":
+        return None
+    return {
+        "behavior": "allow",
+        "updatedInput": request.get("input", {}),
+    }
+
+
+_free_code_bridges = {}
+_free_code_bridge_lock = threading.Lock()
+
+
+def _normalize_free_code_cwd(cwd_value=None):
+    """规范化 free-code 工作目录，允许前端动态传入。"""
+    raw_cwd = cwd_value
+    if raw_cwd is None or str(raw_cwd).strip() == "":
+        raw_cwd = FREE_CODE_DEFAULT_CWD
+
+    normalized = os.path.abspath(os.path.expanduser(str(raw_cwd).strip()))
+    if not os.path.isdir(normalized):
+        raise RuntimeError(f"free-code 工作目录不存在: {normalized}")
+    return normalized
+
+
+def _get_free_code_runtime_config(cwd_value=None):
+    """解析 free-code 运行时配置，便于按不同 cwd 复用 bridge。"""
+    free_code_root = os.path.abspath(
+        os.environ.get('LOG_FILTER_FREE_CODE_ROOT') or FREE_CODE_DEFAULT_ROOT
+    )
+    # bridge 文件现在放在 freecode_bridge 子目录下
+    python_bridge_dir = os.path.join(free_code_root, 'freecode_bridge')
+    if not os.path.isdir(python_bridge_dir):
+        raise RuntimeError(
+            f"未找到 free-code Python bridge 目录: {python_bridge_dir}"
+        )
+
+    if python_bridge_dir not in sys.path:
+        sys.path.insert(0, python_bridge_dir)
+
+    try:
+        from web_bridge import FreeCodeWebBridge
+    except ImportError as exc:
+        raise RuntimeError(
+            f"导入 free-code bridge 失败，请确认目录有效: {python_bridge_dir}"
+        ) from exc
+
+    cli_path = os.environ.get('LOG_FILTER_FREE_CODE_CLI') or None
+    # cli 现在放在 freecode-cli（或 free-code/cli）
+    if not cli_path:
+        for cli_name in ['freecode-cli', 'free-code/cli', 'cli']:
+            candidate = os.path.join(free_code_root, cli_name)
+            if os.path.isfile(candidate):
+                cli_path = candidate
+                break
+
+    cli_cwd = _normalize_free_code_cwd(cwd_value)
+    extra_args = _normalize_free_code_extra_args(FREE_CODE_CHAT_EXTRA_ARGS)
+
+    return {
+        "bridge_cls": FreeCodeWebBridge,
+        "free_code_root": free_code_root,
+        "python_bridge_dir": python_bridge_dir,
+        "cli_path": cli_path,
+        "cwd": cli_cwd,
+        "extra_args": extra_args,
+    }
+
+
+def _resolve_free_code_bridge(cwd_value=None):
+    """延迟加载 free-code bridge，并按工作目录缓存独立实例。"""
+    runtime = _get_free_code_runtime_config(cwd_value)
+    bridge_key = (
+        runtime["cli_path"] or "",
+        runtime["cwd"],
+        tuple(runtime["extra_args"]),
+    )
+
+    with _free_code_bridge_lock:
+        bridge = _free_code_bridges.get(bridge_key)
+        if bridge is None:
+            bridge = runtime["bridge_cls"](
+                cli_path=runtime["cli_path"],
+                cwd=runtime["cwd"],
+                extra_args=runtime["extra_args"],
+                auto_permission_handler=_allow_free_code_tools,
+            )
+            _free_code_bridges[bridge_key] = bridge
+        return bridge
+
+
+def _close_free_code_session_everywhere(session_id):
+    """关闭指定 session，不要求调用方知道它最初绑定的 cwd。"""
+    with _free_code_bridge_lock:
+        bridges = list(_free_code_bridges.values())
+
+    for bridge in bridges:
+        try:
+            bridge.get_session(session_id)
+        except KeyError:
+            continue
+        bridge.close_session(session_id)
+        return True
+    return False
+
+
+def _build_free_code_chat_message(message, attachments, analysis_context=None):
+    """把日志附件拼入用户消息，交给 free-code 做统一分析"""
+    user_message = str(message or "").strip()
+    if not user_message:
+        raise ValueError("message must be a non-empty string")
+
+    normalized_attachments = []
+    if isinstance(attachments, list):
+        for index, item in enumerate(attachments, start=1):
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+                label = str(item.get("label") or f"日志片段 {index}").strip()
+            else:
+                text = str(item or "").strip()
+                label = f"日志片段 {index}"
+            if text:
+                normalized_attachments.append((label, text))
+
+    sections = [user_message]
+    if isinstance(analysis_context, dict) and analysis_context:
+        config_group = str(analysis_context.get("config_group") or "").strip()
+        display_mode = str(analysis_context.get("display_mode") or "filtered").strip() or "filtered"
+        mode_label = "过滤结果" if display_mode == "filtered" else "源文件"
+        skill_name = str(analysis_context.get("skill_name") or "").strip()
+        config_files = analysis_context.get("config_files") or []
+        if not isinstance(config_files, list):
+            config_files = []
+        sections.extend([
+            "",
+            "以下是来自 log_filter 的分析上下文：",
+            "",
+            f"- 当前视图: {mode_label}",
+            f"- 配置文件组: {config_group or '未提供'}",
+            f"- 对应 skill 名称: {skill_name or '未提供'}",
+            f"- 日志文件: {str(analysis_context.get('selected_log_file') or '').strip() or '未提供'}",
+            f"- 选中行数: {analysis_context.get('selected_line_count') or 0}",
+        ])
+        if config_files:
+            sections.append(f"- 关联配置文件: {', '.join(str(item) for item in config_files)}")
+        if display_mode == "filtered":
+            sections.append("- 说明: 当前选中的日志来自过滤结果 tab，已经经过该配置组过滤。")
+        if skill_name:
+            sections.append(f"- 要求: 分析前优先调用名为 `{skill_name}` 的 skill。")
+
+    if not normalized_attachments:
+        return "\n".join(sections).strip()
+
+    sections.extend(["", "以下是来自 log_filter 的附加日志片段，请结合上下文一起分析：", ""])
+    for label, text in normalized_attachments:
+        sections.append(f"## {label}")
+        sections.append(text)
+        sections.append("")
+    return "\n".join(sections).strip()
+
+
+def extract_text_from_chat_event(event):
+    if not isinstance(event, dict):
+        return ""
+    if event.get("type") == "assistant_partial":
+        return str(event.get("delta") or "")
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = str(block.get("text") or "")
+            if text:
+                parts.append(text)
+    return "".join(parts)
 
 def ensure_temp_dir():
     """确保临时目录存在"""
@@ -647,6 +898,497 @@ def save_config_groups(groups):
     except Exception as e:
         print(f"保存配置文件组失败: {e}")
         return False
+
+
+FREE_CODE_PROJECT_SKILLS_DIR = os.path.join(
+    FREE_CODE_DEFAULT_ROOT,
+    ".freecode",
+    "skill",
+)
+LOG_FILTER_SKILL_PREFIX = "log-filter-group"
+SKILL_DRAFT_FILENAME = "draft.md"
+SKILL_METADATA_FILENAME = "metadata.json"
+SKILL_CONFIG_START_MARKER = "<!-- LOG_FILTER_CONFIG_FILES_START -->"
+SKILL_CONFIG_END_MARKER = "<!-- LOG_FILTER_CONFIG_FILES_END -->"
+SKILL_OBSERVATION_START_MARKER = "<!-- LOG_FILTER_OBSERVATIONS_START -->"
+SKILL_OBSERVATION_END_MARKER = "<!-- LOG_FILTER_OBSERVATIONS_END -->"
+SKILL_MAX_AUTO_OBSERVATIONS = 8
+SKILL_ANALYSIS_EXCERPT_LIMIT = 1800
+LOG_SELECTION_MAX_LINES = 200
+
+
+def ensure_free_code_project_skills_dir():
+    os.makedirs(FREE_CODE_PROJECT_SKILLS_DIR, exist_ok=True)
+
+
+def _slugify_ascii(text):
+    normalized = str(text or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+    return normalized or "group"
+
+
+def get_config_group_skill_name(group_name):
+    raw_name = str(group_name or "").strip()
+    if not raw_name:
+        raise ValueError("配置文件组名称不能为空")
+    slug = _slugify_ascii(raw_name)
+    digest = hashlib.sha1(raw_name.encode("utf-8")).hexdigest()[:8]
+    return f"{LOG_FILTER_SKILL_PREFIX}-{slug}-{digest}"
+
+
+def get_config_group_skill_dir(group_name):
+    ensure_free_code_project_skills_dir()
+    return os.path.join(FREE_CODE_PROJECT_SKILLS_DIR, get_config_group_skill_name(group_name))
+
+
+def get_config_group_skill_paths(group_name):
+    skill_dir = get_config_group_skill_dir(group_name)
+    return {
+        "skill_dir": skill_dir,
+        "skill_md": os.path.join(skill_dir, "SKILL.md"),
+        "draft_md": os.path.join(skill_dir, SKILL_DRAFT_FILENAME),
+        "metadata_json": os.path.join(skill_dir, SKILL_METADATA_FILENAME),
+    }
+
+
+def _render_skill_config_files_markdown(config_files):
+    values = [str(item).strip() for item in (config_files or []) if str(item).strip()]
+    if not values:
+        return "- 暂无关联配置文件"
+    return "\n".join(f"- `{item}`" for item in values)
+
+
+def _trim_analysis_excerpt(text, limit=SKILL_ANALYSIS_EXCERPT_LIMIT):
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n...[截断]"
+
+
+def _normalize_observation_entry(item):
+    if not isinstance(item, dict):
+        return None
+    updated_at = str(item.get("updated_at") or "").strip() or datetime.now().isoformat()
+    display_mode = str(item.get("display_mode") or "").strip() or "filtered"
+    line_count = item.get("selected_line_count")
+    try:
+        line_count = int(line_count or 0)
+    except (TypeError, ValueError):
+        line_count = 0
+    line_numbers = item.get("selected_lines") or []
+    if not isinstance(line_numbers, list):
+        line_numbers = []
+    normalized_lines = []
+    for value in line_numbers[:30]:
+        try:
+            normalized_lines.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "updated_at": updated_at,
+        "display_mode": display_mode,
+        "selected_log_file": str(item.get("selected_log_file") or "").strip(),
+        "selected_line_count": line_count,
+        "selected_lines": normalized_lines,
+        "analysis_excerpt": _trim_analysis_excerpt(item.get("analysis_excerpt") or ""),
+    }
+
+
+def _render_skill_observations_markdown(observations):
+    normalized = []
+    for item in observations or []:
+        entry = _normalize_observation_entry(item)
+        if entry:
+            normalized.append(entry)
+    if not normalized:
+        return "- 暂无自动沉淀观察"
+
+    chunks = []
+    for entry in normalized[:SKILL_MAX_AUTO_OBSERVATIONS]:
+        display_mode = "过滤结果" if entry["display_mode"] == "filtered" else "源文件"
+        line_numbers = ", ".join(str(v) for v in entry["selected_lines"][:12]) or "未记录"
+        chunks.extend([
+            f"### {entry['updated_at']}",
+            f"- 视图来源: {display_mode}",
+            f"- 日志文件: `{entry['selected_log_file'] or '未知日志'}`",
+            f"- 选中行数: {entry['selected_line_count']}",
+            f"- 行号: {line_numbers}",
+            "- 分析摘要:",
+            "",
+            "```text",
+            entry["analysis_excerpt"] or "无摘要",
+            "```",
+            "",
+        ])
+    return "\n".join(chunks).strip()
+
+
+def _replace_marked_section(content, start_marker, end_marker, body, fallback_title):
+    text = str(content or "").rstrip()
+    body_text = str(body or "").strip()
+    replacement = f"{start_marker}\n{body_text}\n{end_marker}"
+    if start_marker in text and end_marker in text:
+        pattern = re.compile(
+            re.escape(start_marker) + r"[\s\S]*?" + re.escape(end_marker),
+            re.MULTILINE,
+        )
+        return pattern.sub(replacement, text, count=1)
+
+    appendix = f"\n\n## {fallback_title}\n{replacement}"
+    return (text + appendix).strip()
+
+
+def _build_default_skill_content(group_name, skill_name, config_files):
+    config_block = _render_skill_config_files_markdown(config_files)
+    observation_block = _render_skill_observations_markdown([])
+    return (
+        f"---\n"
+        f"name: {skill_name}\n"
+        f"description: 分析来自 log_filter 配置组“{group_name}”的日志，并持续沉淀复用经验。\n"
+        f"---\n\n"
+        f"# 配置组技能：{group_name}\n\n"
+        f"这个 skill 服务于 log_filter 中的配置文件组 `{group_name}`，用于分析该组相关日志并沉淀稳定结论。\n\n"
+        f"## 使用方式\n"
+        f"- 当上下文表明日志来自配置组 `{group_name}` 时优先使用本 skill。\n"
+        f"- 如果当前视图是“过滤结果”，表示日志已经过该配置组过滤，需要按过滤后的上下文理解问题。\n"
+        f"- 输出时给出问题定位、证据链、风险判断和下一步建议。\n\n"
+        f"## 关联配置文件\n"
+        f"{SKILL_CONFIG_START_MARKER}\n"
+        f"{config_block}\n"
+        f"{SKILL_CONFIG_END_MARKER}\n\n"
+        f"## 分析准则\n"
+        f"1. 先识别当前日志是过滤结果还是源文件视图。\n"
+        f"2. 结合配置组关联的配置文件理解过滤条件与关注点。\n"
+        f"3. 提炼可复用的模式、误报特征和排查路径。\n"
+        f"4. 把新增经验沉淀到“自动沉淀观察”或补充到上方规则中。\n\n"
+        f"## 领域知识\n"
+        f"- 在这里维护该配置组的稳定规则、常见模块关系和故障模式。\n\n"
+        f"## 自动沉淀观察\n"
+        f"{SKILL_OBSERVATION_START_MARKER}\n"
+        f"{observation_block}\n"
+        f"{SKILL_OBSERVATION_END_MARKER}\n"
+    )
+
+
+def _apply_managed_skill_sections(content, group_name, skill_name, config_files, observations):
+    text = str(content or "").strip()
+    if not text:
+        text = _build_default_skill_content(group_name, skill_name, config_files)
+    text = _replace_marked_section(
+        text,
+        SKILL_CONFIG_START_MARKER,
+        SKILL_CONFIG_END_MARKER,
+        _render_skill_config_files_markdown(config_files),
+        "关联配置文件",
+    )
+    text = _replace_marked_section(
+        text,
+        SKILL_OBSERVATION_START_MARKER,
+        SKILL_OBSERVATION_END_MARKER,
+        _render_skill_observations_markdown(observations),
+        "自动沉淀观察",
+    )
+    return text.rstrip() + "\n"
+
+
+def _read_text_file_if_exists(file_path):
+    if not os.path.exists(file_path):
+        return ""
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _save_skill_metadata(file_path, metadata):
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+
+def load_config_group_skill_bundle(group_name):
+    group_name = str(group_name or "").strip()
+    if not group_name:
+        raise ValueError("配置文件组名称不能为空")
+
+    paths = get_config_group_skill_paths(group_name)
+    config_groups = load_config_groups()
+    config_files = config_groups.get(group_name, [])
+    skill_name = get_config_group_skill_name(group_name)
+    metadata = _load_json_config(paths["metadata_json"], default={}) or {}
+    observations = metadata.get("observations") or []
+    normalized_observations = []
+    for item in observations:
+        entry = _normalize_observation_entry(item)
+        if entry:
+            normalized_observations.append(entry)
+
+    published_exists = os.path.exists(paths["skill_md"])
+    draft_exists = os.path.exists(paths["draft_md"])
+    published_content = _read_text_file_if_exists(paths["skill_md"])
+    draft_content = _read_text_file_if_exists(paths["draft_md"]) or published_content
+
+    published_content = _apply_managed_skill_sections(
+        published_content,
+        group_name,
+        skill_name,
+        config_files,
+        normalized_observations,
+    )
+    draft_content = _apply_managed_skill_sections(
+        draft_content,
+        group_name,
+        skill_name,
+        config_files,
+        normalized_observations,
+    )
+
+    now_iso = datetime.now().isoformat()
+    metadata.setdefault("config_group", group_name)
+    metadata.setdefault("skill_name", skill_name)
+    metadata.setdefault("created_at", now_iso)
+    metadata["config_files"] = config_files
+    metadata["observations"] = normalized_observations[:SKILL_MAX_AUTO_OBSERVATIONS]
+    metadata["observation_count"] = len(metadata["observations"])
+    metadata.setdefault("updated_at", now_iso)
+    metadata.setdefault("draft_updated_at", metadata["updated_at"])
+    metadata.setdefault("published_at", metadata["updated_at"] if published_exists else "")
+    metadata.setdefault("last_analysis_at", "")
+
+    return {
+        "group_name": group_name,
+        "skill_name": skill_name,
+        "paths": paths,
+        "config_files": config_files,
+        "metadata": metadata,
+        "published_exists": published_exists,
+        "draft_exists": draft_exists,
+        "published_content": published_content,
+        "draft_content": draft_content,
+        "has_unpublished_changes": draft_content.strip() != published_content.strip(),
+    }
+
+
+def save_config_group_skill_content(group_name, content, publish=False):
+    bundle = load_config_group_skill_bundle(group_name)
+    paths = bundle["paths"]
+    os.makedirs(paths["skill_dir"], exist_ok=True)
+
+    now_iso = datetime.now().isoformat()
+    normalized_content = _apply_managed_skill_sections(
+        content,
+        bundle["group_name"],
+        bundle["skill_name"],
+        bundle["config_files"],
+        bundle["metadata"].get("observations") or [],
+    )
+    with open(paths["draft_md"], "w", encoding="utf-8") as f:
+        f.write(normalized_content)
+
+    metadata = dict(bundle["metadata"])
+    metadata["updated_at"] = now_iso
+    metadata["draft_updated_at"] = now_iso
+    if publish:
+        with open(paths["skill_md"], "w", encoding="utf-8") as f:
+            f.write(normalized_content)
+        metadata["published_at"] = now_iso
+
+    _save_skill_metadata(paths["metadata_json"], metadata)
+    return load_config_group_skill_bundle(group_name)
+
+
+def auto_update_config_group_skill(group_name, analysis_context, analysis_text):
+    group_name = str(group_name or "").strip()
+    analysis_excerpt = _trim_analysis_excerpt(analysis_text)
+    if not group_name or not analysis_excerpt:
+        return None
+
+    bundle = load_config_group_skill_bundle(group_name)
+    metadata = dict(bundle["metadata"])
+    observations = list(metadata.get("observations") or [])
+    now_iso = datetime.now().isoformat()
+    selected_lines = analysis_context.get("selected_lines") if isinstance(analysis_context, dict) else []
+    if not isinstance(selected_lines, list):
+        selected_lines = []
+    normalized_lines = []
+    for value in selected_lines[:30]:
+        try:
+            normalized_lines.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    observations.insert(0, {
+        "updated_at": now_iso,
+        "display_mode": str((analysis_context or {}).get("display_mode") or "filtered"),
+        "selected_log_file": str((analysis_context or {}).get("selected_log_file") or "").strip(),
+        "selected_line_count": len(normalized_lines),
+        "selected_lines": normalized_lines,
+        "analysis_excerpt": analysis_excerpt,
+    })
+    metadata["observations"] = observations[:SKILL_MAX_AUTO_OBSERVATIONS]
+    metadata["observation_count"] = len(metadata["observations"])
+    metadata["updated_at"] = now_iso
+    metadata["draft_updated_at"] = now_iso
+    metadata["published_at"] = now_iso
+    metadata["last_analysis_at"] = now_iso
+
+    paths = bundle["paths"]
+    os.makedirs(paths["skill_dir"], exist_ok=True)
+    base_content = bundle["draft_content"] or bundle["published_content"]
+    updated_content = _apply_managed_skill_sections(
+        base_content,
+        bundle["group_name"],
+        bundle["skill_name"],
+        bundle["config_files"],
+        metadata["observations"],
+    )
+    with open(paths["draft_md"], "w", encoding="utf-8") as f:
+        f.write(updated_content)
+    with open(paths["skill_md"], "w", encoding="utf-8") as f:
+        f.write(updated_content)
+    _save_skill_metadata(paths["metadata_json"], metadata)
+    return load_config_group_skill_bundle(group_name)
+
+
+def _normalize_selected_line_numbers(line_numbers, *, max_count=LOG_SELECTION_MAX_LINES):
+    if not isinstance(line_numbers, list):
+        return []
+    normalized = []
+    seen = set()
+    for value in line_numbers:
+        try:
+            line_no = int(value)
+        except (TypeError, ValueError):
+            continue
+        if line_no <= 0 or line_no in seen:
+            continue
+        seen.add(line_no)
+        normalized.append(line_no)
+        if len(normalized) >= max_count:
+            break
+    normalized.sort()
+    return normalized
+
+
+def read_selected_lines_from_source_log(selected_log_file, line_numbers):
+    if not selected_log_file or not line_numbers:
+        return []
+
+    log_path = get_log_path(selected_log_file)
+    if not os.path.exists(log_path):
+        return []
+
+    target_lines = set(line_numbers)
+    max_line = max(target_lines)
+    encoding = detect_file_encoding(log_path)
+    result = []
+    try:
+        with open(log_path, "r", encoding=encoding, errors="replace") as f:
+            for current_line, raw_line in enumerate(f, start=1):
+                if current_line > max_line:
+                    break
+                if current_line not in target_lines:
+                    continue
+                content = raw_line.rstrip("\n")
+                parsed = _parse_log_line(content)
+                result.append({
+                    "line_number": current_line,
+                    "content": content,
+                    "timestamp": parsed.get("timestamp", ""),
+                    "tag": parsed.get("tag", ""),
+                    "level": parsed.get("level", ""),
+                    "message": parsed.get("message", ""),
+                })
+    except Exception as e:
+        print(f"读取源文件选中日志失败: {e}")
+        return []
+    return result
+
+
+def _format_line_entries_as_attachment(display_mode, line_entries):
+    mode_label = "过滤结果" if display_mode == "filtered" else "源文件"
+    lines = [f"[{entry.get('line_number')}] {entry.get('content', '')}" for entry in line_entries]
+    return {
+        "label": f"{mode_label}选中日志 ({len(line_entries)}行)",
+        "text": "\n".join(lines).strip(),
+    }
+
+
+def build_log_analysis_request_payload(group_name, display_mode, selected_log_file, session_id, selected_lines):
+    group_name = str(group_name or "").strip()
+    display_mode = str(display_mode or "filtered").strip() or "filtered"
+    selected_log_file = str(selected_log_file or "").strip()
+    session_id = str(session_id or "").strip()
+    normalized_lines = _normalize_selected_line_numbers(selected_lines)
+    if not normalized_lines:
+        raise ValueError("请先选择日志行")
+    if not selected_log_file:
+        raise ValueError("请先选择日志文件")
+
+    if display_mode == "filtered":
+        if not session_id:
+            raise ValueError("过滤结果尚未准备好，请先执行过滤")
+        line_entries = read_selected_lines_from_temp(session_id, normalized_lines)
+    else:
+        line_entries = read_selected_lines_from_source_log(selected_log_file, normalized_lines)
+
+    if not line_entries:
+        raise ValueError("未读取到选中的日志内容")
+
+    config_groups = load_config_groups()
+    config_files = config_groups.get(group_name, []) if group_name else []
+    skill_name = get_config_group_skill_name(group_name) if group_name else ""
+    mode_label = "过滤结果" if display_mode == "filtered" else "源文件"
+
+    message = (
+        "请分析我在 log_filter 网页中选中的日志，并给出结论、证据链、风险判断和下一步建议。\n"
+        f"- 当前视图: {mode_label}\n"
+        f"- 日志文件: {selected_log_file}\n"
+        f"- 配置文件组: {group_name or '未选择'}\n"
+        f"- 对应 skill 名称: {skill_name or '无'}\n"
+        f"- 选中行数: {len(line_entries)}\n"
+        "要求:\n"
+        "1. 如果提供了对应 skill，请优先调用该 skill 再分析。\n"
+        "2. 如果当前视图是过滤结果，明确说明这些日志已经经过配置组过滤。\n"
+        "3. 输出可复用的新经验点，便于分析结束后回写 skill。\n"
+        "4. 回答中保留配置文件组名与视图来源。"
+    )
+
+    analysis_context = {
+        "config_group": group_name,
+        "config_files": config_files,
+        "skill_name": skill_name,
+        "display_mode": display_mode,
+        "selected_log_file": selected_log_file,
+        "selected_lines": [entry["line_number"] for entry in line_entries],
+        "selected_line_count": len(line_entries),
+        "filtered_result": display_mode == "filtered",
+        "auto_update_skill": bool(group_name),
+    }
+    return {
+        "message": message,
+        "attachments": [_format_line_entries_as_attachment(display_mode, line_entries)],
+        "analysis_context": analysis_context,
+    }
+
+
+def serialize_config_group_skill_bundle(bundle):
+    metadata = dict(bundle.get("metadata") or {})
+    paths = dict(bundle.get("paths") or {})
+    return {
+        "group_name": bundle.get("group_name"),
+        "skill_name": bundle.get("skill_name"),
+        "config_files": list(bundle.get("config_files") or []),
+        "published_exists": bool(bundle.get("published_exists")),
+        "draft_exists": bool(bundle.get("draft_exists")),
+        "has_unpublished_changes": bool(bundle.get("has_unpublished_changes")),
+        "draft_content": bundle.get("draft_content", ""),
+        "published_content": bundle.get("published_content", ""),
+        "metadata": metadata,
+        "paths": {
+            "skill_dir": paths.get("skill_dir", ""),
+            "skill_md": paths.get("skill_md", ""),
+            "draft_md": paths.get("draft_md", ""),
+        },
+    }
 
 def ensure_log_dir():
     """确保日志目录存在"""
@@ -811,7 +1553,7 @@ def get_config_files():
                 return _config_files_cache["data"]
             config_files = []
             for file in os.listdir(CONFIG_DIR):
-                if file.endswith('.json'):
+                if file.endswith('.json') and not file.startswith('.'):
                     config_files.append(file[:-5])  # 去掉.json后缀
             config_files = sorted(config_files)
             _config_files_cache["mtime"] = mtime
@@ -1573,12 +2315,20 @@ data = load_data()
 ensure_config_dir()
 # 加载外部程序配置
 ext_prog_config = load_external_program_config()
+# 加载 LLM 分析配置
+llm_config = load_llm_config()
 
 # 应用布局
 app.layout = html.Div([
     # Toast通知容器
     html.Div(id="toast-container", className="toast-container"),
     dcc.Store(id="group-selected-files-store", data=[]),
+    dcc.Store(id="llm-source-dirs-store", data=llm_config.get("source_code_dirs", [])),
+    dcc.Store(id="selected-log-lines-store", data=[]),
+    dcc.Store(id="chat-selected-text-store", data=""),
+    html.Div(id="chat-selected-text-input", style={"display": "none"}, children=""),
+    dcc.Input(id="selected-lines-sync-input", type="text", value="", style={"display": "none"}),
+    html.Div(id="log-analysis-context-json", style={"display": "none"}, children="{}"),
     dcc.Store(id="filter-session-store", data=""),
     dcc.Store(id="filter-first-chunk-ready", data=False),
     dcc.Interval(id="filter-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
@@ -1603,8 +2353,8 @@ app.layout = html.Div([
                 dbc.Tabs([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
                     dbc.Tab(label="日志对比", tab_id="tab-compare"),
-                    dbc.Tab(label="配置管理", tab_id="tab-2"),
                     dbc.Tab(label="日志管理", tab_id="tab-3"),
+                    dbc.Tab(label="配置管理", tab_id="tab-2"),
                     dbc.Tab(label="关键字注释(开发中)", tab_id="tab-4")
                 ], id="main-tabs", active_tab="tab-1")
             ], width=12)
@@ -1743,9 +2493,6 @@ app.layout = html.Div([
                                                 dbc.Tab(label="源文件", tab_id="source", children=[
                                                     html.Div(id="log-source-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                 ]),
-                                                dbc.Tab(label="高亮显示", tab_id="highlight", children=[
-                                                    html.Div(id="log-highlight-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
-                                                ]),
                                                 dbc.Tab(label="注释", tab_id="annotation", children=[
                                                     html.Div(id="log-annotation-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                 ]),
@@ -1765,7 +2512,11 @@ app.layout = html.Div([
                                                 html.Span("( - / - / - )", id="log-window-line-status", className="text-muted mx-2"),
                                                 dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm"),
                                                 html.Div(id="filter-progress-inline", style={"minWidth": "200px", "minHeight": "12px"}),
-                                                dbc.Button(id="log-view-ready-signal-btn", style={"display": "none"})
+                                                dbc.Button(id="log-view-ready-signal-btn", style={"display": "none"}),
+                                                dbc.Button("🖱 选择行", id="toggle-selection-mode-btn", color="secondary", outline=True, size="sm", title="点击切换行选择模式（用于AI分析）"),
+                                                html.Span(id="selected-lines-count", className="selected-lines-count", style={"display": "none"}),
+                                                dbc.Button("清除选择", id="clear-selection-btn", color="warning", outline=True, size="sm", style={"display": "none"}),
+                                                dbc.Button("AI分析所选日志", id="analyze-selected-logs-btn", color="primary", size="sm", title="把当前选中的日志和配置文件组上下文发送给 free-code 分析")
                                             ], className="d-flex align-items-center gap-2 justify-content-start")
                                         ], width=6),
                                         dbc.Col([
@@ -2142,6 +2893,8 @@ app.layout = html.Div([
                     ])
                 ], width=12)
             ], className="mb-4"),
+
+
         ], style={"display": "none"}),
         
         # Tab4内容 - 关键字注释
@@ -2380,7 +3133,7 @@ app.layout = html.Div([
                         ], className="mb-4 shadow-sm")
                     ], width=12)
                 ]),
-                
+
                 # 文件列表区域
                 dbc.Row([
                     dbc.Col([
@@ -2490,7 +3243,52 @@ app.layout = html.Div([
             is_open=False,
         ),
         
-    ], fluid=True)
+    ], fluid=True),
+    # 浮动 Chat 窗口 — DeepSeek 对话风格
+    html.Div([
+        # 标题栏
+        html.Div([
+            html.Div([
+                html.Span("✦", className="chat-win-logo"),
+                html.Span("AI Chat", className="chat-win-title-text"),
+            ], className="chat-win-title-group"),
+            html.Div([
+                html.Button("—", id="chat-win-minimize-btn", className="chat-win-btn", n_clicks=0),
+                html.Button("✕", id="chat-win-close-btn", className="chat-win-btn", n_clicks=0),
+            ], className="chat-win-btns")
+        ], id="chat-win-header", className="chat-win-header"),
+        # 对话消息区
+        html.Div(id="log-chat-results", className="chat-win-body", children=[
+            html.Div([
+                html.Div([
+                    html.Span("✦", className="chat-msg-avatar chat-msg-avatar-ai"),
+                    html.Span("AI", className="chat-msg-name"),
+                ], className="chat-msg-header"),
+                html.Div("你好！选中日志文本后点击 Chat，我会帮你分析问题。", className="chat-msg-bubble chat-msg-bubble-ai"),
+            ], className="chat-msg chat-msg-ai")
+        ]),
+        # 输入区
+        html.Div([
+            html.Div([
+                dcc.Input(
+                    id="chat-cwd-input",
+                    className="chat-cwd-input",
+                    type="text",
+                    placeholder="设置 free-code 工作目录，例如 /Users/surfing/tools/log_filter",
+                ),
+                html.Button("应用", id="chat-cwd-apply-btn", className="chat-cwd-btn", n_clicks=0),
+            ], className="chat-cwd-row"),
+            html.Div(id="chat-attachments", className="chat-attachments"),
+            html.Div([
+                html.Textarea(id="chat-input", className="chat-input", placeholder="输入消息，Shift+Enter 换行...", rows=1),
+                html.Button("↑", id="chat-send-btn", className="chat-send-btn", n_clicks=0),
+            ], className="chat-input-row"),
+            html.Div("就绪，可直接和 free-code 对话", id="chat-status", className="chat-status"),
+        ], className="chat-input-area"),
+        html.Div(className="chat-win-resize-handle", id="chat-win-resize-handle"),
+    ], id="chat-win", className="chat-win chat-win-visible"),
+    # 浮动 Chat 打开按钮（窗口关闭后显示）
+    html.Button("✦", id="chat-win-open-btn", className="chat-win-fab", n_clicks=0)
 ])
 
 # 初始化数据存储
@@ -2594,7 +3392,7 @@ def toggle_config_files(n_clicks, is_open):
 
 # 文件选择后，标记过滤页 UI 正在加载
 @app.callback(
-    Output(_UI_BUSY_STORE_ID, "data"),
+    Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True),
     [Input("log-file-selector", "value")],
     prevent_initial_call=True
 )
@@ -3618,12 +4416,11 @@ def refresh_filter_backend_display(preferred_backend, active_tab):
 # 选择文件后加载其他Tab内容
 @app.callback(
     [Output("log-source-results", "children"),
-     Output("log-highlight-results", "children"),
      Output("log-annotation-results", "children"),
      Output("log-flows-results", "children"),
      Output("source-result-store", "data"),
      Output("log-filter-results", "children", allow_duplicate=True),
-     Output(_UI_BUSY_STORE_ID, "data", allow_duplicate=True)],
+     Output(_UI_BUSY_STORE_ID, "data")],
     [Input("log-file-selector", "value")],
     [State("filter-tab-strings-store", "data"),
      State("temp-keywords-store", "data"),
@@ -3633,26 +4430,18 @@ def refresh_filter_backend_display(preferred_backend, active_tab):
 )
 def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp_keywords, annotations_map, active_tab):
     if not selected_log_file:
-        return "", "", "", "", "", "", _make_log_view_ui_state("idle")
-        
+        return "", "", "", "", "", _make_log_view_ui_state("idle")
+
     # 源文件视图使用滚动窗口，便于查找/跳转
     source_command, source_result = execute_source_logic(selected_log_file, filter_tab_strings, temp_keywords)
-    
-    # 高亮模式
-    highlight_result = ""
-    highlight_strings = load_highlight_config()
-    if highlight_strings:
-        _, highlight_result = execute_filter_logic(highlight_strings, [], selected_log_file)
-    else:
-        highlight_result = html.P("未找到highlight配置文件或配置为空", className="text-warning text-center")
-        
+
     # 注释模式
     annotation_component = build_annotation_extract_display_by_matching(selected_log_file, annotations_map)
-    
+
     # 流程视图
     flows_component = build_flows_display(selected_log_file)
-    
-    return source_result, highlight_result, annotation_component, flows_component, source_result, "", _make_log_view_ui_state("loading_file")
+
+    return source_result, annotation_component, flows_component, source_result, "", _make_log_view_ui_state("source_ready")
 
  
 
@@ -7467,6 +8256,123 @@ def scroll_debug():
         return jsonify({'ok': False})
 
 
+@app.server.route(f'{FREE_CODE_CHAT_API_PREFIX}/health', methods=['GET'])
+def free_code_chat_health():
+    from flask import jsonify, request
+
+    try:
+        requested_cwd = request.args.get('cwd')
+        runtime = _get_free_code_runtime_config(requested_cwd)
+        bridge = _resolve_free_code_bridge(runtime['cwd'])
+        status = {
+            'ok': True,
+            'cli_path': getattr(bridge, 'cli_path', ''),
+            'cwd': getattr(bridge, 'cwd', ''),
+            'extra_args': list(getattr(bridge, 'extra_args', []) or []),
+        }
+        return jsonify(status)
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.server.route(f'{FREE_CODE_CHAT_API_PREFIX}/config', methods=['GET', 'POST'])
+def free_code_chat_config():
+    from flask import jsonify, request
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        requested_cwd = payload.get('cwd') if request.method == 'POST' else request.args.get('cwd')
+        runtime = _get_free_code_runtime_config(requested_cwd)
+        return jsonify({
+            'ok': True,
+            'cwd': runtime['cwd'],
+            'cli_path': runtime['cli_path'] or '',
+            'free_code_root': runtime['free_code_root'],
+            'extra_args': runtime['extra_args'],
+        })
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+
+
+@app.server.route(f'{FREE_CODE_CHAT_API_PREFIX}/chat/<session_id>/stream', methods=['POST'])
+def free_code_chat_stream(session_id):
+    from flask import Response, jsonify, request, stream_with_context
+
+    payload = request.get_json(silent=True) or {}
+    message = payload.get('message')
+    attachments = payload.get('attachments')
+    analysis_context = payload.get('analysis_context') if isinstance(payload.get('analysis_context'), dict) else {}
+    timeout_value = payload.get('timeout', FREE_CODE_CHAT_TIMEOUT)
+    requested_cwd = payload.get('cwd')
+
+    if not isinstance(message, str) or not message.strip():
+        return jsonify({'error': 'message must be a non-empty string'}), 400
+
+    try:
+        timeout = float(timeout_value)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'timeout must be a number'}), 400
+
+    try:
+        runtime = _get_free_code_runtime_config(requested_cwd)
+        bridge = _resolve_free_code_bridge(runtime['cwd'])
+        composed_message = _build_free_code_chat_message(message, attachments, analysis_context)
+        session = bridge.ensure_session(session_id)
+        session.client.send_text(composed_message)
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+    @stream_with_context
+    def event_stream():
+        deadline = time.monotonic() + timeout
+        partial_fragments = []
+        fallback_final_text = ""
+        try:
+            while True:
+                remaining = max(0.0, deadline - time.monotonic())
+                event = session.client.read_event(timeout=remaining)
+                event_type = event.get('type')
+                if event_type == 'assistant_partial':
+                    delta_text = str(event.get('delta') or '')
+                    if delta_text:
+                        partial_fragments.append(delta_text)
+                elif event_type == 'assistant' and not partial_fragments:
+                    fallback_final_text = extract_text_from_chat_event(event)
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event_type == 'result':
+                    final_text = "".join(partial_fragments).strip() or fallback_final_text.strip()
+                    if analysis_context.get('auto_update_skill') and analysis_context.get('config_group') and final_text:
+                        try:
+                            auto_update_config_group_skill(
+                                analysis_context.get('config_group'),
+                                analysis_context,
+                                final_text,
+                            )
+                        except Exception as exc:
+                            print(f"[free-code] 自动更新 skill 失败: {exc}")
+                    break
+        except Exception as exc:
+            error_event = {
+                'type': 'error',
+                'error': str(exc),
+                'session_id': session_id,
+            }
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+
+    return Response(event_stream(), mimetype='text/event-stream')
+
+
+@app.server.route(f'{FREE_CODE_CHAT_API_PREFIX}/sessions/<session_id>', methods=['DELETE'])
+def free_code_chat_close_session(session_id):
+    from flask import jsonify
+
+    try:
+        _close_free_code_session_everywhere(session_id)
+        return jsonify({'ok': True, 'session_id': session_id})
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
 # -----------------------------------------------------------------------------
 # 配置文件组管理相关回调
 # -----------------------------------------------------------------------------
@@ -7491,8 +8397,7 @@ def toggle_config_groups_management(n_clicks, is_open):
      Input("save-config-group-btn", "n_clicks"),
      Input("delete-config-group-btn", "n_clicks"),
      Input("group-selected-files-store", "data"),
-     Input("config-file-selector", "options")],
-    prevent_initial_call=True
+     Input("config-file-selector", "options")]
 )
 def update_config_group_management_ui(is_open, _save_clicks, _delete_clicks, selected_files, config_file_options):
     # 如果是折叠状态且不是由保存/删除触发的（即只是为了更新UI），则不更新
@@ -7692,6 +8597,7 @@ def update_compare_group_selector(active_tab, save_clicks, delete_clicks):
     return [{'label': name, 'value': name} for name in config_groups.keys()]
 
 
+
 # 测量文本长度的回调
 @app.callback(
     Output('compare-prefix-measure-length', 'children'),
@@ -7723,6 +8629,48 @@ def apply_config_group_selection(group_name):
         return html.Script(f"if(window.showToast) window.showToast('已加载组 \"{group_name}\"', 'success');")
         
     return html.Script(f"if(window.showToast) window.showToast('配置文件组 \"{group_name}\" 不存在', 'error');")
+
+
+@app.callback(
+    [Output("log-analysis-context-json", "children"),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("analyze-selected-logs-btn", "n_clicks")],
+    [State("log-filter-config-group-selector", "value"),
+     State("display-mode-tabs", "active_tab"),
+     State("log-file-selector", "value"),
+     State("filter-session-store", "data"),
+     State("selected-log-lines-store", "data")],
+    prevent_initial_call=True
+)
+def analyze_selected_logs_with_skill(n_clicks, group_name, display_mode, selected_log_file, filter_session_id, selected_lines):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+
+    if display_mode == "filtered" and not group_name:
+        return dash.no_update, _toast_script("过滤结果视图下请先选择配置文件组，再进行 AI 分析", "warning")
+
+    try:
+        payload = build_log_analysis_request_payload(
+            group_name,
+            display_mode,
+            selected_log_file,
+            filter_session_id,
+            selected_lines,
+        )
+    except Exception as exc:
+        return dash.no_update, _toast_script(str(exc), "warning")
+
+    request_payload = {
+        "request_id": str(uuid.uuid4()),
+        "message": payload["message"],
+        "attachments": payload["attachments"],
+        "analysis_context": payload["analysis_context"],
+    }
+    mode_label = "过滤结果" if display_mode == "filtered" else "源文件"
+    return json.dumps(request_payload, ensure_ascii=False), _toast_script(
+        f"已发送 {mode_label} 中选中的 {payload['analysis_context']['selected_line_count']} 行日志到 free-code 分析",
+        "info",
+    )
 
 # 同步前端滚动窗口Ready状态到Dash状态
 @app.callback(
@@ -7797,6 +8745,768 @@ def open_external_program_callback(n_clicks, selected_log_file):
          print(f"External program error: {e}")
          return _toast_script(f"打开失败: {str(e)}", "error")
 
+# -----------------------------------------------------------------------------
+# Agentic Loop — LLM 自主工具调用
+# -----------------------------------------------------------------------------
+
+# 4.1 工具定义 (OpenAI tools schema)
+ANALYSIS_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_source_code",
+            "description": "在源码目录中搜索包含指定关键词的文件。返回匹配的文件路径和行号。用于定位日志中出现的类名、函数名、错误码等。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "搜索关键词，如类名、函数名、错误码"
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "搜索的目录路径，默认搜索所有配置的源码目录"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "文件名过滤模式，如 '*.java', '*.py', '*.cpp'"
+                    }
+                },
+                "required": ["keyword"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_source_file",
+            "description": "读取源码文件的指定行范围。用于查看搜索结果中具体文件的内容，理解代码逻辑。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "要读取的文件绝对路径"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "起始行号（1-indexed），默认1"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "结束行号，默认start_line+50，最多读取200行"
+                    }
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": "列出目录下的文件和子目录。用于浏览项目结构，找到相关源码位置。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "要列出的目录路径"
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "文件名过滤模式，如 '*.java'，默认显示所有"
+                    }
+                },
+                "required": ["directory"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep_source_code",
+            "description": "使用正则表达式在源码中搜索。比 search_source_code 更灵活，支持正则模式匹配。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "正则表达式搜索模式"
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": "搜索的目录路径"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "文件名过滤模式"
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "是否区分大小写，默认false"
+                    }
+                },
+                "required": ["pattern"]
+            }
+        }
+    }
+]
+
+# 4.2 工具执行引擎
+
+def _validate_source_path(path, allowed_dirs):
+    """校验路径是否在允许的源码目录范围内，防止路径遍历"""
+    abs_path = os.path.abspath(path)
+    for allowed in allowed_dirs:
+        abs_allowed = os.path.abspath(allowed)
+        if os.path.commonpath([abs_allowed, abs_path]) == abs_allowed:
+            return True
+    return False
+
+
+def _run_rg_search(keyword, directory=None, file_pattern=None, regex_mode=False, case_sensitive=False):
+    """使用 ripgrep 执行搜索，返回结果字符串"""
+    rg_cmd = _get_rg_command()
+    if not rg_cmd:
+        return "[错误] ripgrep 不可用，无法搜索源码"
+
+    config = load_llm_config()
+    source_dirs = config.get("source_code_dirs", [])
+    if not source_dirs:
+        return "[错误] 未配置源码搜索路径，请在 AI 设置中添加"
+
+    # 确定搜索目录
+    search_dir = directory if directory else None
+    if search_dir:
+        if not _validate_source_path(search_dir, source_dirs):
+            return "[错误] 目录不在允许的源码路径范围内"
+    else:
+        search_dir = source_dirs[0] if len(source_dirs) == 1 else None
+
+    cmd = [rg_cmd, "--no-heading", "--line-number", "--max-count=30"]
+    if not case_sensitive:
+        cmd.append("-i")
+    if file_pattern:
+        cmd.extend(["--glob", file_pattern])
+    if regex_mode:
+        cmd.extend(["-e", keyword])
+    else:
+        cmd.extend(["-F", keyword])
+
+    try:
+        results = []
+        dirs_to_search = [search_dir] if search_dir else source_dirs
+        for d in dirs_to_search:
+            full_cmd = cmd + [d]
+            proc = subprocess.run(full_cmd, capture_output=True, text=True, timeout=15, encoding='utf-8', errors='replace')
+            if proc.stdout:
+                results.append(proc.stdout)
+            if proc.returncode == 2 and proc.stderr:
+                results.append(f"[rg 错误] {proc.stderr[:200]}")
+
+        combined = "\n".join(results).strip()
+        if not combined:
+            return "未找到匹配结果"
+        # 截断过长输出
+        if len(combined) > 3000:
+            combined = combined[:3000] + "\n... (结果过多，已截断)"
+        return combined
+    except subprocess.TimeoutExpired:
+        return "[搜索超时，请缩小搜索范围]"
+    except Exception as e:
+        return f"[搜索异常] {str(e)[:200]}"
+
+
+def _run_read_file(file_path, start_line=1, end_line=None):
+    """读取源码文件的指定行范围"""
+    config = load_llm_config()
+    source_dirs = config.get("source_code_dirs", [])
+    if not _validate_source_path(file_path, source_dirs):
+        return "[错误] 文件路径不在允许的源码路径范围内"
+
+    if not os.path.isfile(file_path):
+        return f"[错误] 文件不存在: {file_path}"
+
+    max_lines = 200
+    start_line = max(1, int(start_line or 1))
+    if end_line is None:
+        end_line = start_line + 50
+    end_line = min(end_line, start_line + max_lines)
+
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+        total = len(lines)
+        end_line = min(end_line, total)
+        if start_line > total:
+            return f"[错误] 起始行 {start_line} 超出文件总行数 {total}"
+
+        result_lines = []
+        for i in range(start_line - 1, end_line):
+            result_lines.append(f"{i+1}: {lines[i].rstrip()}")
+
+        output = "\n".join(result_lines)
+        if len(output) > 5000:
+            output = output[:5000] + "\n... (内容过长，已截断)"
+        header = f"文件: {file_path} (行 {start_line}-{end_line} / 共 {total} 行)\n"
+        return header + output
+    except Exception as e:
+        return f"[读取异常] {str(e)[:200]}"
+
+
+def _run_list_directory(directory, pattern=None):
+    """列出目录内容"""
+    config = load_llm_config()
+    source_dirs = config.get("source_code_dirs", [])
+    if not _validate_source_path(directory, source_dirs):
+        return "[错误] 目录不在允许的源码路径范围内"
+
+    if not os.path.isdir(directory):
+        return f"[错误] 目录不存在: {directory}"
+
+    try:
+        entries = sorted(os.listdir(directory))
+        dirs = []
+        files = []
+        for e in entries:
+            if e.startswith('.') or e in ('__pycache__', 'node_modules', '.git', 'build', 'dist'):
+                continue
+            full = os.path.join(directory, e)
+            if pattern and not e.endswith(pattern.lstrip('*')):
+                continue
+            if os.path.isdir(full):
+                dirs.append(f"  [DIR]  {e}/")
+            else:
+                size = os.path.getsize(full)
+                files.append(f"  [FILE] {e}  ({size} bytes)")
+
+        output = f"目录: {directory}\n"
+        if dirs:
+            output += "子目录:\n" + "\n".join(dirs) + "\n"
+        if files:
+            output += "文件:\n" + "\n".join(files) + "\n"
+        if not dirs and not files:
+            output += "  (空目录或所有条目被过滤)"
+
+        if len(output) > 3000:
+            output = output[:3000] + "\n... (内容过多，已截断)"
+        return output
+    except Exception as e:
+        return f"[列出目录异常] {str(e)[:200]}"
+
+
+def execute_tool_call(tool_name, tool_args, config):
+    """执行 LLM 请求的工具调用，返回结果字符串"""
+    try:
+        if tool_name == "search_source_code":
+            return _run_rg_search(
+                keyword=tool_args.get("keyword", ""),
+                directory=tool_args.get("directory"),
+                file_pattern=tool_args.get("file_pattern")
+            )
+        elif tool_name == "read_source_file":
+            return _run_read_file(
+                file_path=tool_args.get("file_path", ""),
+                start_line=tool_args.get("start_line", 1),
+                end_line=tool_args.get("end_line")
+            )
+        elif tool_name == "list_directory":
+            return _run_list_directory(
+                directory=tool_args.get("directory", ""),
+                pattern=tool_args.get("pattern")
+            )
+        elif tool_name == "grep_source_code":
+            return _run_rg_search(
+                keyword=tool_args.get("pattern", ""),
+                directory=tool_args.get("directory"),
+                file_pattern=tool_args.get("file_pattern"),
+                regex_mode=True,
+                case_sensitive=tool_args.get("case_sensitive", False)
+            )
+        else:
+            return f"[错误] 未知工具: {tool_name}"
+    except Exception as e:
+        return f"[工具执行异常] {tool_name}: {str(e)[:200]}"
+
+
+# 4.4 System Prompt
+
+def _build_analysis_system_prompt(config):
+    """构建 LLM 分析的系统提示"""
+    source_dirs = config.get("source_code_dirs", [])
+    source_dirs_text = "\n".join(f"  - {d}" for d in source_dirs) if source_dirs else "  (未配置)"
+
+    return f"""<identity>
+你是一位专业的日志分析专家，擅长通过日志信息定位源码中的问题并分析根因。
+</identity>
+
+<tools>
+你可以使用以下工具来搜索和阅读源码：
+
+1. search_source_code(keyword, directory?, file_pattern?)
+   - 在源码目录中搜索包含关键词的文件
+   - 返回匹配的文件路径和行号
+   - 适合搜索类名、函数名、错误码等
+
+2. read_source_file(file_path, start_line?, end_line?)
+   - 读取源码文件的指定行范围
+   - 默认读取50行，最多200行
+   - 用于查看搜索结果中的具体代码
+
+3. list_directory(directory, pattern?)
+   - 列出目录下的文件和子目录
+   - 用于浏览项目结构
+
+4. grep_source_code(pattern, directory?, file_pattern?, case_sensitive?)
+   - 使用正则表达式搜索源码
+   - 比关键词搜索更灵活
+
+可搜索的源码目录：
+{source_dirs_text}
+</tools>
+
+<guidelines>
+- 收到日志后，先分析日志中的关键信息：时间戳、Tag、日志级别、函数名、错误码
+- 根据关键信息，使用 search_source_code 或 grep_source_code 搜索相关源码
+- 找到相关文件后，使用 read_source_file 阅读代码上下文
+- **不要过早停止分析**：即使找到了初步位置，也应继续阅读上下文代码来理解完整逻辑
+- 如果第一次搜索没有结果，尝试不同的关键词组合
+- 分析完成后，给出清晰的结论：
+  1. 问题定位：涉及的源码文件和行号
+  2. 根因分析：导致日志输出的代码逻辑
+  3. 修复建议：可能的解决方案
+- 使用 Markdown 格式输出分析结果
+</guidelines>
+
+<output_format>
+## 问题定位
+（涉及的源码文件路径和行号）
+
+## 根因分析
+（导致问题的代码逻辑分析）
+
+## 修复建议
+（可能的解决方案）
+</output_format>"""
+
+
+# 4.3 Agentic Loop 主循环
+
+import threading
+_analysis_tasks = {}
+_analysis_tasks_lock = threading.Lock()
+
+
+def _update_task_state(task_id, updates):
+    """线程安全地更新任务状态"""
+    with _analysis_tasks_lock:
+        if task_id in _analysis_tasks:
+            _analysis_tasks[task_id].update(updates)
+
+
+def run_agentic_analysis(task_id, log_context, config, session_id, on_progress=None):
+    """执行 Agentic Loop 分析
+
+    Args:
+        task_id: 任务ID
+        log_context: 日志上下文信息 dict (selected_lines, parsed_info, etc.)
+        config: LLM 配置 dict
+        session_id: 过滤会话ID
+        on_progress: 进度回调函数 (optional)
+
+    Returns:
+        dict: 分析结果 {status, result, tool_calls_log, iterations, ...}
+    """
+    from openai import OpenAI
+
+    api_base = config.get("api_base", "").strip()
+    api_key = config.get("api_key", "").strip()
+    model = config.get("model", "").strip()
+    max_iterations = min(int(config.get("max_iterations", 10)), 30)
+    max_total_tokens = int(config.get("max_total_tokens", 32768))
+    temperature = float(config.get("temperature", 0.2))
+
+    if not api_base or not api_key or not model:
+        return {"status": "failed", "error": "LLM 配置不完整（API地址/Key/模型）"}
+
+    client = OpenAI(base_url=api_base, api_key=api_key)
+
+    # 构建初始消息
+    selected_lines = log_context.get("selected_lines", [])
+    log_text = log_context.get("log_text", "")
+    parsed_summary = log_context.get("parsed_summary", "")
+
+    user_message = f"""请分析以下日志，在源码中定位问题并分析根因：
+
+## 选中的日志行
+```
+{log_text}
+```
+
+## 解析出的关键信息
+{parsed_summary}
+
+请在源码中搜索相关代码，阅读上下文，然后给出详细分析。"""
+
+    system_prompt = _build_analysis_system_prompt(config)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
+    ]
+
+    tool_calls_log = []
+    total_tokens_used = 0
+
+    _update_task_state(task_id, {
+        "status": "analyzing",
+        "phase": "agentic_loop",
+        "iterations": 0
+    })
+
+    try:
+        for iteration in range(max_iterations):
+            # 检查是否被取消
+            with _analysis_tasks_lock:
+                task = _analysis_tasks.get(task_id, {})
+                if task.get("cancelled", False):
+                    return {"status": "cancelled", "iterations": iteration, "tool_calls_log": tool_calls_log}
+
+            _update_task_state(task_id, {
+                "iterations": iteration + 1,
+                "current_phase": f"LLM 迭代 {iteration + 1}/{max_iterations}"
+            })
+
+            if on_progress:
+                on_progress(iteration + 1, max_iterations, "thinking")
+
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=ANALYSIS_TOOLS,
+                    temperature=temperature,
+                    max_tokens=4096
+                )
+            except Exception as e:
+                error_msg = str(e)[:500]
+                return {
+                    "status": "failed",
+                    "error": f"LLM API 调用失败: {error_msg}",
+                    "iterations": iteration,
+                    "tool_calls_log": tool_calls_log
+                }
+
+            # 统计 token 使用
+            if hasattr(response, 'usage') and response.usage:
+                total_tokens_used += response.usage.total_tokens or 0
+                if total_tokens_used > max_total_tokens:
+                    # Token 超限，强制结束
+                    assistant_content = response.choices[0].message.content or ""
+                    messages.append(response.choices[0].message.model_dump())
+                    break
+
+            choice = response.choices[0]
+            assistant_message = choice.message
+            tool_calls = assistant_message.tool_calls
+
+            # 追加 assistant 消息
+            messages.append(assistant_message.model_dump())
+
+            if not tool_calls:
+                # LLM 没有调用工具，分析完成
+                break
+
+            # 执行所有工具调用
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                try:
+                    import json as _json
+                    tool_args = _json.loads(tc.function.arguments)
+                except Exception:
+                    tool_args = {}
+
+                tool_calls_log.append({
+                    "iteration": iteration + 1,
+                    "tool": tool_name,
+                    "args": tool_args
+                })
+
+                _update_task_state(task_id, {
+                    "current_tool": tool_name,
+                    "current_phase": f"执行工具: {tool_name}"
+                })
+
+                if on_progress:
+                    on_progress(iteration + 1, max_iterations, f"tool: {tool_name}")
+
+                # 执行工具
+                tool_result = execute_tool_call(tool_name, tool_args, config)
+
+                tool_calls_log[-1]["result_preview"] = tool_result[:200]
+
+                # 追加工具结果到消息
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_result
+                })
+
+        # 提取最终分析结果
+        final_content = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                final_content = msg["content"]
+                break
+
+        return {
+            "status": "completed",
+            "result": final_content,
+            "iterations": iteration + 1 if tool_calls else iteration,
+            "tool_calls_log": tool_calls_log,
+            "total_tokens": total_tokens_used,
+            "messages": messages  # 保留完整对话历史，用于追问
+        }
+
+    except Exception as e:
+        return {
+            "status": "failed",
+            "error": f"分析过程异常: {str(e)[:500]}",
+            "iterations": 0,
+            "tool_calls_log": tool_calls_log
+        }
+
+
+def continue_agentic_analysis(task_id, follow_up_message, config):
+    """在已有分析基础上继续追问
+
+    Args:
+        task_id: 原始分析任务ID
+        follow_up_message: 用户追问内容
+        config: LLM 配置
+
+    Returns:
+        dict: 继续分析的结果
+    """
+    with _analysis_tasks_lock:
+        task = _analysis_tasks.get(task_id)
+        if not task or task.get("status") != "completed":
+            return {"status": "failed", "error": "无法追问：任务不存在或未完成"}
+        previous_messages = task.get("result_data", {}).get("messages", [])
+        if not previous_messages:
+            return {"status": "failed", "error": "无法追问：对话历史丢失"}
+
+    from openai import OpenAI
+    api_base = config.get("api_base", "").strip()
+    api_key = config.get("api_key", "").strip()
+    model = config.get("model", "").strip()
+    max_iterations = min(int(config.get("max_iterations", 10)), 30)
+
+    client = OpenAI(base_url=api_base, api_key=api_key)
+    messages = list(previous_messages)
+    messages.append({"role": "user", "content": follow_up_message})
+
+    tool_calls_log = list(task.get("result_data", {}).get("tool_calls_log", []))
+    total_tokens_used = task.get("result_data", {}).get("total_tokens", 0)
+
+    _update_task_state(task_id, {"status": "analyzing", "phase": "follow_up"})
+
+    try:
+        for iteration in range(max_iterations):
+            with _analysis_tasks_lock:
+                if _analysis_tasks.get(task_id, {}).get("cancelled", False):
+                    return {"status": "cancelled", "iterations": iteration, "tool_calls_log": tool_calls_log}
+
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=ANALYSIS_TOOLS,
+                    temperature=float(config.get("temperature", 0.2)),
+                    max_tokens=4096
+                )
+            except Exception as e:
+                return {"status": "failed", "error": f"LLM API 调用失败: {str(e)[:500]}"}
+
+            if hasattr(response, 'usage') and response.usage:
+                total_tokens_used += response.usage.total_tokens or 0
+
+            choice = response.choices[0]
+            assistant_message = choice.message
+            tool_calls = assistant_message.tool_calls
+            messages.append(assistant_message.model_dump())
+
+            if not tool_calls:
+                break
+
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                try:
+                    import json as _json
+                    tool_args = _json.loads(tc.function.arguments)
+                except Exception:
+                    tool_args = {}
+
+                tool_calls_log.append({"iteration": f"follow-up-{iteration+1}", "tool": tool_name, "args": tool_args})
+                tool_result = execute_tool_call(tool_name, tool_args, config)
+                tool_calls_log[-1]["result_preview"] = tool_result[:200]
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_result})
+
+        final_content = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                final_content = msg["content"]
+                break
+
+        result = {
+            "status": "completed",
+            "result": final_content,
+            "iterations": iteration + 1,
+            "tool_calls_log": tool_calls_log,
+            "total_tokens": total_tokens_used,
+            "messages": messages
+        }
+        _update_task_state(task_id, {"status": "completed", "result_data": result})
+        return result
+
+    except Exception as e:
+        return {"status": "failed", "error": f"追问分析异常: {str(e)[:500]}"}
+
+# -----------------------------------------------------------------------------
+# 日志行选择相关回调
+# -----------------------------------------------------------------------------
+
+@app.callback(
+    [Output("toggle-selection-mode-btn", "color"),
+     Output("toggle-selection-mode-btn", "outline"),
+     Output("toggle-selection-mode-btn", "children"),
+     Output("clear-selection-btn", "style"),
+     Output("selected-lines-count", "style")],
+    [Input("toggle-selection-mode-btn", "n_clicks")],
+    prevent_initial_call=True
+)
+def toggle_selection_mode(n_clicks):
+    if not n_clicks:
+        return "secondary", True, "🖱 选择行", {"display": "none"}, {"display": "none"}
+    # Toggle global selection mode flag
+    is_active = getattr(toggle_selection_mode, '_active', False)
+    is_active = not is_active
+    toggle_selection_mode._active = is_active
+    if is_active:
+        return "primary", False, "🖱 选择中", {"display": "inline-block"}, {"display": "inline-flex"}
+    else:
+        return "secondary", True, "🖱 选择行", {"display": "none"}, {"display": "none"}
+
+
+@app.callback(
+    [Output("selected-log-lines-store", "data"),
+     Output("selected-lines-count", "children")],
+    [Input("clear-selection-btn", "n_clicks")],
+    [State("selected-log-lines-store", "data")],
+    prevent_initial_call=True
+)
+def clear_line_selection(n_clicks, current_data):
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+    return [], ""
+
+
+@app.callback(
+    Output("selected-log-lines-store", "data", allow_duplicate=True),
+    [Input("selected-lines-sync-input", "value")],
+    prevent_initial_call=True
+)
+def sync_selected_lines_from_frontend(raw_value):
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except Exception:
+        return dash.no_update
+    return _normalize_selected_line_numbers(parsed)
+
+
+def read_selected_lines_from_temp(session_id, line_numbers):
+    """从临时过滤结果文件中读取指定行的内容和上下文信息
+
+    Args:
+        session_id: 过滤会话ID
+        line_numbers: 要读取的行号列表（1-indexed，过滤结果中的行号）
+
+    Returns:
+        list of dicts: [{line_number, content, source_line_number, ...}]
+    """
+    if not line_numbers:
+        return []
+
+    temp_file = os.path.join(TEMP_DIR, f"filtered_{session_id}.txt")
+    if not os.path.exists(temp_file):
+        return []
+
+    try:
+        with open(temp_file, 'r', encoding='utf-8', errors='replace') as f:
+            all_lines = f.readlines()
+    except Exception as e:
+        print(f"读取过滤结果失败: {e}")
+        return []
+
+    result = []
+    for ln in sorted(line_numbers):
+        idx = ln - 1  # 0-indexed
+        if 0 <= idx < len(all_lines):
+            content = all_lines[idx].rstrip('\n')
+            # 尝试提取日志结构化信息
+            parsed = _parse_log_line(content)
+            result.append({
+                "line_number": ln,
+                "content": content,
+                "timestamp": parsed.get("timestamp", ""),
+                "tag": parsed.get("tag", ""),
+                "level": parsed.get("level", ""),
+                "message": parsed.get("message", "")
+            })
+    return result
+
+
+def _parse_log_line(line):
+    """解析单行日志，提取时间戳、Tag、级别、正文"""
+    # Android logcat 格式: 01-01 12:00:00.000 123 456 E/Tag: message
+    m = re.match(r'^(?P<timestamp>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+\d+\s+\d+\s+(?P<level>[A-Z])/(?P<tag>\w+)\s*:\s*(?P<message>.*)', line)
+    if m:
+        return m.groupdict()
+    # Android logcat 无进程ID: 01-01 12:00:00.000 E/Tag: message
+    m = re.match(r'^(?P<timestamp>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(?P<level>[A-Z])/(?P<tag>\w+)\s*:\s*(?P<message>.*)', line)
+    if m:
+        return m.groupdict()
+    # 简单时间戳: 01-01 12:00:00 message
+    m = re.match(r'^(?P<timestamp>\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(?P<message>.*)', line)
+    if m:
+        return {**m.groupdict(), "tag": "", "level": ""}
+    # ISO 时间戳: 2024-01-01T12:00:00.000Z message
+    m = re.match(r'^(?P<timestamp>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}[^ ]*)\s+(?P<message>.*)', line)
+    if m:
+        return {**m.groupdict(), "tag": "", "level": ""}
+    # 无法解析时，整行作为 message
+    return {"timestamp": "", "tag": "", "level": "", "message": line}
+
+# -----------------------------------------------------------------------------
+# 文本选中 Chat/Copy 上下文菜单回调
+# -----------------------------------------------------------------------------
+
+@app.callback(
+    [Output("chat-selected-text-store", "data"),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("chat-selected-text-input", "children")],
+    prevent_initial_call=True
+)
+def on_chat_selected_text(children):
+    text = children if isinstance(children, str) else ""
+    if not text or not text.strip():
+        return dash.no_update, dash.no_update
+    return text.strip(), _toast_script(f"已选中 {len(text.strip())} 字符，可用于 AI 分析", "info")
+
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
     

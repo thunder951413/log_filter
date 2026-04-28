@@ -2,3 +2,4 @@ dash
 dash-bootstrap-components
 plotly
 pandas
+openai>=1.0.0

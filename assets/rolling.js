@@ -459,6 +459,125 @@
         getConfig: function() { return { linesBefore: linesBefore, linesAfter: linesAfter, prefetchThreshold: prefetchThreshold }; }
       };
     } catch(e) { console.warn('[前端滚动窗口][assets] 注册外部控制失败:', e); }
+
+    // -------------------------------------------------------------------------
+    // Line selection for AI analysis (click / shift+click)
+    // -------------------------------------------------------------------------
+    var selectedLines = new Set();
+    var lastClickedLine = null;
+    var selectionEnabled = false;
+
+    // Check if selection mode is active by looking at a data attribute or global flag
+    function isSelectionMode() {
+      return div.getAttribute('data-selection-mode') === 'true' || window.__logLineSelectionMode === true;
+    }
+
+    function syncSelectedLinesToStore() {
+      var storeEl = document.getElementById('selected-log-lines-store');
+      if (!storeEl) {
+        // Try finding via Dash's internal store mechanism
+        storeEl = document.querySelector('[data-dash-is-loading]');
+      }
+      // Use a hidden button to trigger Dash callback with selected lines data
+      var hiddenInput = document.getElementById('selected-lines-sync-input');
+      if (hiddenInput) {
+        var arr = Array.from(selectedLines).sort(function(a, b) { return a - b; });
+        hiddenInput.value = JSON.stringify(arr);
+        hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      // Also store globally for other components to read
+      window.__selectedLogLines = Array.from(selectedLines).sort(function(a, b) { return a - b; });
+      // Update selection count display
+      var countEl = document.getElementById('selected-lines-count');
+      if (countEl) {
+        countEl.textContent = selectedLines.size > 0 ? selectedLines.size + ' 行已选中' : '';
+      }
+    }
+
+    function applyLineHighlights() {
+      var pre = div.querySelector('pre');
+      if (!pre) return;
+      // Only apply highlights if content is plain text (not HTML)
+      if (pre.querySelector('.log-line-wrap')) return; // already wrapped
+
+      var text = pre.textContent || '';
+      if (!text) return;
+      var lines = text.split('\n');
+      // Remove trailing empty line from split
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+
+      var html = '';
+      for (var i = 0; i < lines.length; i++) {
+        var globalLineNum = state.startLine + i;
+        var isSelected = selectedLines.has(globalLineNum);
+        var cls = 'log-line-wrap' + (isSelected ? ' log-line-selected' : '');
+        html += '<div class="' + cls + '" data-line="' + globalLineNum + '">' +
+                '<span class="log-line-num">' + globalLineNum + '</span>' +
+                '<span class="log-line-content">' + escapeHtml(lines[i]) + '</span></div>';
+      }
+      pre.innerHTML = html;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function handleLineClick(e) {
+      if (!isSelectionMode()) return;
+
+      var pre = div.querySelector('pre');
+      if (!pre) return;
+
+      // Calculate which line was clicked based on Y position within pre
+      var rect = pre.getBoundingClientRect();
+      var y = e.clientY - rect.top;
+      var lh = getLineHeight(pre);
+      var clickedOffset = Math.floor(y / lh);
+      var clickedLine = state.startLine + clickedOffset;
+
+      if (clickedLine < state.startLine || clickedLine > state.endLine) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.shiftKey && lastClickedLine !== null) {
+        // Shift+click: range select
+        var from = Math.min(lastClickedLine, clickedLine);
+        var to = Math.max(lastClickedLine, clickedLine);
+        for (var ln = from; ln <= to; ln++) {
+          selectedLines.add(ln);
+        }
+      } else {
+        // Normal click: toggle
+        if (selectedLines.has(clickedLine)) {
+          selectedLines.delete(clickedLine);
+        } else {
+          selectedLines.add(clickedLine);
+        }
+      }
+      lastClickedLine = clickedLine;
+
+      applyLineHighlights();
+      syncSelectedLinesToStore();
+    }
+
+    // Attach click handler to pre element
+    var preEl = div.querySelector('pre');
+    if (preEl) {
+      preEl.addEventListener('click', handleLineClick);
+      preEl.style.cursor = 'pointer';
+    }
+
+    // Expose selection API
+    try {
+      window.__logLineSelection = window.__logLineSelection || {};
+      window.__logLineSelection[sessionId] = {
+        getSelectedLines: function() { return Array.from(selectedLines).sort(function(a, b) { return a - b; }); },
+        clearSelection: function() { selectedLines.clear(); lastClickedLine = null; applyLineHighlights(); syncSelectedLinesToStore(); },
+        selectLines: function(lineArray) { lineArray.forEach(function(ln) { selectedLines.add(ln); }); applyLineHighlights(); syncSelectedLinesToStore(); },
+        setSelectionMode: function(enabled) { selectionEnabled = enabled; div.setAttribute('data-selection-mode', enabled ? 'true' : 'false'); }
+      };
+    } catch(e) {}
   }
 
   function bootstrap() {

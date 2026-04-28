@@ -1,0 +1,78 @@
+/* Log text selection context menu */
+
+.log-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  gap: 2px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
+  padding: 3px;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.15s, transform 0.15s;
+  white-space: nowrap;
+}
+
+.log-ctx-menu-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.log-ctx-item {
+  display: flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.log-ctx-item:hover {
+  background: #f0f0f0;
+  color: #111;
+}
+
+.log-ctx-item[data-action="chat"]:hover {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.log-ctx-item[data-action="copy"]:hover {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+/* Toast notification */
+.log-ctx-toast {
+  position: fixed;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: rgba(50, 50, 50, 0.88);
+  color: #fff;
+  padding: 8px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 10000;
+  pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.log-ctx-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
