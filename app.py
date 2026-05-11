@@ -16,6 +16,7 @@ import time
 import threading
 import io
 import zipfile
+import uuid
 from bisect import bisect_left
 from datetime import datetime
 
@@ -193,6 +194,37 @@ _FILTER_PROGRESS_INTERVAL_MS = 800  # 前端轮询间隔
 _SOURCE_PREVIEW_LINES = 2000  # 源文件tab预览行数上限
 _UI_BUSY_STORE_ID = "ui-busy-store"
 _windows_powershell_runtime_cache = None
+AI_KEYWORD_MAX_CANDIDATES = 120
+AI_KEYWORD_DEFAULT_PATH_DISCUSSION_PROMPT = """请分析当前源码工程中适合做日志关键字过滤的功能流程。
+
+当前阶段请先和我讨论，不要直接输出配置文件或 JSON。
+
+请重点扫描代码中的日志打印点，并围绕某个具体业务流程梳理：
+1. 流程入口、核心模块、关键函数、状态流转和主要分支。
+2. 正常流程中的关键步骤日志，例如开始、参数校验、状态切换、关键事件、成功完成等。
+3. 异常流程中的关键日志，例如错误码、失败原因、重试、超时、资源不存在、状态不一致、权限/网络/IO 异常等。
+4. 实际会出现在日志里的稳定关键字，例如 tag、模块名、函数名、事件名、状态名、错误码、协议名、业务对象名等。
+
+后续会基于你的讨论生成 keep/filter 关键字：
+- keep 关键字应该帮助保留目标流程相关日志，优先选择能稳定命中关键步骤、状态变化和异常路径的具体字符串。
+- filter 关键字应该帮助排除无关噪声日志，尤其要识别循环、轮询、心跳、定时器、周期性状态上报、重复统计、频繁 debug 打印等会反复出现但不利于定位流程的内容。
+- 如果某些日志虽然属于同一模块但属于后台循环、缓存刷新、状态轮询、重复探测或无关异步任务，也请明确指出它们更适合作为 filter 候选。
+- 避免过泛关键字，例如 error、failed、start、stop、init，除非它们和具体 tag/模块/状态组合后足够特异。
+
+请输出自然语言分析，建议按“流程概述 / keep 候选线索 / filter 噪声线索 / 需要用户确认的问题”组织。"""
+
+AI_KEYWORD_DEFAULT_TARGET_ANALYSIS_PROMPT = """你是 log_filter 的代码流程日志关键字分析助手。
+
+用户会提供一个需要重点分析的代码线索，可能是已有日志打印、tag、函数名、类名、状态名、事件名或错误码。
+
+请围绕这个线索在源码中做针对性分析：
+1. 搜索并定位该线索出现的位置，以及它所在的函数、类、模块和调用上下文。
+2. 分析它前后的业务流程，包括进入该点之前的关键步骤、触发条件、状态变化，以及之后可能继续执行的分支。
+3. 提取围绕该流程的 keep 关键字线索：能稳定命中目标流程前后关键步骤、状态流转、重要事件和异常路径的日志 tag、函数名、状态名、错误码、事件名、业务对象名等。
+4. 提取围绕该流程的 filter 噪声线索：循环、轮询、心跳、定时器、周期性状态上报、重复统计、频繁 debug 打印、缓存刷新、后台异步任务、无关模块或无关分支等反复出现但不利于定位该流程的内容。
+5. 如果某个关键字可能过泛，请说明风险，并给出更具体的组合线索。
+
+请输出自然语言分析，不要生成配置文件 JSON。建议按“定位结果 / 前置流程 / 后续流程 / keep 关键字线索 / filter 噪声线索 / 需要确认的问题”组织。"""
 
 
 def _parse_shell_version(version_text):
@@ -2211,6 +2243,445 @@ def save_temp_keywords_to_file(keywords):
     except Exception as e:
         print(f"保存临时关键字配置失败: {e}")
 
+def _safe_config_name(value, fallback="AI_KEYWORDS"):
+    name = str(value or "").strip()
+    name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+    name = re.sub(r"\s+", "_", name).strip("._ ")
+    return name or fallback
+
+def _extract_json_payload(text):
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start:end + 1])
+    raise ValueError("AI 返回内容不是有效 JSON")
+
+def _collect_free_code_final_text(events):
+    partial_fragments = []
+    assistant_text = ""
+    for event in events or []:
+        event_type = event.get("type")
+        if event_type == "assistant_partial":
+            text = str(event.get("delta") or "")
+            if text:
+                partial_fragments.append(text)
+        elif event_type == "assistant":
+            text = extract_text_from_chat_event(event)
+            if text:
+                assistant_text = text
+    return "".join(partial_fragments).strip() or assistant_text.strip()
+
+def _read_ai_keyword_log_line(log_file, line_number):
+    try:
+        line_no = int(line_number or 0)
+    except (TypeError, ValueError):
+        return ""
+    if line_no <= 0 or not log_file:
+        return ""
+    try:
+        path = log_file if os.path.isabs(str(log_file)) else get_log_path(str(log_file))
+        if not os.path.exists(path):
+            return ""
+        encoding = detect_file_encoding(path)
+        with open(path, "r", encoding=encoding, errors="replace") as f:
+            for current_line, raw_line in enumerate(f, start=1):
+                if current_line == line_no:
+                    return raw_line.rstrip("\r\n")
+                if current_line > line_no:
+                    break
+    except Exception:
+        return ""
+    return ""
+
+def _normalize_ai_paths(payload):
+    paths = payload.get("paths") if isinstance(payload, dict) else []
+    if not isinstance(paths, list):
+        return []
+    normalized = []
+    for idx, item in enumerate(paths[:50]):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or f"path_{idx + 1}").strip()
+        if not name:
+            continue
+        normalized.append({
+            "id": str(item.get("id") or _safe_config_name(name, f"path_{idx + 1}")),
+            "name": name,
+            "description": str(item.get("description") or "").strip(),
+            "entry_points": item.get("entry_points") if isinstance(item.get("entry_points"), list) else [],
+            "log_clues": item.get("log_clues") if isinstance(item.get("log_clues"), list) else [],
+        })
+    return normalized
+
+def _normalize_ai_keyword_candidates(payload):
+    categories = payload.get("categories") if isinstance(payload, dict) else {}
+    if not isinstance(categories, dict):
+        return []
+    candidates = []
+    seen = set()
+    for category, content in categories.items():
+        if not isinstance(content, dict):
+            continue
+        category_name = str(category or "AI").strip() or "AI"
+        for keyword_type in ("keep", "filter"):
+            values = content.get(keyword_type) or []
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                if isinstance(value, dict):
+                    text = str(value.get("text") or "").strip()
+                    reason = str(value.get("reason") or "").strip()
+                    source = str(value.get("source") or "").strip()
+                    confidence = value.get("confidence")
+                else:
+                    text = str(value or "").strip()
+                    reason = ""
+                    source = ""
+                    confidence = None
+                if len(text) < 2:
+                    continue
+                key = (category_name, keyword_type, text.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append({
+                    "id": len(candidates),
+                    "category": category_name,
+                    "type": keyword_type,
+                    "text": text,
+                    "reason": reason,
+                    "source": source,
+                    "confidence": confidence,
+                })
+                if len(candidates) >= AI_KEYWORD_MAX_CANDIDATES:
+                    return candidates
+    return candidates
+
+def _build_ai_logic_paths_prompt(data_path):
+    return f"""你是 log_filter 的代码逻辑路径分析助手。
+
+请分析以下 free-code 工作目录中的项目结构和主要功能逻辑路径：
+
+free-code 工作目录/源码根目录：
+{data_path}
+
+要求：
+1. 你可以读取和搜索该目录下代码。
+2. 找出适合后续从日志链生成关键字组的功能逻辑路径。
+3. 只输出 JSON，不要输出 Markdown。
+4. JSON 格式必须为：
+{{
+  "paths": [
+    {{
+      "id": "stable_ascii_id",
+      "name": "逻辑路径名称",
+      "description": "这条逻辑路径负责什么",
+      "entry_points": ["入口函数/文件/模块"],
+      "log_clues": ["可能出现在日志中的模块名/函数名/tag"]
+    }}
+  ]
+}}"""
+
+def _build_ai_logic_path_chat_prompt(data_path, chat_history, user_message):
+    history_text = "\n".join(
+        f"{item.get('role', 'user')}: {item.get('content', '')}"
+        for item in (chat_history or [])[-12:]
+        if isinstance(item, dict)
+    )
+    return f"""你是 log_filter 的代码逻辑路径讨论助手。
+
+free-code 工作目录/源码根目录：
+{data_path}
+
+已有对话：
+{history_text or "暂无"}
+
+用户新消息：
+{user_message}
+
+请结合源码分析能力和用户目标继续讨论，帮助用户明确哪些功能逻辑路径适合后续生成日志关键字组。回答可以是自然语言，不要生成最终 JSON。"""
+
+def _build_ai_logic_paths_from_chat_prompt(data_path, chat_history):
+    history_text = "\n".join(
+        f"{item.get('role', 'user')}: {item.get('content', '')}"
+        for item in (chat_history or [])
+        if isinstance(item, dict)
+    )
+    return f"""你是 log_filter 的代码逻辑路径提取助手。
+
+free-code 工作目录/源码根目录：
+{data_path}
+
+以下是用户和模型关于代码逻辑路径的讨论内容：
+{history_text}
+
+请基于上面的讨论内容和你对源码的理解，生成后续用于日志关键字组生成的功能逻辑路径。
+
+要求：
+1. 你可以继续读取和搜索该目录下代码来确认路径。
+2. 只输出 JSON，不要输出 Markdown。
+3. JSON 格式必须为：
+{{
+  "paths": [
+    {{
+      "id": "stable_ascii_id",
+      "name": "逻辑路径名称",
+      "description": "这条逻辑路径负责什么",
+      "entry_points": ["入口函数/文件/模块"],
+      "log_clues": ["可能出现在日志中的模块名/函数名/tag"]
+    }}
+  ]
+}}"""
+
+def _build_ai_keyword_prompt(data_path, selected_path, relation, log_file, line_number, log_line_text):
+    path_json = json.dumps(selected_path or {}, ensure_ascii=False, indent=2)
+    return f"""你是 log_filter 的关键字组生成助手。
+
+当前 free-code 工作目录/源码根目录：
+{data_path}
+
+用户选择的功能逻辑路径：
+{path_json}
+
+用户说明该日志和逻辑路径的关系：
+{relation or "未提供"}
+
+用户指定的日志位置：
+- 文件: {log_file or "未提供"}
+- 行号: {line_number or "未提供"}
+- 日志内容: {log_line_text or "未提供"}
+
+任务：
+1. 阅读/搜索代码，定位该功能逻辑会涉及的日志打印点、模块、函数、状态、事件、错误码。
+2. 生成适合 log_filter 固定字符串匹配的关键字。
+3. keep 表示保留关键字，filter 表示屏蔽噪声关键字。
+4. 不要生成过泛关键字，如 error、failed、start、stop、init。
+5. 不要生成只在代码中存在但不会出现在日志里的内部符号，除非它会被日志打印。
+6. 每个关键字给出 source、confidence、reason。
+7. 只输出 JSON，不要输出 Markdown。
+
+JSON 格式必须为：
+{{
+  "categories": {{
+    "分类名": {{
+      "keep": [
+        {{"text": "关键字", "source": "code|log|both", "confidence": 0.9, "reason": "为什么保留"}}
+      ],
+      "filter": [
+        {{"text": "噪声关键字", "source": "code|log|both", "confidence": 0.7, "reason": "为什么屏蔽"}}
+      ]
+    }}
+  }}
+}}"""
+
+def _run_free_code_json_task(cwd, prompt, timeout=None):
+    runtime = _get_free_code_runtime_config(cwd)
+    bridge = _resolve_free_code_bridge(runtime["cwd"])
+    session_id = f"ai-keyword-{uuid.uuid4()}"
+    events = bridge.ask(session_id, prompt, timeout=timeout or FREE_CODE_CHAT_TIMEOUT)
+    final_text = _collect_free_code_final_text(events)
+    if not final_text:
+        raise ValueError("AI 未返回可解析内容")
+    return _extract_json_payload(final_text), final_text
+
+def _run_free_code_text_task(cwd, prompt, timeout=None):
+    runtime = _get_free_code_runtime_config(cwd)
+    bridge = _resolve_free_code_bridge(runtime["cwd"])
+    session_id = f"ai-keyword-chat-{uuid.uuid4()}"
+    events = bridge.ask(session_id, prompt, timeout=timeout or FREE_CODE_CHAT_TIMEOUT)
+    final_text = _collect_free_code_final_text(events)
+    if not final_text:
+        raise ValueError("AI 未返回内容")
+    return final_text
+
+def _render_ai_paths(paths):
+    if not paths:
+        return html.Div("暂无分析结果", className="text-muted")
+    rows = []
+    for item in paths:
+        rows.append(html.Tr([
+            html.Td(html.Code(item.get("id", ""), className="small")),
+            html.Td(item.get("name", ""), className="small"),
+            html.Td(item.get("description", ""), className="small"),
+            html.Td(", ".join(str(v) for v in item.get("log_clues", [])[:8]), className="small"),
+        ]))
+    return dbc.Table([
+        html.Thead(html.Tr([html.Th("ID"), html.Th("路径"), html.Th("说明"), html.Th("日志线索")])),
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", responsive=True)
+
+def _render_ai_path_chat(messages):
+    if not messages:
+        return html.Div("请描述你希望分析的功能、模块或日志场景。", className="text-muted")
+    children = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user")
+        content = str(item.get("content") or "")
+        is_user = role == "user"
+        children.append(
+            html.Div([
+                html.Div("用户" if is_user else "AI", className="fw-bold small mb-1"),
+                html.Div(content, style={"whiteSpace": "pre-wrap"})
+            ], className=("p-2 rounded mb-2 bg-primary text-white ms-auto" if is_user else "p-2 rounded mb-2 bg-light border"),
+               style={"maxWidth": "85%"})
+        )
+    return html.Div(children)
+
+def _render_ai_keyword_candidates(candidates):
+    if not candidates:
+        return html.Div("暂无候选关键字", className="text-muted")
+    rows = []
+    for item in candidates:
+        badge_color = "success" if item.get("type") == "keep" else "danger"
+        rows.append(html.Tr([
+            html.Td(dbc.Checkbox(id={"type": "ai-keyword-candidate-check", "index": item["id"]}, value=True)),
+            html.Td(dbc.Badge(item.get("type"), color=badge_color)),
+            html.Td(item.get("category", ""), className="small"),
+            html.Td(html.Code(item.get("text", ""), className="small")),
+            html.Td(str(item.get("confidence") or ""), className="small"),
+            html.Td(item.get("source", ""), className="small"),
+            html.Td(item.get("reason", ""), className="small"),
+        ]))
+    return dbc.Table([
+        html.Thead(html.Tr([html.Th("选择"), html.Th("类型"), html.Th("分类"), html.Th("关键字"), html.Th("置信度"), html.Th("来源"), html.Th("原因")])),
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", responsive=True)
+
+def _save_ai_keyword_group(group_name, config_name, candidates):
+    group_name = str(group_name or "").strip()
+    if not group_name:
+        raise ValueError("请设置关键字组名")
+    config_name = _safe_config_name(config_name or group_name)
+    config_data = {}
+    for item in candidates or []:
+        category = str(item.get("category") or "AI").strip() or "AI"
+        keyword_type = "filter" if item.get("type") == "filter" else "keep"
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        config_data.setdefault(category, {"keep": [], "filter": []})
+        if text not in config_data[category][keyword_type]:
+            config_data[category][keyword_type].append(text)
+    if not config_data:
+        raise ValueError("没有可保存的关键字")
+    config_path = get_config_path(config_name)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=2)
+    groups = load_config_groups()
+    current_files = groups.get(group_name, [])
+    if not isinstance(current_files, list):
+        current_files = []
+    if config_name not in current_files:
+        current_files.append(config_name)
+    groups[group_name] = current_files
+    if not save_config_groups(groups):
+        raise ValueError("保存配置文件组失败")
+    _config_files_cache["mtime"] = None
+    _config_files_cache["data"] = None
+    return config_name, group_name, len(candidates)
+
+def _normalize_ai_keyword_config_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("AI 返回内容必须是 JSON 对象")
+    group_name = str(payload.get("group_name") or payload.get("group") or "").strip()
+    raw_config_name = payload.get("config_name")
+    if raw_config_name is None:
+        raw_config_name = payload.get("config")
+    config_name = str(raw_config_name if isinstance(raw_config_name, str) else group_name).strip()
+    config_data = payload.get("config_data")
+    if config_data is None:
+        config_data = payload.get("categories")
+    if config_data is None:
+        config_data = payload.get("config")
+    if not group_name:
+        raise ValueError("JSON 缺少 group_name")
+    if not isinstance(config_data, dict):
+        raise ValueError("JSON 缺少 config_data/categories 对象")
+
+    normalized = {}
+    for category, values in config_data.items():
+        category_name = str(category or "AI").strip() or "AI"
+        if not isinstance(values, dict):
+            continue
+        keep_values = values.get("keep") or []
+        filter_values = values.get("filter") or []
+        if not isinstance(keep_values, list):
+            keep_values = []
+        if not isinstance(filter_values, list):
+            filter_values = []
+        keep_items = []
+        filter_items = []
+        for item in keep_values:
+            text = str(item.get("text") if isinstance(item, dict) else item).strip()
+            if text and text not in keep_items:
+                keep_items.append(text)
+        for item in filter_values:
+            text = str(item.get("text") if isinstance(item, dict) else item).strip()
+            if text and text not in filter_items:
+                filter_items.append(text)
+        if keep_items or filter_items:
+            normalized[category_name] = {"keep": keep_items, "filter": filter_items}
+    if not normalized:
+        raise ValueError("配置中没有有效 keep/filter 关键字")
+    return group_name, _safe_config_name(config_name or group_name), normalized
+
+def _save_ai_keyword_config_payload(payload):
+    group_name, config_name, config_data = _normalize_ai_keyword_config_payload(payload)
+    config_path = get_config_path(config_name)
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=2)
+    groups = load_config_groups()
+    current_files = groups.get(group_name, [])
+    if not isinstance(current_files, list):
+        current_files = []
+    if config_name not in current_files:
+        current_files.append(config_name)
+    groups[group_name] = current_files
+    if not save_config_groups(groups):
+        raise ValueError("保存配置文件组失败")
+    _config_files_cache["mtime"] = None
+    _config_files_cache["data"] = None
+    return {
+        "group_name": group_name,
+        "config_name": config_name,
+        "config_path": config_path,
+        "category_count": len(config_data),
+        "keyword_count": sum(len(v.get("keep", [])) + len(v.get("filter", [])) for v in config_data.values()),
+    }
+
+def _render_ai_keyword_config_review(payload):
+    try:
+        group_name, config_name, config_data = _normalize_ai_keyword_config_payload(payload)
+    except Exception:
+        return html.Div("暂无 AI 生成的关键字配置", className="text-muted")
+    rows = []
+    for category, values in config_data.items():
+        for keyword_type in ("keep", "filter"):
+            badge_color = "success" if keyword_type == "keep" else "danger"
+            for text in values.get(keyword_type, []):
+                index = json.dumps({"category": category, "type": keyword_type, "text": text}, ensure_ascii=False)
+                rows.append(html.Tr([
+                    html.Td(dbc.Checkbox(id={"type": "ai-keyword-review-check", "index": index}, value=True)),
+                    html.Td(category, className="small"),
+                    html.Td(dbc.Badge(keyword_type, color=badge_color)),
+                    html.Td(html.Code(text, className="small")),
+                ]))
+    if not rows:
+        return html.Div("暂无有效 keep/filter 关键字", className="text-muted")
+    return dbc.Table([
+        html.Thead(html.Tr([html.Th("保留"), html.Th("分类"), html.Th("类型"), html.Th("关键字")])),
+        html.Tbody(rows)
+    ], bordered=True, hover=True, size="sm", responsive=True)
+
 def _format_size(size_bytes):
     if size_bytes < 1024:
         return f"{size_bytes} B"
@@ -2326,6 +2797,13 @@ app.layout = html.Div([
     dcc.Store(id="llm-source-dirs-store", data=llm_config.get("source_code_dirs", [])),
     dcc.Store(id="selected-log-lines-store", data=[]),
     dcc.Store(id="chat-selected-text-store", data=""),
+    dcc.Store(id="ai-keyword-paths-store", data=[]),
+    dcc.Store(id="ai-keyword-candidates-store", data=[]),
+    dcc.Store(id="ai-keyword-path-chat-store", data=[]),
+    dcc.Store(id="ai-keyword-path-chat-pending-store", data=None),
+    dcc.Store(id="ai-keyword-generated-config-store", data={}),
+    dcc.Textarea(id="ai-keyword-generated-config-sync-input", value="", style={"display": "none"}),
+    dcc.Interval(id="ai-keyword-path-chat-pending-interval", interval=300, disabled=True, max_intervals=0),
     html.Div(id="chat-selected-text-input", style={"display": "none"}, children=""),
     dcc.Input(id="selected-lines-sync-input", type="text", value="", style={"display": "none"}),
     html.Div(id="log-analysis-context-json", style={"display": "none"}, children="{}"),
@@ -2353,6 +2831,7 @@ app.layout = html.Div([
                 dbc.Tabs([
                     dbc.Tab(label="日志过滤", tab_id="tab-1"),
                     dbc.Tab(label="日志对比", tab_id="tab-compare"),
+                    dbc.Tab(label="AI生成关键字", tab_id="tab-ai-keywords"),
                     dbc.Tab(label="日志管理", tab_id="tab-3"),
                     dbc.Tab(label="配置管理", tab_id="tab-2"),
                     dbc.Tab(label="关键字注释(开发中)", tab_id="tab-4")
@@ -2513,10 +2992,10 @@ app.layout = html.Div([
                                                 dbc.Button("bottom", id="quick-bottom-btn", color="secondary", outline=True, size="sm"),
                                                 html.Div(id="filter-progress-inline", style={"minWidth": "200px", "minHeight": "12px"}),
                                                 dbc.Button(id="log-view-ready-signal-btn", style={"display": "none"}),
-                                                dbc.Button("🖱 选择行", id="toggle-selection-mode-btn", color="secondary", outline=True, size="sm", title="点击切换行选择模式（用于AI分析）"),
+                                                dbc.Button("🖱 选择行", id="toggle-selection-mode-btn", color="secondary", outline=True, size="sm", title="点击切换行选择模式（用于AI分析）", style={"display": "none"}),
                                                 html.Span(id="selected-lines-count", className="selected-lines-count", style={"display": "none"}),
                                                 dbc.Button("清除选择", id="clear-selection-btn", color="warning", outline=True, size="sm", style={"display": "none"}),
-                                                dbc.Button("AI分析所选日志", id="analyze-selected-logs-btn", color="primary", size="sm", title="把当前选中的日志和配置文件组上下文发送给 free-code 分析")
+                                                dbc.Button("AI分析所选日志", id="analyze-selected-logs-btn", color="primary", size="sm", title="把当前选中的日志和配置文件组上下文发送给 free-code 分析", style={"display": "none"})
                                             ], className="d-flex align-items-center gap-2 justify-content-start")
                                         ], width=6),
                                         dbc.Col([
@@ -2670,6 +3149,85 @@ app.layout = html.Div([
                                     ], style={"display": "flex", "minHeight": "200px"})
                                 ], style={"border": "1px solid #dee2e6", "borderRadius": "5px", "overflow": "hidden"})
                             ], id="compare-diff-results")
+                        ])
+                    ])
+                ], width=12)
+            ])
+        ], style={"display": "none"}),
+
+        html.Div(id="tab-ai-keywords-content", children=[
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H5("AI 自动生成关键字组", className="mb-0")),
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("free-code 工作目录/源码根目录:"),
+                                    dbc.Input(id="ai-keyword-data-path-input", type="text", value=FREE_CODE_DEFAULT_CWD, placeholder="指定到可分析代码的源码根目录，例如 /home/user/project")
+                                ], width=9),
+                                dbc.Col([
+                                    dbc.Label("操作:", className="d-block"),
+                                    dbc.Button("讨论功能逻辑路径", id="ai-keyword-analyze-path-btn", color="primary", className="w-100")
+                                ], width=3)
+                            ], className="g-2 mb-3"),
+                            dbc.Modal([
+                                dbc.ModalHeader(dbc.ModalTitle("和 AI 讨论并生成关键字配置")),
+                                dbc.ModalBody([
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Button("分析", id="ai-keyword-path-chat-auto-btn", color="primary", size="sm", className="me-2"),
+                                            dbc.Button("修改默认提示词", id="ai-keyword-path-prompt-toggle-btn", color="secondary", outline=True, size="sm")
+                                        ], width=12)
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Input(id="ai-keyword-target-analysis-input", type="text", placeholder="输入已有日志打印、tag、函数名、状态名或错误码等")
+                                        ], width=9),
+                                        dbc.Col([
+                                            dbc.Button("针对性分析", id="ai-keyword-target-analysis-btn", color="info", size="sm", className="w-100")
+                                        ], width=3)
+                                    ], className="g-2 mb-2"),
+                                    dbc.Collapse(
+                                        html.Div([
+                                            dbc.Label("通用分析默认提示词:", className="small fw-bold"),
+                                            dbc.Textarea(id="ai-keyword-path-default-prompt-input", value=AI_KEYWORD_DEFAULT_PATH_DISCUSSION_PROMPT, style={"height": "160px"}),
+                                            dbc.Label("针对性分析默认提示词:", className="small fw-bold mt-2"),
+                                            dbc.Textarea(id="ai-keyword-target-default-prompt-input", value=AI_KEYWORD_DEFAULT_TARGET_ANALYSIS_PROMPT, style={"height": "180px"})
+                                        ]),
+                                        id="ai-keyword-path-prompt-collapse",
+                                        is_open=False,
+                                        className="mb-3"
+                                    ),
+                                    html.Div(id="ai-keyword-path-chat-container", className="border rounded p-2 mb-3", style={"height": "420px", "overflowY": "auto", "backgroundColor": "#fff"}),
+                                    dbc.Textarea(id="ai-keyword-path-chat-input", placeholder="描述你想分析的功能、模块、日志场景，或继续追问...", style={"height": "90px"}),
+                                    html.Div(id="ai-keyword-status", className="small text-muted mt-2")
+                                ]),
+                                dbc.ModalFooter([
+                                    dbc.Button("发送", id="ai-keyword-path-chat-send-btn", color="primary", className="me-2"),
+                                    dbc.Button("生成配置文件", id="ai-keyword-path-chat-generate-btn", color="success", className="me-2"),
+                                    dbc.Button("关闭", id="ai-keyword-path-chat-close-btn", color="secondary")
+                                ])
+                            ], id="ai-keyword-path-chat-modal", is_open=False, size="xl", backdrop="static")
+                            ,
+                            html.Hr(),
+                            html.H5("AI 生成的关键字配置审核", className="mb-3"),
+                            html.Div(id="ai-keyword-generated-config-summary", className="small text-muted mb-2"),
+                            html.Div(id="ai-keyword-generated-config-container", className="border rounded p-2 mb-3", style={"maxHeight": "420px", "overflowY": "auto"}),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("关键字组名:"),
+                                    dbc.Input(id="ai-keyword-review-group-name-input", type="text", placeholder="AI 生成后自动填入")
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Label("配置文件名（不含 .json）:"),
+                                    dbc.Input(id="ai-keyword-review-config-name-input", type="text", placeholder="AI 生成后自动填入")
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Label("保存:", className="d-block"),
+                                    dbc.Button("保存勾选关键字到配置文件", id="ai-keyword-review-save-btn", color="primary", className="w-100")
+                                ], width=4)
+                            ], className="g-2")
                         ])
                     ])
                 ], width=12)
@@ -3286,9 +3844,9 @@ app.layout = html.Div([
             html.Div("就绪，可直接和 free-code 对话", id="chat-status", className="chat-status"),
         ], className="chat-input-area"),
         html.Div(className="chat-win-resize-handle", id="chat-win-resize-handle"),
-    ], id="chat-win", className="chat-win chat-win-visible"),
+    ], id="chat-win", className="chat-win chat-win-hidden"),
     # 浮动 Chat 打开按钮（窗口关闭后显示）
-    html.Button("✦", id="chat-win-open-btn", className="chat-win-fab", n_clicks=0)
+    html.Button("AI", id="chat-win-open-btn", className="chat-win-fab", n_clicks=0)
 ])
 
 # 初始化数据存储
@@ -6912,6 +7470,7 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
 @app.callback(
     [Output("tab-1-content", "style"),
      Output("tab-compare-content", "style"),
+     Output("tab-ai-keywords-content", "style"),
      Output("tab-2-content", "style"),
      Output("tab-3-content", "style"),
      Output("tab-4-content", "style")],
@@ -6920,18 +7479,156 @@ def execute_command(full_command, selected_strings=None, data=None, save_to_temp
 def toggle_tab_visibility(active_tab):
     """切换标签页的显示/隐藏，而不是重新渲染内容，以保留状态"""
     if active_tab == "tab-1":
-        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-compare":
-        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    elif active_tab == "tab-ai-keywords":
+        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-2":
-        return {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}, {"display": "none"}
     elif active_tab == "tab-3":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}, {"display": "none"}
     elif active_tab == "tab-4":
-        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
+        return {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "block"}
     
     # 默认显示tab-1
-    return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+    return {"display": "block"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}, {"display": "none"}
+
+@app.callback(
+    [Output("ai-keyword-path-chat-modal", "is_open"),
+     Output("ai-keyword-path-chat-store", "data", allow_duplicate=True),
+     Output("ai-keyword-path-chat-container", "children", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True)],
+    [Input("ai-keyword-analyze-path-btn", "n_clicks"),
+     Input("ai-keyword-path-chat-close-btn", "n_clicks")],
+    [State("ai-keyword-data-path-input", "value"),
+     State("ai-keyword-path-chat-modal", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_ai_keyword_path_chat_modal(open_clicks, close_clicks, data_path, is_open):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return is_open, dash.no_update, dash.no_update, dash.no_update
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    if trigger_id == "ai-keyword-path-chat-close-btn":
+        return False, dash.no_update, dash.no_update, dash.no_update
+    data_path = str(data_path or "").strip()
+    if not data_path:
+        return False, [], _render_ai_path_chat([]), _toast_script("请先输入 free-code 工作目录/源码根目录", "warning")
+    return True, [], _render_ai_path_chat([]), _toast_script("请在对话框中和 AI 讨论功能逻辑路径", "info")
+
+@app.callback(
+    Output("ai-keyword-path-prompt-collapse", "is_open"),
+    [Input("ai-keyword-path-prompt-toggle-btn", "n_clicks")],
+    [State("ai-keyword-path-prompt-collapse", "is_open")],
+    prevent_initial_call=True
+)
+def toggle_ai_keyword_default_prompt(n_clicks, is_open):
+    if n_clicks:
+        return not is_open
+    return is_open
+
+@app.callback(
+    [Output("ai-keyword-path-chat-store", "data", allow_duplicate=True),
+     Output("ai-keyword-path-chat-container", "children", allow_duplicate=True),
+     Output("ai-keyword-status", "children", allow_duplicate=True),
+     Output("toast-container", "children", allow_duplicate=True),
+     Output("ai-keyword-path-chat-pending-store", "data", allow_duplicate=True),
+     Output("ai-keyword-path-chat-pending-interval", "disabled", allow_duplicate=True)],
+    [Input("ai-keyword-path-chat-pending-interval", "n_intervals")],
+    [State("ai-keyword-path-chat-pending-store", "data"),
+     State("ai-keyword-path-chat-store", "data")],
+    prevent_initial_call=True
+)
+def noop_legacy_ai_keyword_path_chat_pending(n_intervals, pending, chat_history):
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, None, True
+
+@app.callback(
+    [Output("ai-keyword-generated-config-store", "data"),
+     Output("ai-keyword-generated-config-summary", "children"),
+     Output("ai-keyword-generated-config-container", "children"),
+     Output("ai-keyword-review-group-name-input", "value"),
+     Output("ai-keyword-review-config-name-input", "value"),
+     Output("toast-container", "children", allow_duplicate=True),
+     Output("ai-keyword-path-chat-modal", "is_open", allow_duplicate=True)],
+    [Input("ai-keyword-generated-config-sync-input", "value")],
+    prevent_initial_call=True
+)
+def sync_ai_keyword_generated_config_from_frontend(raw_value):
+    raw_value = str(raw_value or "").strip()
+    if not raw_value:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    try:
+        payload = json.loads(raw_value)
+        group_name, config_name, config_data = _normalize_ai_keyword_config_payload(payload)
+        normalized_payload = {
+            "group_name": group_name,
+            "config_name": config_name,
+            "config_data": config_data,
+        }
+        keyword_count = sum(len(v.get("keep", [])) + len(v.get("filter", [])) for v in config_data.values())
+        summary = f"AI 已生成 {len(config_data)} 个分类、{keyword_count} 个关键字。请取消勾选不需要的关键字后保存。"
+        return (
+            normalized_payload,
+            summary,
+            _render_ai_keyword_config_review(normalized_payload),
+            group_name,
+            config_name,
+            _toast_script("AI 已生成关键字配置，请审核后保存", "success"),
+            False,
+        )
+    except Exception as exc:
+        print(f"[AI关键字] 同步生成配置失败: {exc}")
+        return {}, f"生成配置解析失败: {exc}", _render_ai_keyword_config_review({}), "", "", _toast_script(f"生成配置解析失败: {exc}", "error"), True
+
+@app.callback(
+    [Output("toast-container", "children", allow_duplicate=True),
+     Output("ai-keyword-generated-config-summary", "children", allow_duplicate=True),
+     Output("log-filter-config-group-selector", "options", allow_duplicate=True),
+     Output("compare-config-group-selector", "options", allow_duplicate=True)],
+    [Input("ai-keyword-review-save-btn", "n_clicks")],
+    [State({"type": "ai-keyword-review-check", "index": ALL}, "value"),
+     State({"type": "ai-keyword-review-check", "index": ALL}, "id"),
+     State("ai-keyword-generated-config-store", "data"),
+     State("ai-keyword-review-group-name-input", "value"),
+     State("ai-keyword-review-config-name-input", "value")],
+    prevent_initial_call=True
+)
+def save_ai_keyword_reviewed_config(n_clicks, checked_values, checkbox_ids, generated_payload, group_name, config_name):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    config_data = {}
+    for checked, checkbox_id in zip(checked_values or [], checkbox_ids or []):
+        if not checked:
+            continue
+        try:
+            item = json.loads((checkbox_id or {}).get("index") or "{}")
+        except Exception:
+            continue
+        category = str(item.get("category") or "AI").strip() or "AI"
+        keyword_type = "filter" if item.get("type") == "filter" else "keep"
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        config_data.setdefault(category, {"keep": [], "filter": []})
+        if text not in config_data[category][keyword_type]:
+            config_data[category][keyword_type].append(text)
+    if not config_data:
+        return _toast_script("请至少保留一个关键字", "warning"), "请至少保留一个关键字", dash.no_update, dash.no_update
+    payload = {
+        "group_name": str(group_name or (generated_payload or {}).get("group_name") or "").strip(),
+        "config_name": str(config_name or (generated_payload or {}).get("config_name") or "").strip(),
+        "config_data": config_data,
+    }
+    try:
+        result = _save_ai_keyword_config_payload(payload)
+        message = f"已保存配置：configs/{result['config_name']}.json，配置组：{result['group_name']}，关键字数：{result['keyword_count']}"
+        config_groups = load_config_groups()
+        options = [{'label': name, 'value': name} for name in config_groups.keys()]
+        return _toast_script(message, "success"), message, options, options
+    except Exception as exc:
+        print(f"[AI关键字] 保存审核配置失败: {exc}")
+        return _toast_script(f"保存失败: {exc}", "error"), f"保存失败: {exc}", dash.no_update, dash.no_update
 
 # 日志管理tab的回调函数
 
@@ -8371,6 +9068,18 @@ def free_code_chat_close_session(session_id):
         return jsonify({'ok': True, 'session_id': session_id})
     except Exception as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 500
+
+
+@app.server.route('/api/ai-keyword/save-config', methods=['POST'])
+def ai_keyword_save_config_api():
+    from flask import jsonify, request
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        result = _save_ai_keyword_config_payload(payload)
+        return jsonify({'ok': True, **result})
+    except Exception as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
 
 
 # -----------------------------------------------------------------------------

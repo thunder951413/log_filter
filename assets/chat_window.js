@@ -122,6 +122,7 @@
       getWorkingDirectory: getWorkingDirectory,
       applyWorkingDirectory: handleApplyWorkingDirectory
     };
+    updateFab();
   }
 
   function autoResize() {

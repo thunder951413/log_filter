@@ -1,8 +1,10 @@
 {
   "selected_log_file": "logcat-after-powercycle-Failed.txt",
   "selected_strings": [],
-  "last_updated": "2026-04-27T17:27:44.293702",
+  "last_updated": "2026-05-11T16:44:31.683694",
   "selected_config_files": [
-    "CI_ITEMS"
+    "CI_PIN",
+    "CI_ITEMS",
+    "CI_CARD"
   ]
 }
