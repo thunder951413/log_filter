@@ -64,9 +64,11 @@
 | 日志加载 | 支持拖拽导入、大文件流式加载、自动编码检测 |
 | 关键字过滤 | 保留/排除关键字，多配置切换，异步后台过滤 |
 | 四种过滤后端 | 按优先级自动选择：rg > grep > findstr > PowerShell > Python |
-| 流程分析 | 基于 `flows.json` 的配对起止 + 序列步骤检测 |
+| 流程分析 | 基于 `flows.json` 的配对起止 + 序列步骤检测（仅 AI 分析时触发） |
+| AI 流程状态分析 | 后台线程 + 前端轮询架构，实时流式显示 AI 交互过程（prompt、工具调用、响应生成） |
 | 配置管理 | `configs/` (18个) + `config_groups/` 多场景规则复用 |
 | AI 分析 | 通过 `freecode_bridge` 调用 LLM 进行源码定位和错误分析 |
+| 可视化流程图 | 将 AI 分析的流程数据渲染为卡片式流程图，颜色标识状态（绿=正常，红=异常，黄=警告） |
 | API 接口 | 滚动窗口 (`/api/get-log-window`)、聊天 SSE (`/api/free-code/chat/<session>/stream`) |
 
 ### `freecode_bridge/` — AI CLI 集成
@@ -120,6 +122,7 @@ AI Agent 拥有 4 个工具：
 | `toast.js` | 189 | Toast 通知系统（成功/错误/信息/警告） |
 | `toast.css` | 137 | Toast 样式 |
 | `log_selection.css` | 58 | 日志行选择模式样式（勾选模式） |
+| `flow_chart.css` | 85 | AI 流程分析可视化流程图样式 + 加载动画 |
 
 关键前端机制：
 - **虚拟滚动**：仅加载可见区域行，`/api/get-log-window` 后端分片，120ms debounce
@@ -184,6 +187,36 @@ AI Agent 拥有 4 个工具：
          → 用户可追问 → 保持 session 上下文
 ```
 
+### AI 流程状态分析流（实时流式）
+```
+用户点击「AI 流程状态分析」按钮
+         → start_ai_flow_analysis callback
+             → 验证过滤结果存在
+             → 保存过滤日志到 temp/ai_flow_input_{uuid}.txt
+             → 初始化 _ai_flow_tasks 任务记录
+             → 启动 _ai_flow_worker 后台线程
+             → 启用 dcc.Interval (500ms)   ← 立即返回
+         
+后台线程 (_ai_flow_worker):
+         → bridge.ensure_session(task_id)
+         → session.client.send_text(prompt)
+         → 循环 read_event():
+             → system(init)     → 记录事件
+             → system(can_use_tool) → 记录工具调用事件
+             → assistant_partial   → 记录增量文本事件
+             → assistant          → 记录完整响应事件
+             → result             → 标记完成
+
+前端轮询 (poll_ai_flow_progress):
+         → 每 500ms 读取 _ai_flow_tasks
+         → _render_ai_flow_events() 渲染新事件到实时日志面板
+         → status == "done":
+             → parse_ai_flow_response() 解析 JSON
+             → render_flow_chart() 渲染可视化流程图
+             → 保存交互日志到 ai-flow-interaction-log store
+             → 显示「交互日志」按钮，可打开 modal 查看完整 prompt + 响应
+```
+
 ### 日志对比流
 ```
 日志 A + 日志 B → 分别应用同一过滤规则
@@ -212,7 +245,7 @@ AI Agent 拥有 4 个工具：
 | 源文件 | 原始日志文件内容 |
 | 高亮显示 | 仅高亮命中的行 |
 | 注释 | 带关键字注释的日志 |
-| 流程视图 | 基于 flows.json 的流程分析 |
+| 流程视图 | AI 流程状态分析入口。默认显示提示文案，点击「AI 流程状态分析」触发实时分析。分析过程中实时展示 AI 交互日志（prompt 发送、工具调用、流式响应），完成后渲染为可视化流程图（彩色状态标识），可通过「交互日志」按钮查看完整 prompt + 原始响应 |
 
 ## UI 逻辑细节
 
@@ -254,9 +287,11 @@ npm run pack:linux  # Linux tar.gz
 
 ## 已知关注点
 
-- `app.py` 单文件 ~10200 行，维护成本高，建议按功能区拆分
+- `app.py` 单文件 ~10900 行，维护成本高，建议按功能区拆分
 - `freecode-cli` 二进制 ~220MB，显著增加分发体积
 - `FEATURE_AI_ANALYSIS.md` 描述完整 AI 分析方案设计，需对照确认实现进度
 - 仓库中存在大量 macOS 资源 fork 文件 (`._*`)，建议加入 `.gitignore`
 - 前端增强模块使用原生 JS，与 Dash 回调体系通过隐藏 input / localStorage 桥接
 - 全局变量管理较松散（`chatStates`、`activeJobTimers` 等挂载在 `window` 对象上）
+- AI 流程状态分析的后台任务通过 `_ai_flow_tasks` 全局字典管理（带锁），worker 线程使用 `session.client.read_event()` 流式读取 AI 事件
+- `dcc.Interval` 500ms 轮询存在最大 500ms 的显示延迟，可通过调整 `_AI_FLOW_PROGRESS_INTERVAL_MS` 优化响应速度

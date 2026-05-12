@@ -130,6 +130,7 @@ npm run electron:start
 - **Agentic Loop**：LLM 可自主调用 4 个工具（`search_source_code`、`read_source_file`、`list_directory`、`grep_source_code`）进行多轮迭代分析
 - **AI 聊天浮动窗口**（`chat_window.js/css`）：右下角悬浮窗口，支持拖拽、缩放、最小化、SSE 流式打字机效果
 - **AI 关键字路径聊天**（`ai_keyword_path_chat.js`）：独立的 AI 聊天模态框，用于探索代码中的日志关键字，支持自动分析、针对性分析、关键字配置生成
+- **AI 流程状态分析**：在过滤结果页的「流程视图」tab 中，基于已过滤日志和配置组，通过 AI 自动识别业务流程运行状态。后台线程实时流式交互，前端轮询展示 AI 的 prompt 发送、工具调用、响应生成全过程。分析完成后以可视化流程图展示（绿色=正常、红色=异常、黄色=警告），支持查看完整交互日志（prompt + 原始响应）。
 - **本地 CLI 桥接**：通过 `freecode_bridge/` 与 `freecode-cli` 子进程通信（JSON over stdin/stdout）
 - **技能沉淀**：支持为配置文件组生成/维护专用 skill，把历史分析经验沉淀为可复用知识
 
@@ -174,6 +175,7 @@ npm run electron:start
 | `compare_sync.js` | 日志对比双栏同步滚动 |
 | `toast.js/css` | Toast 通知系统 |
 | `log_selection.css` | 日志行选择模式样式 |
+| `flow_chart.css` | AI 流程分析可视化流程图样式 |
 
 ## 典型使用流程
 
