@@ -1,10 +1,9 @@
 {
-  "selected_log_file": "logcat-after-powercycle-Failed.txt",
+  "selected_log_file": "logcat-CIPLUS1-3-LIC-0092-Failed.txt",
   "selected_strings": [],
-  "last_updated": "2026-05-11T16:44:31.683694",
+  "last_updated": "2026-05-12T17:50:23.248097",
   "selected_config_files": [
     "CI_PIN",
-    "CI_ITEMS",
-    "CI_CARD"
+    "CI_ITEMS"
   ]
 }

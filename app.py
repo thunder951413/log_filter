@@ -191,6 +191,10 @@ _filter_tasks = {}
 _filter_tasks_lock = threading.Lock()
 _FILTER_CHUNK_LINES = 200  # 首片行数（更快首屏）
 _FILTER_PROGRESS_INTERVAL_MS = 800  # 前端轮询间隔
+
+_ai_flow_tasks = {}
+_ai_flow_tasks_lock = threading.Lock()
+_AI_FLOW_PROGRESS_INTERVAL_MS = 500
 _SOURCE_PREVIEW_LINES = 2000  # 源文件tab预览行数上限
 _UI_BUSY_STORE_ID = "ui-busy-store"
 _windows_powershell_runtime_cache = None
@@ -1748,6 +1752,155 @@ def _get_filter_task(session_id):
         return _filter_tasks.get(session_id, {}).copy()
 
 
+# ---- AI 流程分析任务管理 ----
+
+def _init_ai_flow_task(task_id):
+    with _ai_flow_tasks_lock:
+        _ai_flow_tasks[task_id] = {
+            "status": "running",
+            "events": [],
+            "displayed_count": 0,
+            "prompt": "",
+            "input_file": "",
+            "response_text": "",
+            "error": None,
+            "config_group": "",
+            "config_files": "",
+        }
+
+def _get_ai_flow_task(task_id):
+    with _ai_flow_tasks_lock:
+        return _ai_flow_tasks.get(task_id, {}).copy()
+
+def _append_ai_flow_event(task_id, event):
+    with _ai_flow_tasks_lock:
+        if task_id in _ai_flow_tasks:
+            _ai_flow_tasks[task_id].setdefault("events", []).append(event)
+
+def _update_ai_flow_task(task_id, **kwargs):
+    with _ai_flow_tasks_lock:
+        if task_id in _ai_flow_tasks:
+            _ai_flow_tasks[task_id].update(kwargs)
+
+def _clear_ai_flow_task(task_id):
+    with _ai_flow_tasks_lock:
+        _ai_flow_tasks.pop(task_id, None)
+
+
+def _ai_flow_worker(task_id, prompt, input_file, config_group, config_files):
+    """后台线程：执行 AI 流程分析，实时记录事件"""
+    try:
+        runtime = _get_free_code_runtime_config(None)
+        bridge = _resolve_free_code_bridge(runtime["cwd"])
+        session = bridge.ensure_session(task_id)
+
+        _append_ai_flow_event(task_id, {"type": "prompt", "content": prompt, "ts": time.time()})
+        session.client.send_text(prompt)
+
+        while True:
+            event = session.client.read_event(timeout=60)
+            etype = event.get("type")
+
+            if etype == "system":
+                _append_ai_flow_event(task_id, {
+                    "type": "system", "subtype": event.get("subtype"),
+                    "content": event, "ts": time.time()
+                })
+            elif etype == "assistant_partial":
+                delta = str(event.get("delta") or "")
+                if delta:
+                    _append_ai_flow_event(task_id, {
+                        "type": "text", "content": delta, "ts": time.time()
+                    })
+            elif etype == "assistant":
+                text = extract_text_from_chat_event(event)
+                if text:
+                    _append_ai_flow_event(task_id, {
+                        "type": "text", "content": text, "ts": time.time()
+                    })
+            elif etype == "result":
+                _append_ai_flow_event(task_id, {"type": "done", "ts": time.time()})
+                break
+            elif etype == "error":
+                err = event.get("error", "未知错误")
+                _append_ai_flow_event(task_id, {"type": "error", "content": err, "ts": time.time()})
+                _update_ai_flow_task(task_id, status="error", error=err)
+                return
+
+        # 收集完整响应
+        all_events = _get_ai_flow_task(task_id).get("events", [])
+        parts = []
+        for e in all_events:
+            if e.get("type") == "text":
+                parts.append(e["content"])
+        full_text = "".join(parts).strip()
+        _update_ai_flow_task(task_id, status="done", response_text=full_text)
+    except Exception as e:
+        err_msg = str(e)
+        _append_ai_flow_event(task_id, {"type": "error", "content": err_msg, "ts": time.time()})
+        _update_ai_flow_task(task_id, status="error", error=err_msg)
+
+
+def _render_ai_flow_events(events, start_from=0):
+    """将 AI 流程事件列表渲染为 HTML"""
+    chunks = []
+    for i in range(start_from, len(events)):
+        e = events[i]
+        etype = e.get("type", "")
+        ts = e.get("ts", 0)
+        time_str = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else ""
+
+        if etype == "prompt":
+            chunks.append(html.Div([
+                html.Small(f"[{time_str}] ", style={"color": "#999"}),
+                html.Span("发送 Prompt", style={"fontWeight": 600, "color": "#005c99"}),
+            ], style={"padding": "4px 8px", "background": "#e8f4fd", "borderLeft": "3px solid #005c99", "marginBottom": "2px", "borderRadius": "3px", "fontSize": "12px"}))
+
+        elif etype == "system":
+            subtype = e.get("subtype", "")
+            if subtype == "init":
+                chunks.append(html.Div([
+                    html.Small(f"[{time_str}] ", style={"color": "#999"}),
+                    html.Span("系统初始化", style={"color": "#666"}),
+                ], style={"padding": "2px 8px", "fontSize": "12px", "color": "#888"}))
+            elif subtype == "can_use_tool":
+                req = e.get("content", {}).get("request", {})
+                tool_input = req.get("input", {})
+                tool_name = tool_input.get("tool", "?")
+                args = tool_input.get("arguments", {})
+                args_str = "; ".join(f"{k}={v}" for k, v in args.items())[:120]
+                chunks.append(html.Div([
+                    html.Small(f"[{time_str}] ", style={"color": "#999"}),
+                    html.Span(f"🔧 使用工具: {tool_name}", style={"fontWeight": 600, "color": "#e67e22"}),
+                    html.Span(f" {args_str}", style={"color": "#999", "fontSize": "11px"}),
+                ], style={"padding": "2px 8px 2px 24px", "fontSize": "12px"}))
+
+        elif etype == "text":
+            text = e.get("content", "")
+            preview = text[:200].replace("\n", " ")
+            chunks.append(html.Div([
+                html.Small(f"[{time_str}] ", style={"color": "#999"}),
+                html.Span(preview, style={"color": "#333"}),
+                html.Span("…" if len(text) > 200 else "", style={"color": "#999"}),
+            ], style={"padding": "2px 8px 2px 24px", "fontSize": "12px", "fontFamily": "monospace", "lineHeight": "1.5"}))
+
+        elif etype == "done":
+            chunks.append(html.Div([
+                html.Span("✓ 分析完成", style={"fontWeight": 600, "color": "#28a745"}),
+            ], style={"padding": "4px 8px", "background": "#d4edda", "borderLeft": "3px solid #28a745", "marginTop": "4px", "borderRadius": "3px", "fontSize": "12px"}))
+
+        elif etype == "error":
+            err = e.get("content", "未知错误")
+            chunks.append(html.Div([
+                html.Small(f"[{time_str}] ", style={"color": "#999"}),
+                html.Span(f"✗ 错误: {err}", style={"color": "#dc3545", "fontWeight": 600}),
+            ], style={"padding": "4px 8px", "background": "#f8d7da", "borderLeft": "3px solid #dc3545", "marginTop": "4px", "borderRadius": "3px", "fontSize": "12px"}))
+
+    return chunks
+
+
+# ---- 过滤后端信息 ----
+
 def _format_filter_backend_text(backend=None, preferred_backend="auto", pending=False):
     info = _get_filter_backend_runtime_info(preferred_backend)
     preferred_backend = info.get("preferred_backend") or "auto"
@@ -2809,6 +2962,8 @@ app.layout = html.Div([
     html.Div(id="log-analysis-context-json", style={"display": "none"}, children="{}"),
     dcc.Store(id="filter-session-store", data=""),
     dcc.Store(id="filter-first-chunk-ready", data=False),
+    dcc.Store(id="ai-flow-analysis-trigger", data=0),
+    dcc.Store(id="ai-flow-interaction-log", data={}),
     dcc.Interval(id="filter-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
     dcc.Store(id="compare-session-store", data={"a": "", "b": ""}),
     dcc.Interval(id="compare-progress-interval", interval=_FILTER_PROGRESS_INTERVAL_MS, disabled=True),
@@ -2976,7 +3131,35 @@ app.layout = html.Div([
                                                     html.Div(id="log-annotation-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                 ]),
                                                 dbc.Tab(label="流程视图", tab_id="flows", children=[
-                                                    html.Div(id="log-flows-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                    html.Div([
+                                                        dbc.Row([
+                                                            dbc.Col([
+                                                                dbc.Button("AI 流程状态分析", id="ai-flow-analysis-btn", color="primary", size="sm", className="me-2"),
+                                                                dbc.Button("交互日志", id="ai-flow-log-btn", color="secondary", outline=True, size="sm", style={"display": "none"}),
+                                                                html.Span(id="ai-flow-analysis-status", className="text-muted small ms-2"),
+                                                            ], width=12)
+                                                        ], className="mb-2"),
+                                                        html.Div(id="ai-flow-analysis-live-log", style={
+                                                            "maxHeight": "300px", "overflowY": "auto",
+                                                            "backgroundColor": "#fafafa", "padding": "6px",
+                                                            "border": "1px solid #e0e0e0", "borderRadius": "4px",
+                                                            "fontFamily": "monospace", "fontSize": "12px",
+                                                            "marginBottom": "8px", "display": "none"
+                                                        }),
+                                                        dcc.Loading(
+                                                            html.Div(id="ai-flow-analysis-results", className="mb-2"),
+                                                            type="dot", color="#0d6efd",
+                                                            parent_style={"minHeight": "40px"}
+                                                        ),
+                                                        dcc.Interval(id="ai-flow-progress-interval", interval=500, disabled=True),
+                                                        dbc.Modal([
+                                                            dbc.ModalHeader(dbc.ModalTitle("AI 流程分析交互日志"), close_button=True),
+                                                            dbc.ModalBody(id="ai-flow-log-body", style={"maxHeight": "70vh", "overflowY": "auto", "fontSize": "12px"}),
+                                                            dbc.ModalFooter(dbc.Button("关闭", id="ai-flow-log-close-btn", className="ms-auto"))
+                                                        ], id="ai-flow-log-modal", size="xl", scrollable=True, is_open=False),
+                                                        html.Hr(style={"margin": "4px 0"}),
+                                                        html.Div(id="log-flows-results", style={"maxHeight": "calc(100vh - 380px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                    ])
                                                 ])
                                             ], id="display-mode-tabs", active_tab="filtered")
                                         ], width=12)
@@ -5001,7 +5184,295 @@ def load_tab_contents_on_file_select(selected_log_file, filter_tab_strings, temp
 
     return source_result, annotation_component, flows_component, source_result, "", _make_log_view_ui_state("source_ready")
 
- 
+
+def find_latest_filter_session():
+    """从 temp 目录找到最新的过滤结果文件，返回 session_id"""
+    ensure_temp_dir()
+    try:
+        files = [f for f in os.listdir(TEMP_DIR) if f.startswith("filter_result_") and f.endswith(".txt")]
+        if not files:
+            return None
+        files.sort(key=lambda f: os.path.getmtime(os.path.join(TEMP_DIR, f)), reverse=True)
+        latest = files[0]
+        sid = latest[len("filter_result_"):-len(".txt")]
+        return sid
+    except Exception:
+        return None
+
+
+# ---- AI 流程状态分析（实时流式：后台线程 + 前端轮询）----
+
+@app.callback(
+    [Output("ai-flow-analysis-trigger", "data"),
+     Output("ai-flow-analysis-status", "children"),
+     Output("ai-flow-analysis-results", "children", allow_duplicate=True),
+     Output("ai-flow-analysis-live-log", "children"),
+     Output("ai-flow-analysis-live-log", "style"),
+     Output("ai-flow-analysis-btn", "disabled"),
+     Output("ai-flow-progress-interval", "disabled"),
+     Output("ai-flow-progress-interval", "n_intervals")],
+    [Input("ai-flow-analysis-btn", "n_clicks")],
+    [State("log-filter-config-group-selector", "value")],
+    prevent_initial_call=True
+)
+def start_ai_flow_analysis(n_clicks, config_group):
+    if not n_clicks:
+        return (dash.no_update,) * 8
+
+    session_id = find_latest_filter_session()
+    if not session_id:
+        return 0, html.Span("请先过滤日志", style={"color": "#856404"}), dash.no_update, "", {"display": "none"}, False, True, 0
+
+    filtered_text = read_filtered_log_text(session_id, max_lines=3000)
+    if not filtered_text or not filtered_text.strip():
+        return 0, html.Span("无过滤数据", style={"color": "#856404"}), dash.no_update, "", {"display": "none"}, False, True, 0
+
+    import uuid
+    task_id = f"ai-flow-{uuid.uuid4().hex[:12]}"
+
+    config_files = ""
+    if config_group:
+        try:
+            groups = load_config_groups()
+            group_files = groups.get(config_group, [])
+            if group_files:
+                config_files = ", ".join(group_files)
+        except Exception:
+            pass
+
+    # 保存输入文件
+    input_file = os.path.join(TEMP_DIR, f"ai_flow_input_{uuid.uuid4().hex[:8]}.txt")
+    try:
+        with open(input_file, 'w', encoding='utf-8') as f:
+            f.write(f"# LogFilter AI Flow Analysis Input\n")
+            if config_group:
+                f.write(f"# 配置组: {config_group}\n")
+            if config_files:
+                f.write(f"# 关联配置文件: {config_files}\n")
+            f.write(f"# 共 {len(filtered_text.splitlines())} 行\n\n")
+            f.write(filtered_text)
+    except Exception as e:
+        print(f"[AI流程] 写入临时文件失败: {e}")
+        return 0, html.Span("写入失败", style={"color": "#dc3545"}), dash.no_update, "", {"display": "none"}, False, True, 0
+
+    config_info = f"配置组: {config_group}" if config_group else "未选择配置组"
+    if config_files:
+        config_info += f"\n关联配置文件: {config_files}"
+
+    prompt = f"""你是一个日志流程分析专家。分析日志文件中的过滤后内容，识别其中的业务流程运行状态，并以 JSON 格式返回。
+
+{config_info}
+
+日志文件路径: {input_file}
+请使用 read_source_file 工具读取该文件，然后分析其中的日志内容。
+
+请严格按照以下 JSON 格式返回分析结果，只返回纯 JSON，不要包含 markdown 代码块标记:
+
+{{"flows": [
+  {{"name": "流程名称", "status": "normal", "reason": "状态说明",
+    "steps": [
+      {{"name": "步骤名称", "status": "normal", "detail": "匹配到的日志行摘要(10-30字)"}}
+    ]
+  }}
+]}}
+
+状态取值规则:
+- normal: 步骤正常完成，无报错
+- abnormal: 步骤出现 error/fail/exception 等错误
+- warning: 步骤出现 timeout/warning/retry 等异常但不致命
+
+如果日志中无明显可识别的业务流程，返回 {{"flows": []}}。"""
+
+    # 初始化任务
+    _init_ai_flow_task(task_id)
+    _update_ai_flow_task(task_id,
+        prompt=prompt, input_file=input_file,
+        config_group=config_group or "", config_files=config_files)
+
+    # 启动后台线程
+    thread = threading.Thread(
+        target=_ai_flow_worker,
+        args=(task_id, prompt, input_file, config_group, config_files)
+    )
+    thread.daemon = True
+    thread.start()
+
+    live_log_style = {
+        "maxHeight": "300px", "overflowY": "auto",
+        "backgroundColor": "#fafafa", "padding": "6px",
+        "border": "1px solid #e0e0e0", "borderRadius": "4px",
+        "fontFamily": "monospace", "fontSize": "12px",
+        "marginBottom": "8px"
+    }
+    return task_id, html.Span([
+        html.Span("分析中", className="me-1"),
+        html.Span("...", className="animated-dots")
+    ], style={"color": "#0d6efd"}), "", "", live_log_style, True, False, 0
+
+
+@app.callback(
+    [Output("ai-flow-analysis-live-log", "children", allow_duplicate=True),
+     Output("ai-flow-analysis-results", "children", allow_duplicate=True),
+     Output("ai-flow-analysis-status", "children", allow_duplicate=True),
+     Output("ai-flow-analysis-btn", "disabled", allow_duplicate=True),
+     Output("ai-flow-progress-interval", "disabled", allow_duplicate=True),
+     Output("ai-flow-interaction-log", "data", allow_duplicate=True),
+     Output("ai-flow-log-btn", "style")],
+    [Input("ai-flow-progress-interval", "n_intervals")],
+    [State("ai-flow-analysis-trigger", "data")],
+    prevent_initial_call=True
+)
+def poll_ai_flow_progress(n_intervals, task_id):
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    if not task_id or not isinstance(task_id, str) or not task_id.startswith("ai-flow-"):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update, dash.no_update
+
+    task = _get_ai_flow_task(task_id)
+    if not task:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update, dash.no_update
+
+    events = task.get("events", [])
+    all_chunks = _render_ai_flow_events(events, start_from=0)
+
+    status = task.get("status")
+    log_entry = {}
+
+    if status == "running":
+        return all_chunks, dash.no_update, dash.no_update, True, False, dash.no_update, dash.no_update
+
+    elif status == "error":
+        err = task.get("error", "未知错误")
+        # 构建交互日志 entry
+        log_entry = {
+            "timestamp": now_str,
+            "config_group": task.get("config_group", ""),
+            "config_files": task.get("config_files", ""),
+            "prompt": task.get("prompt", ""),
+            "response": task.get("response_text", ""),
+            "input_file": task.get("input_file", ""),
+            "status": "error"
+        }
+        error_display = html.Div([
+            html.P("AI 分析失败:", className="text-danger small mb-1"),
+            html.Pre(err[:500], style={"fontSize": "11px", "background": "#f5f5f5", "padding": "8px", "borderRadius": "4px"})
+        ])
+        _clear_ai_flow_task(task_id)
+        return all_chunks, error_display, html.Span("分析失败", style={"color": "#dc3545"}), False, True, log_entry, {"display": "inline-block"}
+
+    elif status == "done":
+        response_text = task.get("response_text", "")
+        prompt_text = task.get("prompt", "")
+        input_file = task.get("input_file", "")
+
+        flow_data = parse_ai_flow_response(response_text)
+        if flow_data is None:
+            log_entry = {
+                "timestamp": now_str,
+                "config_group": task.get("config_group", ""),
+                "config_files": task.get("config_files", ""),
+                "prompt": prompt_text,
+                "response": response_text,
+                "input_file": input_file,
+                "status": "format_error"
+            }
+            _clear_ai_flow_task(task_id)
+            result_display = html.Div([
+                html.P("AI 返回数据格式异常，显示原始分析结果：", className="text-muted small mb-1"),
+                html.Pre(response_text[:2000], style={"fontSize": "11px", "whiteSpace": "pre-wrap", "background": "#f5f5f5", "padding": "8px", "borderRadius": "4px"})
+            ])
+            return all_chunks, result_display, html.Span("格式异常", style={"color": "#856404"}), False, True, log_entry, {"display": "inline-block"}
+
+        chart = render_flow_chart(flow_data)
+        result_count = len(flow_data.get("flows", []))
+        log_entry = {
+            "timestamp": now_str,
+            "config_group": task.get("config_group", ""),
+            "config_files": task.get("config_files", ""),
+            "prompt": prompt_text,
+            "response": response_text,
+            "input_file": input_file,
+            "status": "ok",
+            "flow_count": result_count
+        }
+        _clear_ai_flow_task(task_id)
+        return all_chunks, chart, html.Span([
+            html.Span("完成", style={"color": "#28a745", "fontWeight": 600}),
+            html.Span(f" — 检测到 {result_count} 个流程", style={"color": "#666"})
+        ]), False, True, log_entry, {"display": "inline-block"}
+
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, True, dash.no_update, dash.no_update
+
+
+# ---- 交互日志弹窗 ----
+
+def build_interaction_log_body(log_data):
+    """从 store 数据构建交互日志的 Modal body"""
+    if not log_data or not isinstance(log_data, dict) or not log_data.get("prompt"):
+        return html.Div("暂无交互日志，请先执行 AI 流程状态分析", className="text-muted text-center py-5")
+
+    ts = log_data.get("timestamp", "")
+    cg = log_data.get("config_group", "")
+    cf = log_data.get("config_files", "")
+    inp = log_data.get("input_file", "")
+    prompt_text = log_data.get("prompt", "")
+    response_text = log_data.get("response", "")
+    status = log_data.get("status", "")
+
+    sections = [
+        html.Div([
+            html.H6("基本信息", className="mb-2", style={"borderBottom": "1px solid #dee2e6", "paddingBottom": "4px"}),
+            html.Table([
+                html.Tr([html.Td("时间", style={"width": "100px", "color": "#888"}), html.Td(ts)]),
+                html.Tr([html.Td("配置组", style={"color": "#888"}), html.Td(cg or "未选择")]),
+                html.Tr([html.Td("配置文件", style={"color": "#888"}), html.Td(cf or "无")]),
+                html.Tr([html.Td("输入文件", style={"color": "#888"}), html.Td(html.Code(inp, style={"fontSize": "11px"}))]),
+                html.Tr([html.Td("状态", style={"color": "#888"}), html.Td(status)]),
+            ], style={"fontSize": "13px"}),
+        ], className="mb-3"),
+    ]
+
+    sections.append(html.Div([
+        html.H6("发送给 AI 的 Prompt", className="mb-2", style={"borderBottom": "1px solid #dee2e6", "paddingBottom": "4px"}),
+        html.Pre(prompt_text, style={
+            "fontSize": "11px", "whiteSpace": "pre-wrap", "wordBreak": "break-all",
+            "background": "#f8f9fa", "padding": "12px", "borderRadius": "4px",
+            "border": "1px solid #dee2e6", "maxHeight": "400px", "overflowY": "auto"
+        }),
+    ], className="mb-3"))
+
+    sections.append(html.Div([
+        html.H6("AI 返回的原始响应", className="mb-2", style={"borderBottom": "1px solid #dee2e6", "paddingBottom": "4px"}),
+        html.Pre(response_text, style={
+            "fontSize": "11px", "whiteSpace": "pre-wrap", "wordBreak": "break-all",
+            "background": "#f0f8ff", "padding": "12px", "borderRadius": "4px",
+            "border": "1px solid #b8daff", "maxHeight": "400px", "overflowY": "auto"
+        }),
+    ]))
+
+    return html.Div(sections, style={"padding": "4px"})
+
+
+@app.callback(
+    Output("ai-flow-log-modal", "is_open"),
+    Output("ai-flow-log-body", "children"),
+    [Input("ai-flow-log-btn", "n_clicks"),
+     Input("ai-flow-log-close-btn", "n_clicks")],
+    [State("ai-flow-log-modal", "is_open"),
+     State("ai-flow-interaction-log", "data")],
+    prevent_initial_call=True
+)
+def toggle_interaction_log(open_clicks, close_clicks, is_open, log_data):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return is_open, dash.no_update
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+    if trigger_id == "ai-flow-log-btn":
+        body = build_interaction_log_body(log_data)
+        return True, body
+    elif trigger_id == "ai-flow-log-close-btn":
+        return False, dash.no_update
+    return is_open, dash.no_update
+
 
 def _compile_patterns(keep_strings, filter_strings):
     """预编译保留/过滤正则，避免重复编译"""
@@ -6110,212 +6581,247 @@ def _flow_keyword_matches(line: str, keyword) -> bool:
     except Exception:
         return False
 
-def build_flows_display(selected_log_file):
-    """基于流程配置构建括号缩进的流程视图"""
+
+# ---------- AI 流程状态分析 ----------
+
+def read_filtered_log_text(session_id, max_lines=3000):
+    """读取过滤后的日志文本内容用于 AI 分析"""
+    if not session_id:
+        return None
+    temp_file = get_temp_file_path(session_id)
+    if not os.path.exists(temp_file):
+        return None
+    encoding = detect_file_encoding(temp_file)
     try:
-        if not selected_log_file:
-            return html.P("请选择日志文件", className="text-danger text-center")
-
-        cfg = load_flows_config()
-        paired_defs = cfg.get('paired', []) or []
-        seq_defs = cfg.get('sequences', []) or []
-
-        if not paired_defs and not seq_defs:
-            return html.P("未找到流程配置（configs/flows.json），请先配置 paired 或 sequences", className="text-muted text-center")
-
-        # 为不同流程名称分配不同颜色
-        flow_names = []
-        for p in paired_defs:
-            n = str((p or {}).get('name') or '').strip()
-            if n:
-                flow_names.append(n)
-        for s in seq_defs:
-            n = str((s or {}).get('name') or '').strip()
-            if n:
-                flow_names.append(n)
-        # 去重保持顺序
-        flow_names = list(dict.fromkeys(flow_names))
-        flow_colors = get_category_colors(flow_names)
-
-        log_path = get_log_path(selected_log_file)
-        if not os.path.exists(log_path):
-            return html.P(f"日志文件不存在: {selected_log_file}", className="text-danger text-center")
-
-        # 读取日志文本（尝试多种编码）
-        def read_text(path):
-            encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1', 'iso-8859-1']
-            for enc in encodings:
-                try:
-                    with open(path, 'r', encoding=enc, errors='replace') as f:
-                        return f.readlines()
-                except Exception:
-                    continue
-            with open(path, 'r', encoding='latin-1', errors='replace') as f:
-                return f.readlines()
-
-        lines = read_text(log_path)
-
-        # 辅助：仅去除时间戳前缀（保留标签/级别等字符前缀）
-        prefix_patterns = [
-            # 仅时间戳（YYYY-MM-DD 或 MM-DD + 时间）
-            r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?\s+',
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3}\s+',
-            r'^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+',
-            r'^\d{2}:\d{2}:\d{2}\.\d{3}\s+',
-            r'^\d{2}:\d{2}:\d{2}\s+',
-            # 括号/方括号形式的纯时间戳
-            r'^\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s+',
-            r'^\[\d{10,13}\]\s+'
-        ]
-
-        def strip_prefix(s: str) -> str:
-            for p in prefix_patterns:
-                m = re.match(p, s)
-                if m:
-                    return s[m.end():].rstrip('\n')
-            return s.rstrip('\n')
-
-        # 配对流程：栈管理
-        stack = []  # 每项: {name, end, start_line}
-
-        # 序列流程：每个定义维护当前索引
-        seq_states = {}
-        for seq in seq_defs:
-            name = str(seq.get('name') or '').strip()
-            steps = seq.get('steps') or []
-            if not name or not isinstance(steps, list) or not steps:
-                continue
-            seq_states[name] = {
-                'steps': steps,
-                'idx': 0
-            }
-
-        out_lines = []
-
-        for raw in lines:
-            line = raw.rstrip('\n')
-            show_line = strip_prefix(line)
-            # 序列/配对匹配：优先对去前缀后的可读内容匹配，未命中则回退到原始整行
-            def _matches(keyword):
-                return _flow_keyword_matches(show_line, keyword) or _flow_keyword_matches(line, keyword)
-            if not show_line:
-                continue
-
-            # 1) 处理配对型流程（先检查end，再检查start）
-            if paired_defs:
-                # 结束关键词
-                for p in paired_defs:
-                    name = str(p.get('name') or '').strip()
-                    end_kw = str(p.get('end') or '').strip()
-                    if not name or not end_kw:
-                        continue
-                    if end_kw and _matches(end_kw):
-                        matched_index = None
-                        for i in range(len(stack) - 1, -1, -1):
-                            if stack[i]['name'] == name:
-                                matched_index = i
-                                break
-                        if matched_index is None:
-                            out_lines.append(f"! 未匹配的结束: {name} | {show_line}")
-                        else:
-                            for j in range(len(stack) - 1, matched_index, -1):
-                                miss_name = stack[j]['name']
-                                indent = '  ' * j
-                                out_lines.append(f"{indent}! {miss_name} 缺少结束")
-                                stack.pop()
-                            level = matched_index
-                            indent = '  ' * level
-                            out_lines.append(f"{indent}- {name} END | {show_line}")
-                            stack.pop()
-
-                # 开始关键词
-                for p in paired_defs:
-                    name = str(p.get('name') or '').strip()
-                    start_kw = str(p.get('start') or '').strip()
-                    if not name or not start_kw:
-                        continue
-                    if start_kw and _matches(start_kw):
-                        level = len(stack)
-                        indent = '  ' * level
-                        out_lines.append(f"{indent}+ {name} START | {show_line}")
-                        stack.append({'name': name, 'end': str(p.get('end') or '').strip(), 'start_line': show_line})
-
-            # 2) 处理序列型流程
-            if seq_states:
-                for name, state in seq_states.items():
-                    steps = state['steps']
-                    idx = state['idx']
-                    if 0 <= idx < len(steps):
-                        expected = str(steps[idx])
-                        if expected and _matches(expected):
-                            indent = '  ' * idx
-                            out_lines.append(f"{indent}* {name} [{idx+1}/{len(steps)}] {expected} | {show_line}")
-                            state['idx'] += 1
-                            continue
-                    first = str(steps[0]) if steps else ''
-                    if first and _matches(first) and idx > 0:
-                        missing = steps[idx:]
-                        if missing:
-                            indent = '  ' * idx
-                            out_lines.append(f"{indent}! {name} 缺少: {' -> '.join(missing)}")
-                        out_lines.append(f"* {name} [1/{len(steps)}] {first} | {show_line}")
-                        state['idx'] = 1
-
-        # 文件结束后的收尾
-        for i, item in enumerate(stack):
-            indent = '  ' * i
-            out_lines.append(f"{indent}! {item['name']} 缺少结束")
-
-        for name, state in seq_states.items():
-            idx = state['idx']
-            steps = state['steps']
-            if 0 < idx < len(steps):
-                missing = steps[idx:]
-                indent = '  ' * idx
-                out_lines.append(f"{indent}! {name} 缺少: {' -> '.join(missing)}")
-
-        if not out_lines:
-            return html.P("未匹配到流程相关记录", className="text-muted text-center")
-
-        # 按行渲染：为未匹配/缺失项加红色，为不同流程添加专属颜色标识
-        line_components = []
-        for ln in out_lines:
-            is_error = ln.strip().startswith('! ')
-            style = {
-                'whiteSpace': 'pre',
-                'fontFamily': 'monospace',
-                'fontSize': '12px'
-            }
-            if is_error:
-                # Bootstrap danger 红色系
-                style.update({'color': '#d9534f', 'fontWeight': 'bold'})
-            else:
-                # 解析流程名称以应用对应颜色
-                flow_name = None
-                try:
-                    stripped = ln.lstrip()
-                    if stripped:
-                        marker = stripped[0]
-                        body = stripped[2:] if len(stripped) > 2 else ''
-                        if marker in ['+', '-']:
-                            # "+ {name} START | ..." 或 "- {name} END | ..."
-                            flow_name = body.split(' ', 1)[0] if body else None
-                        elif marker == '*':
-                            # "* {name} [i/n] step | ..."
-                            flow_name = body.split(' [', 1)[0] if body else None
-                except Exception:
-                    flow_name = None
-
-                if flow_name and flow_name in flow_colors:
-                    # 使用左侧彩色边框标识不同流程
-                    style.update({'borderLeft': f"4px solid {flow_colors[flow_name]}", 'paddingLeft': '6px'})
-
-            line_components.append(html.Div(ln, style=style))
-
-        return html.Div(line_components)
+        with open(temp_file, 'r', encoding=encoding, errors='replace') as f:
+            lines = []
+            for i, line in enumerate(f):
+                if i >= max_lines:
+                    break
+                lines.append(line)
+            return "".join(lines)
     except Exception as e:
-        print(f"构建流程视图失败: {e}")
-        return html.P(f"构建流程视图失败: {e}", className="text-danger text-center")
+        print(f"[AI流程] 读取过滤结果失败: {e}")
+        return None
+
+
+def ai_analyze_flow_status(filtered_text, config_group, config_files):
+    """调用 AI 分析过滤后日志中的流程运行状态。
+    返回 dict: {"response": str, "prompt": str, "input_file": str} 或 None"""
+    if not filtered_text or not filtered_text.strip():
+        return None
+
+    import uuid
+    ensure_temp_dir()
+    input_file = os.path.join(TEMP_DIR, f"ai_flow_input_{uuid.uuid4().hex[:8]}.txt")
+    try:
+        with open(input_file, 'w', encoding='utf-8') as f:
+            f.write(f"# LogFilter AI Flow Analysis Input\n")
+            if config_group:
+                f.write(f"# 配置组: {config_group}\n")
+            if config_files:
+                f.write(f"# 关联配置文件: {config_files}\n")
+            f.write(f"# 共 {len(filtered_text.splitlines())} 行\n\n")
+            f.write(filtered_text)
+    except Exception as e:
+        print(f"[AI流程] 写入临时文件失败: {e}")
+        return None
+
+    config_info = f"配置组: {config_group}" if config_group else "未选择配置组"
+    if config_files:
+        config_info += f"\n关联配置文件: {config_files}"
+
+    prompt = f"""你是一个日志流程分析专家。分析日志文件中的过滤后内容，识别其中的业务流程运行状态，并以 JSON 格式返回。
+
+{config_info}
+
+日志文件路径: {input_file}
+请使用 read_source_file 工具读取该文件，然后分析其中的日志内容。
+
+请严格按照以下 JSON 格式返回分析结果，只返回纯 JSON，不要包含 markdown 代码块标记:
+
+{{"flows": [
+  {{"name": "流程名称", "status": "normal", "reason": "状态说明",
+    "steps": [
+      {{"name": "步骤名称", "status": "normal", "detail": "匹配到的日志行摘要(10-30字)"}}
+    ]
+  }}
+]}}
+
+状态取值规则:
+- normal: 步骤正常完成，无报错
+- abnormal: 步骤出现 error/fail/exception 等错误
+- warning: 步骤出现 timeout/warning/retry 等异常但不致命
+
+如果日志中无明显可识别的业务流程，返回 {{"flows": []}}。"""
+    try:
+        response = _run_free_code_text_task(None, prompt, timeout=120)
+        return {"response": response, "prompt": prompt, "input_file": input_file}
+    except Exception as e:
+        print(f"[AI流程] AI 分析调用失败: {e}")
+        return None
+
+
+def _extract_json_block(text):
+    """从文本中提取第一个完整的 JSON 对象（支持嵌套大括号）"""
+    text = text.strip()
+    # 去掉 markdown 代码块包裹
+    if text.startswith("```"):
+        lines = text.split("\n")
+        clean = []
+        in_code = False
+        for line in lines:
+            if line.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                clean.append(line)
+        text = "\n".join(clean).strip()
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i+1]
+    return None
+
+
+def parse_ai_flow_response(response_text):
+    """解析 AI 返回的流程 JSON 数据"""
+    if not response_text or not response_text.strip():
+        return None
+    block = _extract_json_block(response_text)
+    if not block:
+        return None
+    try:
+        data = json.loads(block)
+        if isinstance(data, dict) and "flows" in data:
+            return data
+        return {"flows": []}
+    except json.JSONDecodeError:
+        return None
+
+
+def render_flow_chart(flow_data):
+    """将 AI 分析的流程数据渲染为可视化流程图"""
+    if not flow_data or not isinstance(flow_data, dict):
+        return html.Div("AI 分析未返回有效数据", className="text-muted text-center py-3")
+
+    flows = flow_data.get("flows", [])
+    if not flows:
+        return html.Div("未检测到明显的业务流程", className="text-muted text-center py-3")
+
+    STATUS_MAP = {
+        "normal":    {"bg": "#d4edda", "border": "#28a745", "text": "#155724", "badge": "success", "label": "正常"},
+        "abnormal":  {"bg": "#f8d7da", "border": "#dc3545", "text": "#721c24", "badge": "danger",  "label": "异常"},
+        "warning":   {"bg": "#fff3cd", "border": "#ffc107", "text": "#856404", "badge": "warning", "label": "警告"},
+        "unknown":   {"bg": "#e2e3e5", "border": "#6c757d", "text": "#383d41", "badge": "sec",     "label": "未知"},
+    }
+
+    def _status_style(s):
+        return STATUS_MAP.get(s, STATUS_MAP["unknown"])
+
+    cards = []
+    for flow in flows:
+        name = flow.get("name", "未知流程") or "未知流程"
+        status = flow.get("status", "unknown") or "unknown"
+        reason = (flow.get("reason") or "").strip()
+        s = _status_style(status)
+        steps = flow.get("steps") or []
+
+        step_nodes = []
+        for i, step in enumerate(steps):
+            sn = (step.get("name") or f"步骤{i+1}").strip()
+            ss = (step.get("status") or "unknown").strip()
+            sd = (step.get("detail") or "").strip()
+            ts = _status_style(ss)
+
+            node = html.Div([
+                html.Div(sn, style={"fontWeight": 600, "fontSize": "13px", "lineHeight": "1.3"}),
+                html.Div(sd, style={"fontSize": "11px", "color": "#555", "marginTop": "3px",
+                                     "maxWidth": "220px", "overflow": "hidden",
+                                     "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+                html.Div([
+                    html.Span(f"● {ts['label']}", style={"fontSize": "10px", "color": ts["text"]})
+                ], style={"marginTop": "4px"})
+            ], style={
+                "background": ts["bg"],
+                "border": f"2px solid {ts['border']}",
+                "borderRadius": "10px",
+                "padding": "8px 14px",
+                "display": "inline-flex",
+                "flexDirection": "column",
+                "minWidth": "120px",
+                "textAlign": "center",
+                "boxShadow": "0 1px 3px rgba(0,0,0,0.08)",
+            })
+
+            if i < len(steps) - 1:
+                step_nodes.append(node)
+                step_nodes.append(html.Span("→", style={
+                    "fontSize": "22px", "color": "#aaa",
+                    "margin": "0 6px", "verticalAlign": "middle",
+                    "fontWeight": 300
+                }))
+            else:
+                step_nodes.append(node)
+
+        header_children = [
+            html.Span(name, style={"fontWeight": 600, "fontSize": "14px"}),
+            html.Span(html.Small(f" ({ts['label']})"), style={"color": ts["text"], "fontSize": "12px", "marginLeft": "6px"}),
+        ]
+        if reason:
+            header_children.append(html.Span(f" — {reason}", style={
+                "fontSize": "12px", "color": s["text"], "marginLeft": "10px", "opacity": "0.85"
+            }))
+
+        cards.append(html.Div([
+            html.Div(header_children, style={
+                "background": s["bg"],
+                "padding": "8px 14px",
+                "borderBottom": f"2px solid {s['border']}",
+                "borderRadius": "8px 8px 0 0",
+                "display": "flex", "alignItems": "center", "flexWrap": "wrap",
+            }),
+            html.Div(
+                html.Div(step_nodes, style={
+                    "display": "flex", "flexWrap": "wrap",
+                    "alignItems": "center", "gap": "2px",
+                    "padding": "12px 14px"
+                }) if steps else
+                html.Div("无具体步骤信息", className="text-muted small", style={"padding": "12px 14px"})
+            )
+        ], style={
+            "border": f"1px solid {s['border']}",
+            "borderRadius": "8px",
+            "marginBottom": "12px",
+            "boxShadow": "0 1px 4px rgba(0,0,0,0.06)",
+            "overflow": "hidden"
+        }))
+
+    return html.Div([
+        html.Div(f"共检测到 {len(flows)} 个流程", style={
+            "fontSize": "12px", "color": "#888", "marginBottom": "10px"
+        }),
+        html.Div(cards)
+    ])
+
+
+# ---------- 原有流程视图（基于 flows.json）----------
+
+def build_flows_display(selected_log_file):
+    """流程视图：默认显示提示，点击上方 AI 按钮进行分析"""
+    return html.Div(
+        "点击上方「AI 流程状态分析」按钮进行流程分析",
+        className="text-muted text-center py-5",
+        style={"fontSize": "13px"}
+    )
 
 
 # ---------- 流程关键字设置 回调 ----------
