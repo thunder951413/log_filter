@@ -68,15 +68,16 @@
 
 .selected-log-file-display {
   display: inline-block;
-  max-width: 320px;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 5px 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #334155;
+  padding: 3px 10px;
+  border: 1px dashed #2563eb;
+  border-radius: 4px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
   vertical-align: middle;
 }
 

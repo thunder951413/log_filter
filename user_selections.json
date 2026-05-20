@@ -1,6 +1,8 @@
 {
-  "selected_log_file": "0230-CAM log_1.txt",
+  "selected_log_file": "logcat-after-powercycle-Failed.txt",
   "selected_strings": [],
-  "last_updated": "2026-05-20T16:03:09.589234",
-  "selected_config_files": []
+  "last_updated": "2026-05-20T16:16:23.351272",
+  "selected_config_files": [
+    "all"
+  ]
 }

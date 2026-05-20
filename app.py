@@ -3451,6 +3451,15 @@ app.layout = html.Div([
         
         # Tab1内容 - 日志过滤
         html.Div(id="tab-1-content", children=[
+            # 顶部居中的当前日志文件名
+            html.Div([
+                html.Span(
+                    id="selected-log-file-display",
+                    className="selected-log-file-display small",
+                    children="FILE: 未选择日志"
+                )
+            ], className="position-fixed", style={"top": "20px", "left": "50%", "transform": "translateX(-50%)", "zIndex": 1000, "maxWidth": "calc(100vw - 520px)"}),
+
             # 右上角固定按钮区域
             html.Div([
                 html.Div([
@@ -3469,11 +3478,6 @@ app.layout = html.Div([
                             size="sm",
                             outline=True,
                             className="me-2"
-                        ),
-                        html.Span(
-                            id="selected-log-file-display",
-                            className="selected-log-file-display text-muted small",
-                            children="未选择日志"
                         )
                     ], className="d-inline-flex align-items-center me-2 align-middle"),
                     html.Div([
@@ -3586,17 +3590,17 @@ app.layout = html.Div([
                                         dbc.Col([
                                             dbc.Tabs([
                                                 dbc.Tab(label="过滤结果", tab_id="filtered", children=[
-                                                    html.Div(id="log-filter-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"}),
+                                                    html.Div(id="log-filter-results", style={"minHeight": "calc(100vh - 430px)", "maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"}),
                                                     html.Div([
                                                         dbc.Progress(id="filter-progress-bar", value=0, striped=True, animated=True, className="my-2", style={"height": "8px", "minWidth": "200px"}),
                                                         html.Div(id="filter-progress-text", className="small text-muted mb-1")
                                                     ], id="filter-progress-footer", className="mt-1", style={"display": "none"})
                                                 ]),
                                                 dbc.Tab(label="源文件", tab_id="source", children=[
-                                                    html.Div(id="log-source-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                    html.Div(id="log-source-results", style={"minHeight": "calc(100vh - 430px)", "maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                 ]),
                                                 dbc.Tab(label="注释", tab_id="annotation", children=[
-                                                    html.Div(id="log-annotation-results", style={"maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                    html.Div(id="log-annotation-results", style={"minHeight": "calc(100vh - 430px)", "maxHeight": "calc(100vh - 300px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                 ]),
                                                 dbc.Tab(label="流程视图", tab_id="flows", children=[
                                                     html.Div([
@@ -3626,7 +3630,7 @@ app.layout = html.Div([
                                                             dbc.ModalFooter(dbc.Button("关闭", id="ai-flow-log-close-btn", className="ms-auto"))
                                                         ], id="ai-flow-log-modal", size="xl", scrollable=True, is_open=False),
                                                         html.Hr(style={"margin": "4px 0"}),
-                                                        html.Div(id="log-flows-results", style={"maxHeight": "calc(100vh - 380px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
+                                                        html.Div(id="log-flows-results", style={"minHeight": "calc(100vh - 500px)", "maxHeight": "calc(100vh - 380px)", "overflowY": "auto", "backgroundColor": "#f8f9fa", "padding": "10px", "border": "1px solid #dee2e6", "borderRadius": "5px", "fontFamily": "monospace", "fontSize": "12px"})
                                                     ])
                                                 ])
                                             ], id="display-mode-tabs", active_tab="filtered")
@@ -3674,8 +3678,8 @@ app.layout = html.Div([
                                         ], width=6)
                                     ], className="w-100"),
                                 ], width=12)
-                                    ])
-                                ], width=12)
+                                    ], style={"marginTop": "auto"})
+                                ], width=12, style={"display": "flex", "flexDirection": "column", "minHeight": "calc(100vh - 230px)"})
                             ], className="mb-3"),
                         ])
                     ])
@@ -4632,8 +4636,8 @@ def restore_config_selections(data_store_data, active_tab):
 )
 def render_selected_log_file_display(selected_log_file):
     if not selected_log_file:
-        return "未选择日志", ""
-    return selected_log_file, selected_log_file
+        return "FILE: 未选择日志", ""
+    return f"FILE: {selected_log_file}", selected_log_file
 
 @app.callback(
     [Output("log-picker-modal", "is_open", allow_duplicate=True),
