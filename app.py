@@ -3203,10 +3203,10 @@ def _create_file_list_table(log_files, current_dir=""):
             html.Td("目录" if is_dir else _format_size(file_size), className="align-middle text-muted small"),
             html.Td(file_mtime, className="align-middle text-muted small"),
             html.Td(
-                [] if is_dir else [
+                [
                     dbc.Button(
                         [html.I(className="bi bi-pencil-square"), html.Span("重命名", className="ms-1")],
-                        id={"type": "rename-file-btn", "index": entry_path},
+                        id={"type": "rename-dir-btn" if is_dir else "rename-file-btn", "index": entry_path},
                         color="secondary",
                         size="sm",
                         outline=True,
@@ -3214,7 +3214,7 @@ def _create_file_list_table(log_files, current_dir=""):
                     ),
                     dbc.Button(
                         [html.I(className="bi bi-trash"), html.Span("删除", className="ms-1")],
-                        id={"type": "delete-file-btn", "index": entry_path},
+                        id={"type": "delete-dir-btn" if is_dir else "delete-file-btn", "index": entry_path},
                         color="danger",
                         size="sm",
                         outline=True
@@ -4464,6 +4464,7 @@ app.layout = html.Div([
         dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
         dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
         dcc.Store(id='rename-target-file', data=''),  # 存储待重命名的文件
+        dcc.Store(id='rename-target-kind', data='file'),  # file / dir
 
         dbc.Modal(
             [
@@ -8874,18 +8875,20 @@ def create_log_directory(n_clicks, dirname, current_dir):
 # 删除文件操作
 @app.callback(
     Output('uploaded-files-list', 'children', allow_duplicate=True),
-    [Input({'type': 'delete-file-btn', 'index': ALL}, 'n_clicks')],
+    [Input({'type': 'delete-file-btn', 'index': ALL}, 'n_clicks'),
+     Input({'type': 'delete-dir-btn', 'index': ALL}, 'n_clicks')],
     [State("log-manager-current-dir-store", "data")],
     prevent_initial_call=True
 )
-def delete_log_file(n_clicks, current_dir):
+def delete_log_file(file_clicks, dir_clicks, current_dir):
     # Determine which button was clicked
     ctx = callback_context
     if not ctx.triggered:
         return dash.no_update
 
     # If all n_clicks are None or 0, return
-    if all(x is None for x in n_clicks):
+    click_values = list(file_clicks or []) + list(dir_clicks or [])
+    if not any(click_values):
         return dash.no_update
         
     # Get the button ID
@@ -8895,11 +8898,15 @@ def delete_log_file(n_clicks, current_dir):
     
     try:
         button_id_dict = json.loads(button_id_str)
-        filename = button_id_dict['index']
-        filename, file_path = _resolve_log_file_path(filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
-        
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        target_path = button_id_dict['index']
+        if button_id_dict.get("type") == "delete-dir-btn":
+            _dirname, dir_path = _resolve_log_dir_path(target_path, must_exist=False)
+            if os.path.isdir(dir_path):
+                shutil.rmtree(dir_path)
+        else:
+            _filename, file_path = _resolve_log_file_path(target_path, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+            if os.path.exists(file_path):
+                os.remove(file_path)
             
         # 更新文件列表
         log_files = get_log_files()
@@ -8930,41 +8937,44 @@ def initialize_file_list(active_tab, current_dir):
 @app.callback(
     [Output("rename-file-modal", "is_open", allow_duplicate=True),
      Output("rename-target-file", "data"),
-     Output("rename-file-input", "value")],
+     Output("rename-file-input", "value"),
+     Output("rename-target-kind", "data")],
     [Input({"type": "rename-file-btn", "index": ALL}, "n_clicks"),
+     Input({"type": "rename-dir-btn", "index": ALL}, "n_clicks"),
      Input("rename-file-cancel-btn", "n_clicks")],
     [State("rename-file-modal", "is_open")],
     prevent_initial_call=True
 )
-def toggle_rename_modal(rename_clicks, cancel_click, is_open):
+def toggle_rename_modal(rename_clicks, rename_dir_clicks, cancel_click, is_open):
     ctx = callback_context
     if not ctx.triggered:
-        return is_open, dash.no_update, dash.no_update
+        return is_open, dash.no_update, dash.no_update, dash.no_update
         
     # Check if the trigger value is valid (not None)
     # This prevents the modal from opening when components are re-rendered (value is None)
     trigger_value = ctx.triggered[0].get("value")
     if trigger_value is None:
-        return is_open, dash.no_update, dash.no_update
+        return is_open, dash.no_update, dash.no_update, dash.no_update
         
     # Use rsplit to split from the right, ensuring we only split off the property name (n_clicks)
     # This handles cases where the filename in the ID contains dots
     trigger_id = ctx.triggered[0]["prop_id"].rsplit(".", 1)[0]
     
     # 检查是否是重命名按钮点击
-    if "rename-file-btn" in trigger_id:
+    if "rename-file-btn" in trigger_id or "rename-dir-btn" in trigger_id:
         try:
             button_id_dict = json.loads(trigger_id)
             filename = button_id_dict['index']
-            return True, filename, filename
+            kind = "dir" if button_id_dict.get("type") == "rename-dir-btn" else "file"
+            return True, filename, filename, kind
         except Exception as e:
-            return is_open, dash.no_update, dash.no_update
+            return is_open, dash.no_update, dash.no_update, dash.no_update
             
     # 取消按钮点击，关闭模态框
     if "rename-file-cancel-btn" in trigger_id:
-        return False, dash.no_update, dash.no_update
+        return False, dash.no_update, dash.no_update, dash.no_update
         
-    return is_open, dash.no_update, dash.no_update
+    return is_open, dash.no_update, dash.no_update, dash.no_update
 
 # 执行重命名操作
 @app.callback(
@@ -8973,11 +8983,12 @@ def toggle_rename_modal(rename_clicks, cancel_click, is_open):
      Output("rename-file-modal", "is_open", allow_duplicate=True)],
     [Input("rename-file-confirm-btn", "n_clicks")],
     [State("rename-target-file", "data"),
+     State("rename-target-kind", "data"),
      State("rename-file-input", "value"),
      State("log-manager-current-dir-store", "data")],
     prevent_initial_call=True
 )
-def execute_rename(n_clicks, target_filename, new_filename, current_dir):
+def execute_rename(n_clicks, target_filename, target_kind, new_filename, current_dir):
     if not n_clicks:
         return dash.no_update, dash.no_update, dash.no_update
         
@@ -8989,8 +9000,12 @@ def execute_rename(n_clicks, target_filename, new_filename, current_dir):
         return dash.no_update, dash.no_update, False
         
     try:
-        target_filename, old_path = _resolve_log_file_path(target_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
-        new_filename, new_path = _resolve_log_file_path(new_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+        if target_kind == "dir":
+            target_filename, old_path = _resolve_log_dir_path(target_filename, must_exist=False)
+            new_filename, new_path = _resolve_log_dir_path(new_filename, must_exist=False)
+        else:
+            target_filename, old_path = _resolve_log_file_path(target_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+            new_filename, new_path = _resolve_log_file_path(new_filename, must_exist=False, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
         
         # 检查原文件是否存在
         if not os.path.exists(old_path):
@@ -9006,7 +9021,8 @@ def execute_rename(n_clicks, target_filename, new_filename, current_dir):
         
         # 更新文件列表
         log_files = get_log_files()
-        return _create_file_list_table(log_files, current_dir), _toast_script(f"文件已重命名为 {new_filename}", "success"), False
+        label = "目录" if target_kind == "dir" else "文件"
+        return _create_file_list_table(log_files, current_dir), _toast_script(f"{label}已重命名为 {new_filename}", "success"), False
         
     except Exception as e:
         return dash.no_update, _toast_script(f"重命名失败: {str(e)}", "error"), True
@@ -9950,6 +9966,44 @@ def import_log_paths_api():
                 imported.extend(import_log_source_path(source_path))
             except Exception as exc:
                 failed.append({"path": str(source_path), "error": str(exc)})
+        return jsonify({
+            "ok": bool(imported) and not failed,
+            "imported": imported,
+            "count": len(imported),
+            "failed": failed
+        })
+    except Exception as exc:
+        from flask import jsonify
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.server.route('/api/upload-log-files', methods=['POST'])
+def upload_log_files_api():
+    """从浏览器拖拽上传日志文件，支持目录拖拽时携带相对路径。"""
+    try:
+        from flask import request, jsonify
+        ensure_log_dir()
+        files = request.files.getlist("files")
+        relative_paths = request.form.getlist("relative_paths")
+        if not files:
+            return jsonify({"ok": False, "error": "未收到文件"}), 400
+
+        imported = []
+        failed = []
+        for index, storage_file in enumerate(files):
+            raw_rel_path = relative_paths[index] if index < len(relative_paths) else ""
+            display_name = raw_rel_path or storage_file.filename or "log.log"
+            try:
+                display_name = _sanitize_import_relative_path(display_name)
+                if not display_name.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+                    continue
+                filename, dest_path = _build_available_log_filename(display_name)
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                storage_file.save(dest_path)
+                imported.append(filename.replace(os.sep, "/"))
+            except Exception as exc:
+                failed.append({"path": display_name, "error": str(exc)})
+
         return jsonify({
             "ok": bool(imported) and not failed,
             "imported": imported,

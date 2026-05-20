@@ -1,10 +1,6 @@
 {
-  "selected_log_file": "tcl_log/kmsg_boot.txt",
+  "selected_log_file": "0230-CAM log_1.txt",
   "selected_strings": [],
-  "last_updated": "2026-05-20T10:47:33.486307",
-  "selected_config_files": [
-    "CI_RAW",
-    "CI_PIN",
-    "CI_ITEMS"
-  ]
+  "last_updated": "2026-05-20T16:03:09.589234",
+  "selected_config_files": []
 }

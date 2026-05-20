@@ -1,14 +1,10 @@
 [
   {
-    "text": "ci",
+    "text": "aml_ci_mod_init",
     "type": "keep"
   },
   {
-    "text": "cam",
-    "type": "keep"
-  },
-  {
-    "text": "dvb",
+    "text": "ci_bus",
     "type": "keep"
   }
 ]
