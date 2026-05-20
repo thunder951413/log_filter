@@ -16,6 +16,8 @@ import time
 import threading
 import io
 import zipfile
+import tarfile
+import tempfile
 import uuid
 from bisect import bisect_left
 from datetime import datetime
@@ -586,6 +588,7 @@ DATA_FILE = 'string_data.json'
 ANNOTATIONS_FILE = 'keyword_annotations.json'
 FLOWS_CONFIG_FILE = 'flows.json'
 ALLOWED_LOG_EXTENSIONS = ('.txt', '.log', '.text')
+ALLOWED_ARCHIVE_EXTENSIONS = ('.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.7z')
 
 # 获取所有配置文件
 CONFIG_DIR = os.path.join(os.getcwd(), 'configs')
@@ -1435,19 +1438,40 @@ def get_log_dir_path():
     ensure_log_dir()
     return os.path.abspath(LOG_DIR)
 
-def _normalize_log_filename(filename):
+def _normalize_log_relative_path(filename, require_file=False):
     value = str(filename or "").strip()
     if not value:
-        raise ValueError("文件名不能为空")
+        raise ValueError("路径不能为空")
     if "\x00" in value:
-        raise ValueError("文件名包含非法字符")
+        raise ValueError("路径包含非法字符")
     if os.path.isabs(value):
-        raise ValueError("文件名不能是绝对路径")
-    if "/" in value or "\\" in value:
-        raise ValueError("文件名不能包含路径分隔符")
-    normalized = os.path.basename(value)
-    if normalized in {"", ".", ".."}:
+        raise ValueError("路径不能是绝对路径")
+
+    parts = []
+    for part in value.replace("\\", "/").split("/"):
+        part = part.strip()
+        if not part:
+            continue
+        if part in {".", ".."}:
+            raise ValueError("路径不能包含 . 或 ..")
+        cleaned = re.sub(r'[\x00-\x1f<>:"|?*]+', "_", part).strip(" .")
+        if not cleaned:
+            raise ValueError("路径包含无效名称")
+        parts.append(cleaned)
+
+    if not parts:
+        raise ValueError("路径无效")
+    if require_file and len(parts[-1]) == 0:
         raise ValueError("文件名无效")
+    return "/".join(parts)
+
+def _normalize_log_filename(filename):
+    return _normalize_log_relative_path(filename, require_file=True)
+
+def _normalize_log_dirname(dirname):
+    normalized = _normalize_log_relative_path(dirname)
+    if normalized.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+        raise ValueError("目录名不能使用日志文件扩展名")
     return normalized
 
 def _ensure_allowed_log_extension(filename):
@@ -1470,17 +1494,161 @@ def _resolve_log_file_path(filename, must_exist=False, allowed_extensions=None):
         raise FileNotFoundError(f"日志文件不存在: {normalized}")
     return normalized, file_path
 
+def _resolve_log_dir_path(dirname, must_exist=False):
+    normalized = _normalize_log_dirname(dirname)
+    log_dir = get_log_dir_path()
+    dir_path = os.path.abspath(os.path.join(log_dir, normalized))
+    if os.path.commonpath([log_dir, dir_path]) != log_dir:
+        raise ValueError("日志目录路径无效")
+    if must_exist and not os.path.isdir(dir_path):
+        raise FileNotFoundError(f"日志目录不存在: {normalized}")
+    return normalized, dir_path
+
 def _build_available_log_filename(filename):
     normalized = _ensure_allowed_log_extension(filename)
-    stem, ext = os.path.splitext(normalized)
+    parent = os.path.dirname(normalized)
+    stem, ext = os.path.splitext(os.path.basename(normalized))
     candidate = normalized
     counter = 1
     while True:
         _, candidate_path = _resolve_log_file_path(candidate, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
         if not os.path.exists(candidate_path):
             return candidate, candidate_path
-        candidate = f"{stem}_{counter}{ext}"
+        candidate_name = f"{stem}_{counter}{ext}"
+        candidate = os.path.join(parent, candidate_name) if parent else candidate_name
         counter += 1
+
+def _has_allowed_archive_extension(filename):
+    value = str(filename or "").lower()
+    return value.endswith(ALLOWED_ARCHIVE_EXTENSIONS)
+
+def _sanitize_import_filename(filename):
+    value = re.sub(r'[\x00-\x1f<>:"|?*\\/]+', "_", str(filename or "").strip())
+    value = value.strip(" .")
+    return value or "log.log"
+
+def _sanitize_import_relative_path(path_value):
+    try:
+        return _normalize_log_relative_path(path_value, require_file=True)
+    except Exception:
+        return _sanitize_import_filename(os.path.basename(str(path_value or "")))
+
+def _copy_log_file_to_logs(src_path, display_name=None):
+    if not os.path.isfile(src_path):
+        return None
+    name = _sanitize_import_relative_path(display_name) if display_name else _sanitize_import_filename(os.path.basename(src_path))
+    if not name.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+        return None
+    filename, dest_path = _build_available_log_filename(name)
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    shutil.copy2(src_path, dest_path)
+    return filename.replace(os.sep, "/")
+
+def _iter_log_files_in_dir(dir_path):
+    for root, dirs, files in os.walk(dir_path):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for filename in files:
+            if filename.startswith(".") or not filename.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+                continue
+            file_path = os.path.join(root, filename)
+            if os.path.isfile(file_path):
+                rel_path = os.path.relpath(file_path, dir_path)
+                yield file_path, rel_path
+
+def _import_log_dir(dir_path, prefix=""):
+    imported = []
+    for file_path, rel_path in _iter_log_files_in_dir(dir_path):
+        display_name = _sanitize_import_relative_path(os.path.join(prefix, rel_path) if prefix else rel_path)
+        copied = _copy_log_file_to_logs(file_path, display_name)
+        if copied:
+            imported.append(copied)
+    return imported
+
+def _safe_zip_members(zip_file):
+    for info in zip_file.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace("\\", "/")
+        parts = [part for part in name.split("/") if part]
+        if not parts or any(part == ".." for part in parts):
+            continue
+        if parts[-1].startswith(".") or not parts[-1].lower().endswith(ALLOWED_LOG_EXTENSIONS):
+            continue
+        yield info, os.path.join(*parts)
+
+def _safe_tar_members(tar_file):
+    for member in tar_file.getmembers():
+        if not member.isfile():
+            continue
+        name = member.name.replace("\\", "/")
+        parts = [part for part in name.split("/") if part]
+        if not parts or any(part == ".." for part in parts):
+            continue
+        if parts[-1].startswith(".") or not parts[-1].lower().endswith(ALLOWED_LOG_EXTENSIONS):
+            continue
+        yield member, os.path.join(*parts)
+
+def _find_7z_command():
+    for candidate in ("7z", "7za", "7zr"):
+        tool = shutil.which(candidate)
+        if tool:
+            return tool
+    return None
+
+def _import_archive_file(archive_path):
+    archive_name = _sanitize_import_filename(os.path.basename(archive_path))
+    imported = []
+    with tempfile.TemporaryDirectory(prefix="log_filter_archive_") as temp_dir:
+        lower_name = archive_name.lower()
+        if lower_name.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zip_file:
+                for info, rel_path in _safe_zip_members(zip_file):
+                    target_path = os.path.join(temp_dir, rel_path)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with zip_file.open(info) as src, open(target_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        elif lower_name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
+            with tarfile.open(archive_path, "r:*") as tar_file:
+                for member, rel_path in _safe_tar_members(tar_file):
+                    target_path = os.path.join(temp_dir, rel_path)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    src = tar_file.extractfile(member)
+                    if src is None:
+                        continue
+                    with src, open(target_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        elif lower_name.endswith(".7z"):
+            tool = _find_7z_command()
+            if not tool:
+                raise ValueError("未找到 7z/7za/7zr，无法解压 7z 文件")
+            result = subprocess.run(
+                [tool, "x", "-y", f"-o{temp_dir}", archive_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=300
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise ValueError(f"7z 解压失败: {detail[:300]}")
+        else:
+            raise ValueError(f"不支持的压缩包类型: {archive_name}")
+        imported = _import_log_dir(temp_dir, prefix=os.path.splitext(archive_name)[0])
+    return imported
+
+def import_log_source_path(source_path):
+    if not source_path:
+        return []
+    source_path = os.path.abspath(str(source_path))
+    if os.path.isdir(source_path):
+        return _import_log_dir(source_path, prefix=os.path.basename(source_path))
+    if os.path.isfile(source_path):
+        if str(source_path).lower().endswith(ALLOWED_LOG_EXTENSIONS):
+            copied = _copy_log_file_to_logs(source_path)
+            return [copied] if copied else []
+        if _has_allowed_archive_extension(source_path):
+            return _import_archive_file(source_path)
+    return []
 
 def _parse_external_program_command(value):
     import shlex
@@ -1608,15 +1776,32 @@ def get_log_files():
     ensure_log_dir()
     try:
         if os.path.exists(LOG_DIR):
-            mtime = os.path.getmtime(LOG_DIR)
-            if _log_files_cache["mtime"] == mtime and _log_files_cache["data"] is not None:
+            signature = []
+            for root, dirs, files in os.walk(LOG_DIR):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                try:
+                    signature.append((os.path.relpath(root, LOG_DIR), os.path.getmtime(root)))
+                except OSError:
+                    pass
+                for file in files:
+                    if file.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+                        file_path = os.path.join(root, file)
+                        try:
+                            signature.append((os.path.relpath(file_path, LOG_DIR), os.path.getmtime(file_path)))
+                        except OSError:
+                            pass
+            signature = tuple(sorted(signature))
+            if _log_files_cache["mtime"] == signature and _log_files_cache["data"] is not None:
                 return _log_files_cache["data"]
-            log_files = [
-                file for file in os.listdir(LOG_DIR)
-                if file.lower().endswith(ALLOWED_LOG_EXTENSIONS)
-            ]
-            log_files = sorted(log_files)
-            _log_files_cache["mtime"] = mtime
+            log_files = []
+            for root, dirs, files in os.walk(LOG_DIR):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+                for file in files:
+                    if file.lower().endswith(ALLOWED_LOG_EXTENSIONS):
+                        rel_path = os.path.relpath(os.path.join(root, file), LOG_DIR)
+                        log_files.append(rel_path.replace(os.sep, "/"))
+            log_files = sorted(log_files, key=lambda item: item.lower())
+            _log_files_cache["mtime"] = signature
             _log_files_cache["data"] = log_files
             return log_files
     except Exception as e:
@@ -2843,94 +3028,362 @@ def _format_size(size_bytes):
     else:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
 
-def _create_file_list_table(log_files):
-    if not log_files:
-        return html.Div("暂无上传的文件", className="text-muted text-center p-3")
-    
-    # 预处理文件信息以便排序
-    file_info_list = []
+def _get_log_directories():
+    ensure_log_dir()
+    directories = []
+    try:
+        for root, dirs, _files in os.walk(LOG_DIR):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for dirname in dirs:
+                rel_path = os.path.relpath(os.path.join(root, dirname), LOG_DIR)
+                directories.append(rel_path.replace(os.sep, "/"))
+    except Exception:
+        pass
+    return sorted(directories, key=lambda item: item.lower())
+
+def _normalize_log_manager_dir(dirname):
+    if not dirname:
+        return ""
+    normalized = _normalize_log_dirname(dirname)
+    return normalized.replace("\\", "/")
+
+def _join_log_manager_path(current_dir, child_name):
+    current_dir = _normalize_log_manager_dir(current_dir)
+    child_name = _normalize_log_relative_path(child_name)
+    return f"{current_dir}/{child_name}" if current_dir else child_name
+
+def _parent_log_manager_dir(current_dir):
+    current_dir = _normalize_log_manager_dir(current_dir)
+    parent = os.path.dirname(current_dir).replace("\\", "/")
+    return "" if parent in {".", "/"} else parent
+
+def _build_log_manager_breadcrumbs(current_dir):
+    current_dir = _normalize_log_manager_dir(current_dir)
+    crumbs = [
+        dbc.Button(
+            [html.I(className="bi bi-house-door me-1"), "logs"],
+            id="log-dir-root-btn",
+            color="link",
+            size="sm",
+            className="p-0 text-decoration-none"
+        )
+    ]
+    if not current_dir:
+        return html.Div(crumbs, className="d-flex align-items-center gap-2")
+
+    accum = []
+    for part in current_dir.split("/"):
+        accum.append(part)
+        path_value = "/".join(accum)
+        crumbs.append(html.Span("/", className="text-muted small"))
+        crumbs.append(
+            dbc.Button(
+                part,
+                id={"type": "enter-log-dir-btn", "index": path_value},
+                color="link",
+                size="sm",
+                className="p-0 text-decoration-none"
+            )
+        )
+    return html.Div(crumbs, className="d-flex align-items-center gap-2 flex-wrap")
+
+def _create_file_list_table(log_files, current_dir=""):
+    try:
+        current_dir = _normalize_log_manager_dir(current_dir)
+    except Exception:
+        current_dir = ""
+    log_dirs = _get_log_directories()
+    entries = []
     today = datetime.now().date()
-    
-    for file in log_files:
-        # Ensure file name is string and handle spaces
-        if not isinstance(file, str):
-            file = str(file)
-            
-        file_path = os.path.join(LOG_DIR, file)
-        if not os.path.exists(file_path):
+
+    for dirname in log_dirs:
+        dirname = str(dirname or "").replace("\\", "/")
+        parent = os.path.dirname(dirname).replace("\\", "/")
+        if parent == ".":
+            parent = ""
+        if parent != current_dir:
             continue
-            
         try:
-            stat = os.stat(file_path)
-            file_size = stat.st_size
-            mtime = stat.st_mtime
-            mtime_dt = datetime.fromtimestamp(mtime)
-            
-            file_info_list.append({
-                "name": file,
-                "size": file_size,
-                "mtime": mtime,
-                "mtime_dt": mtime_dt
+            _, dir_path = _resolve_log_dir_path(dirname, must_exist=True)
+            stat = os.stat(dir_path)
+            entries.append({
+                "name": os.path.basename(dirname),
+                "path": dirname,
+                "kind": "dir",
+                "size": None,
+                "mtime": stat.st_mtime,
+                "mtime_dt": datetime.fromtimestamp(stat.st_mtime),
             })
         except Exception:
             continue
-    
-    # 按修改时间降序排序（最新的在最上面）
-    file_info_list.sort(key=lambda x: x["mtime"], reverse=True)
-    
+
+    for file in log_files:
+        file = str(file or "").replace("\\", "/")
+        parent = os.path.dirname(file).replace("\\", "/")
+        if parent == ".":
+            parent = ""
+        if parent != current_dir:
+            continue
+        try:
+            _, file_path = _resolve_log_file_path(file, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+            if not os.path.exists(file_path):
+                continue
+            stat = os.stat(file_path)
+            entries.append({
+                "name": os.path.basename(file),
+                "path": file,
+                "kind": "file",
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "mtime_dt": datetime.fromtimestamp(stat.st_mtime),
+            })
+        except Exception:
+            continue
+
+    entries.sort(key=lambda item: (item["kind"] != "dir", item["name"].lower()))
+
+    toolbar = html.Div([
+        html.Div([
+            dbc.Button(
+                [html.I(className="bi bi-arrow-left-short me-1"), "上级"],
+                id="log-dir-up-btn",
+                color="secondary",
+                outline=True,
+                size="sm",
+                disabled=not bool(current_dir),
+                className="me-2"
+            ),
+            _build_log_manager_breadcrumbs(current_dir)
+        ], className="d-flex align-items-center flex-wrap gap-2"),
+        html.Div(
+            f"{len(entries)} 项",
+            className="text-muted small"
+        )
+    ], className="d-flex align-items-center justify-content-between px-3 py-2 border-bottom bg-white")
+
+    if not entries:
+        return html.Div([
+            toolbar,
+            html.Div([
+                html.I(className="bi bi-folder2-open", style={"fontSize": "2rem", "color": "#94a3b8"}),
+                html.Div("当前目录为空", className="fw-semibold mt-2"),
+                html.Div("可以创建目录、上传日志，或拖入外部文件夹。", className="text-muted small mt-1")
+            ], className="text-center py-5")
+        ], className="log-manager-panel")
+
     rows = []
-    for info in file_info_list:
-        file = info["name"]
+    for info in entries:
+        entry_path = info["path"]
+        filename = info["name"]
         file_size = info["size"]
         file_mtime = info["mtime_dt"].strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 判断是否是当天上传/修改的文件
-        row_class = ""
+        is_dir = info["kind"] == "dir"
+        row_class = "log-manager-row"
         if info["mtime_dt"].date() == today:
-            row_class = "table-warning"  # Bootstrap 警告色（浅黄）
-        
+            row_class += " log-manager-row-recent"
+
         rows.append(html.Tr([
-            html.Td(file, className="align-middle"),
-            html.Td(_format_size(file_size), className="align-middle"),
-            html.Td(file_mtime, className="align-middle"),
             html.Td(
-                [
+                dbc.Button(
+                    [
+                        html.I(className=("bi bi-folder-fill" if is_dir else "bi bi-file-earmark-text") + " me-2"),
+                        html.Span(filename, className="fw-semibold")
+                    ],
+                    id={"type": "enter-log-dir-btn", "index": entry_path} if is_dir else {"type": "log-file-name-static", "index": entry_path},
+                    color="link",
+                    size="sm",
+                    disabled=not is_dir,
+                    className="p-0 text-decoration-none log-manager-name"
+                ) if is_dir else html.Div([
+                    html.I(className="bi bi-file-earmark-text me-2 text-secondary"),
+                    html.Span(filename, className="fw-semibold")
+                ], className="d-flex align-items-center"),
+                className="align-middle"
+            ),
+            html.Td("目录" if is_dir else _format_size(file_size), className="align-middle text-muted small"),
+            html.Td(file_mtime, className="align-middle text-muted small"),
+            html.Td(
+                [] if is_dir else [
                     dbc.Button(
-                        "重命名", 
-                        id={"type": "rename-file-btn", "index": file}, 
-                        color="secondary", 
+                        [html.I(className="bi bi-pencil-square"), html.Span("重命名", className="ms-1")],
+                        id={"type": "rename-file-btn", "index": entry_path},
+                        color="secondary",
                         size="sm",
                         outline=True,
                         className="me-2"
                     ),
                     dbc.Button(
-                        "删除", 
-                        id={"type": "delete-file-btn", "index": file}, 
-                        color="danger", 
+                        [html.I(className="bi bi-trash"), html.Span("删除", className="ms-1")],
+                        id={"type": "delete-file-btn", "index": entry_path},
+                        color="danger",
                         size="sm",
                         outline=True
                     )
-                ], 
+                ],
                 className="align-middle"
             )
         ], className=row_class))
-    
-    return dbc.Table(
-        [
+
+    table = dbc.Table([
+        html.Thead(html.Tr([
+            html.Th("名称"),
+            html.Th("大小", style={"width": "120px"}),
+            html.Th("修改时间", style={"width": "180px"}),
+            html.Th("操作", style={"width": "190px"})
+        ])),
+        html.Tbody(rows)
+    ], hover=True, responsive=True, className="mb-0 log-manager-table")
+
+    return html.Div([toolbar, table], className="log-manager-panel")
+
+def _create_log_picker_browser(log_files, current_dir="", selected_file=""):
+    try:
+        current_dir = _normalize_log_manager_dir(current_dir)
+    except Exception:
+        current_dir = ""
+
+    selected_file = str(selected_file or "").replace("\\", "/")
+    log_dirs = _get_log_directories()
+    entries = []
+
+    for dirname in log_dirs:
+        dirname = str(dirname or "").replace("\\", "/")
+        parent = os.path.dirname(dirname).replace("\\", "/")
+        if parent == ".":
+            parent = ""
+        if parent != current_dir:
+            continue
+        try:
+            _, dir_path = _resolve_log_dir_path(dirname, must_exist=True)
+            stat = os.stat(dir_path)
+            entries.append({
+                "name": os.path.basename(dirname),
+                "path": dirname,
+                "kind": "dir",
+                "size": None,
+                "mtime_dt": datetime.fromtimestamp(stat.st_mtime),
+            })
+        except Exception:
+            continue
+
+    for file in log_files:
+        file = str(file or "").replace("\\", "/")
+        parent = os.path.dirname(file).replace("\\", "/")
+        if parent == ".":
+            parent = ""
+        if parent != current_dir:
+            continue
+        try:
+            _, file_path = _resolve_log_file_path(file, allowed_extensions=ALLOWED_LOG_EXTENSIONS)
+            if not os.path.exists(file_path):
+                continue
+            stat = os.stat(file_path)
+            entries.append({
+                "name": os.path.basename(file),
+                "path": file,
+                "kind": "file",
+                "size": stat.st_size,
+                "mtime_dt": datetime.fromtimestamp(stat.st_mtime),
+            })
+        except Exception:
+            continue
+
+    entries.sort(key=lambda item: (item["kind"] != "dir", item["name"].lower()))
+
+    crumbs = [
+        dbc.Button(
+            [html.I(className="bi bi-house-door me-1"), "logs"],
+            id="log-picker-root-btn",
+            color="link",
+            size="sm",
+            className="p-0 text-decoration-none"
+        )
+    ]
+    if current_dir:
+        accum = []
+        for part in current_dir.split("/"):
+            accum.append(part)
+            path_value = "/".join(accum)
+            crumbs.append(html.Span("/", className="text-muted small"))
+            crumbs.append(
+                dbc.Button(
+                    part,
+                    id={"type": "log-picker-enter-dir-btn", "index": path_value},
+                    color="link",
+                    size="sm",
+                    className="p-0 text-decoration-none"
+                )
+            )
+
+    toolbar = html.Div([
+        html.Div([
+            dbc.Button(
+                [html.I(className="bi bi-arrow-left-short me-1"), "上级"],
+                id="log-picker-up-btn",
+                color="secondary",
+                outline=True,
+                size="sm",
+                disabled=not bool(current_dir),
+                className="me-2"
+            ),
+            html.Div(crumbs, className="d-flex align-items-center gap-2 flex-wrap")
+        ], className="d-flex align-items-center flex-wrap gap-2"),
+        html.Div(f"{len(entries)} 项", className="text-muted small")
+    ], className="d-flex align-items-center justify-content-between px-3 py-2 border-bottom bg-white")
+
+    if not entries:
+        return html.Div([
+            toolbar,
+            html.Div([
+                html.I(className="bi bi-folder2-open", style={"fontSize": "2rem", "color": "#94a3b8"}),
+                html.Div("当前目录为空", className="fw-semibold mt-2")
+            ], className="text-center py-5")
+        ], className="log-manager-panel")
+
+    rows = []
+    for info in entries:
+        is_dir = info["kind"] == "dir"
+        path_value = info["path"]
+        is_selected = path_value == selected_file
+        row_class = "log-manager-row"
+        if is_selected:
+            row_class += " log-picker-row-selected"
+
+        name_cell = dbc.Button(
+            [
+                html.I(className=("bi bi-folder-fill" if is_dir else "bi bi-file-earmark-text") + " me-2"),
+                html.Span(info["name"], className="fw-semibold")
+            ],
+            id={"type": "log-picker-enter-dir-btn", "index": path_value} if is_dir else {"type": "log-picker-select-file-btn", "index": path_value},
+            color="link",
+            size="sm",
+            className="p-0 text-decoration-none log-manager-name"
+        )
+
+        rows.append(html.Tr([
+            html.Td(name_cell, className="align-middle"),
+            html.Td("目录" if is_dir else _format_size(info["size"]), className="align-middle text-muted small"),
+            html.Td(info["mtime_dt"].strftime('%Y-%m-%d %H:%M:%S'), className="align-middle text-muted small"),
+            html.Td(
+                "" if is_dir else (
+                    dbc.Badge("当前", color="success", pill=True) if is_selected else html.Span("点击名称选择", className="text-muted small")
+                ),
+                className="align-middle text-end"
+            )
+        ], className=row_class))
+
+    return html.Div([
+        toolbar,
+        dbc.Table([
             html.Thead(html.Tr([
-                html.Th("文件名"), 
-                html.Th("大小"), 
-                html.Th("修改时间"), 
-                html.Th("操作", style={"width": "180px"})
+                html.Th("名称"),
+                html.Th("大小", style={"width": "120px"}),
+                html.Th("修改时间", style={"width": "180px"}),
+                html.Th("", style={"width": "96px"})
             ])),
             html.Tbody(rows)
-        ],
-        hover=True,
-        striped=True,
-        bordered=True,
-        responsive=True,
-        className="mb-0"
-    )
+        ], hover=True, responsive=True, className="mb-0 log-manager-table")
+    ], className="log-manager-panel")
 
 # 初始数据
 data = load_data()
@@ -2947,6 +3400,8 @@ app.layout = html.Div([
     # Toast通知容器
     html.Div(id="toast-container", className="toast-container"),
     dcc.Store(id="group-selected-files-store", data=[]),
+    dcc.Store(id="log-manager-current-dir-store", data=""),
+    dcc.Store(id="log-picker-current-dir-store", data=""),
     dcc.Store(id="llm-source-dirs-store", data=llm_config.get("source_code_dirs", [])),
     dcc.Store(id="selected-log-lines-store", data=[]),
     dcc.Store(id="chat-selected-text-store", data=""),
@@ -3005,9 +3460,22 @@ app.layout = html.Div([
                             placeholder="选择日志文件...",
                             options=[],
                             clearable=False,
-                            style={"width": "250px", "fontSize": "12px", "textAlign": "left"}
+                            style={"display": "none"}
+                        ),
+                        dbc.Button(
+                            [html.I(className="bi bi-folder2-open me-1"), html.Span("选择日志文件")],
+                            id="open-log-picker-btn",
+                            color="primary",
+                            size="sm",
+                            outline=True,
+                            className="me-2"
+                        ),
+                        html.Span(
+                            id="selected-log-file-display",
+                            className="selected-log-file-display text-muted small",
+                            children="未选择日志"
                         )
-                    ], className="d-inline-block me-2 align-middle"),
+                    ], className="d-inline-flex align-items-center me-2 align-middle"),
                     html.Div([
                         dcc.Dropdown(
                             id="log-filter-config-group-selector",
@@ -3815,7 +4283,8 @@ app.layout = html.Div([
                                     id='upload-log-file',
                                     children=html.Div([
                                         html.I(className="bi bi-upload me-2", style={"fontSize": "1.5rem"}),
-                                        html.Span('拖拽文件到此处或点击选择文件', className="fw-bold")
+                                        html.Span('拖拽日志/压缩包到此处或点击选择文件', className="fw-bold"),
+                                        html.Small('支持 .txt/.log/.text、.zip/.tar/.7z；文件夹请直接拖入应用窗口', className="text-muted mt-2")
                                     ], className="d-flex flex-column align-items-center justify-content-center"),
                                     style={
                                         'width': '100%',
@@ -3831,10 +4300,43 @@ app.layout = html.Div([
                                         'transition': 'all 0.3s'
                                     },
                                     className="upload-area mb-3",
-                                    multiple=False,
-                                    accept='.txt,.log,.text'
+                                    multiple=True,
+                                    accept='.txt,.log,.text,.zip,.tar,.tgz,.tar.gz,.tar.bz2,.tbz2,.tar.xz,.txz,.7z'
                                 ),
                                 html.Div(id='upload-status', className="text-center small")
+                            ])
+                        ], className="mb-4 shadow-sm")
+                    ], width=12)
+                ]),
+
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Card([
+                            dbc.CardHeader([
+                                html.Div([
+                                    html.I(className="bi bi-folder-plus me-2"),
+                                    html.Span("日志目录")
+                                ], className="d-flex align-items-center")
+                            ]),
+                            dbc.CardBody([
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("新建目录:"),
+                                        dbc.Input(
+                                            id="new-log-dir-input",
+                                            type="text",
+                                            placeholder="例如: board_a/issue_20260520"
+                                        )
+                                    ], width=8),
+                                    dbc.Col([
+                                        dbc.Label("操作:", className="d-block invisible"),
+                                        dbc.Button("创建目录", id="create-log-dir-btn", color="primary", className="w-100")
+                                    ], width=2),
+                                    dbc.Col([
+                                        dbc.Label("状态:", className="d-block invisible"),
+                                        html.Div(id="create-log-dir-status", className="mt-2")
+                                    ], width=2)
+                                ])
                             ])
                         ], className="mb-4 shadow-sm")
                     ], width=12)
@@ -3962,6 +4464,23 @@ app.layout = html.Div([
         dcc.Store(id='keyword-annotations-store', data=load_annotations()),  # 存储关键字注释映射
         dcc.Store(id='flows-config-store', data=load_flows_config()),  # 存储流程关键字配置
         dcc.Store(id='rename-target-file', data=''),  # 存储待重命名的文件
+
+        dbc.Modal(
+            [
+                dbc.ModalHeader(dbc.ModalTitle("选择日志文件"), close_button=True),
+                dbc.ModalBody(
+                    html.Div(id="log-picker-browser", className="log-picker-browser"),
+                    style={"maxHeight": "72vh", "overflowY": "auto", "backgroundColor": "#f8fafc"}
+                ),
+                dbc.ModalFooter(
+                    dbc.Button("关闭", id="close-log-picker-btn", color="secondary", outline=True, className="ms-auto")
+                ),
+            ],
+            id="log-picker-modal",
+            is_open=False,
+            size="xl",
+            centered=True,
+        ),
         
         # 重命名文件模态框
         dbc.Modal(
@@ -4104,6 +4623,103 @@ def restore_string_selections(selected_log_file, active_tab, data_store_data):
 def restore_config_selections(data_store_data, active_tab):
     # 用户要求去掉启动时自动恢复，直接返回不更新
     return dash.no_update
+
+@app.callback(
+    [Output("selected-log-file-display", "children"),
+     Output("selected-log-file-display", "title")],
+    [Input("log-file-selector", "value")]
+)
+def render_selected_log_file_display(selected_log_file):
+    if not selected_log_file:
+        return "未选择日志", ""
+    return selected_log_file, selected_log_file
+
+@app.callback(
+    [Output("log-picker-modal", "is_open", allow_duplicate=True),
+     Output("log-picker-current-dir-store", "data", allow_duplicate=True),
+     Output("log-picker-browser", "children", allow_duplicate=True)],
+    [Input("open-log-picker-btn", "n_clicks")],
+    [State("log-file-selector", "value")],
+    prevent_initial_call=True
+)
+def open_log_picker(n_clicks, selected_log_file):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update
+    current_dir = ""
+    if selected_log_file:
+        try:
+            selected_log_file = _normalize_log_filename(selected_log_file)
+            current_dir = os.path.dirname(selected_log_file).replace("\\", "/")
+            if current_dir == ".":
+                current_dir = ""
+        except Exception:
+            current_dir = ""
+    log_files = get_log_files()
+    return True, current_dir, _create_log_picker_browser(log_files, current_dir, selected_log_file)
+
+@app.callback(
+    Output("log-picker-modal", "is_open", allow_duplicate=True),
+    [Input("close-log-picker-btn", "n_clicks")],
+    prevent_initial_call=True
+)
+def close_log_picker(n_clicks):
+    if n_clicks:
+        return False
+    return dash.no_update
+
+@app.callback(
+    [Output("log-picker-current-dir-store", "data"),
+     Output("log-picker-browser", "children")],
+    [Input({"type": "log-picker-enter-dir-btn", "index": ALL}, "n_clicks"),
+     Input("log-picker-up-btn", "n_clicks"),
+     Input("log-picker-root-btn", "n_clicks")],
+    [State("log-picker-current-dir-store", "data"),
+     State("log-file-selector", "value")],
+    prevent_initial_call=True
+)
+def navigate_log_picker(enter_clicks, up_clicks, root_clicks, current_dir, selected_log_file):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update
+
+    trigger = ctx.triggered[0]
+    if not trigger.get("value"):
+        return dash.no_update, dash.no_update
+
+    target_dir = current_dir or ""
+    trigger_id = trigger["prop_id"].rsplit(".", 1)[0]
+    try:
+        if trigger_id == "log-picker-up-btn":
+            target_dir = _parent_log_manager_dir(current_dir)
+        elif trigger_id == "log-picker-root-btn":
+            target_dir = ""
+        else:
+            target_dir = _normalize_log_manager_dir(json.loads(trigger_id)["index"])
+    except Exception:
+        target_dir = ""
+
+    log_files = get_log_files()
+    return target_dir, _create_log_picker_browser(log_files, target_dir, selected_log_file)
+
+@app.callback(
+    [Output("log-file-selector", "value", allow_duplicate=True),
+     Output("log-picker-modal", "is_open", allow_duplicate=True)],
+    [Input({"type": "log-picker-select-file-btn", "index": ALL}, "n_clicks")],
+    prevent_initial_call=True
+)
+def select_log_from_picker(select_clicks):
+    ctx = callback_context
+    if not ctx.triggered or not any(select_clicks or []):
+        return dash.no_update, dash.no_update
+    trigger = ctx.triggered[0]
+    if not trigger.get("value"):
+        return dash.no_update, dash.no_update
+    try:
+        trigger_id = trigger["prop_id"].rsplit(".", 1)[0]
+        selected_file = _normalize_log_filename(json.loads(trigger_id)["index"])
+        return selected_file, False
+    except Exception:
+        return dash.no_update, dash.no_update
 
 # 控制配置文件管理区域折叠/展开的回调
 @app.callback(
@@ -8138,50 +8754,131 @@ def save_ai_keyword_reviewed_config(n_clicks, checked_values, checkbox_ids, gene
 
 # 日志管理tab的回调函数
 
+@app.callback(
+    [Output("log-manager-current-dir-store", "data"),
+     Output("uploaded-files-list", "children", allow_duplicate=True)],
+    [Input({"type": "enter-log-dir-btn", "index": ALL}, "n_clicks"),
+     Input("log-dir-up-btn", "n_clicks"),
+     Input("log-dir-root-btn", "n_clicks")],
+    [State("log-manager-current-dir-store", "data")],
+    prevent_initial_call=True
+)
+def navigate_log_manager(enter_clicks, up_clicks, root_clicks, current_dir):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update, dash.no_update
+
+    trigger = ctx.triggered[0]
+    if not trigger.get("value"):
+        return dash.no_update, dash.no_update
+
+    target_dir = current_dir or ""
+    trigger_id = trigger["prop_id"].rsplit(".", 1)[0]
+    try:
+        if trigger_id == "log-dir-up-btn":
+            target_dir = _parent_log_manager_dir(current_dir)
+        elif trigger_id == "log-dir-root-btn":
+            target_dir = ""
+        else:
+            target_dir = _normalize_log_manager_dir(json.loads(trigger_id)["index"])
+    except Exception:
+        target_dir = ""
+
+    log_files = get_log_files()
+    return target_dir, _create_file_list_table(log_files, target_dir)
+
 # 文件上传处理
 @app.callback(
     [Output('upload-status', 'children'),
      Output('uploaded-files-list', 'children')],
     [Input('upload-log-file', 'contents')],
     [State('upload-log-file', 'filename'),
-     State('upload-log-file', 'last_modified')],
+     State('upload-log-file', 'last_modified'),
+     State("log-manager-current-dir-store", "data")],
     prevent_initial_call=True
 )
-def handle_file_upload(contents, filename, last_modified):
+def handle_file_upload(contents, filename, last_modified, current_dir):
     if contents is None:
         return dash.no_update, dash.no_update
     
     try:
-        # 确保logs目录存在
         ensure_log_dir()
+        content_items = contents if isinstance(contents, list) else [contents]
+        filename_items = filename if isinstance(filename, list) else [filename]
+        imported_files = []
+        failed_files = []
+
+        for item_contents, item_filename in zip(content_items, filename_items):
+            try:
+                content_type, content_string = item_contents.split(',', 1)
+                decoded = base64.b64decode(content_string)
+                item_filename = item_filename or "log.log"
+
+                if _has_allowed_archive_extension(item_filename):
+                    suffix = os.path.basename(item_filename)
+                    with tempfile.TemporaryDirectory(prefix="log_filter_upload_") as upload_temp_dir:
+                        temp_path = os.path.join(upload_temp_dir, _sanitize_import_filename(suffix))
+                        with open(temp_path, 'wb') as f:
+                            f.write(decoded)
+                        imported_files.extend(_import_archive_file(temp_path))
+                else:
+                    target_name = _join_log_manager_path(current_dir, item_filename) if current_dir else item_filename
+                    item_filename, file_path = _build_available_log_filename(target_name)
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, 'wb') as f:
+                        f.write(decoded)
+                    imported_files.append(item_filename)
+            except Exception as item_error:
+                failed_files.append(f"{item_filename}: {item_error}")
         
-        # 解析文件内容
-        content_type, content_string = contents.split(',')
-        decoded = base64.b64decode(content_string)
-        
-        filename, file_path = _build_available_log_filename(filename)
-        with open(file_path, 'wb') as f:
-            f.write(decoded)
-        
-        # 更新文件列表
         log_files = get_log_files()
-        file_list_table = _create_file_list_table(log_files)
-        
-        # 返回成功状态
-        status = dbc.Alert(f"文件 '{filename}' 已成功上传到logs目录！", color="success", dismissable=True)
+        file_list_table = _create_file_list_table(log_files, current_dir)
+
+        if imported_files and not failed_files:
+            status = dbc.Alert(f"已导入 {len(imported_files)} 个日志文件。", color="success", dismissable=True)
+        elif imported_files:
+            status = dbc.Alert(f"已导入 {len(imported_files)} 个日志文件，{len(failed_files)} 个文件失败：{'；'.join(failed_files[:3])}", color="warning", dismissable=True)
+        else:
+            detail = "；".join(failed_files[:3]) if failed_files else "未找到支持的日志文件"
+            status = dbc.Alert(f"文件上传失败: {detail}", color="danger", dismissable=True)
         return status, file_list_table
         
     except Exception as e:
         error_status = dbc.Alert(f"文件上传失败: {str(e)}", color="danger", dismissable=True)
         return error_status, dash.no_update
 
+@app.callback(
+    [Output("create-log-dir-status", "children"),
+     Output("uploaded-files-list", "children", allow_duplicate=True),
+     Output("new-log-dir-input", "value")],
+    [Input("create-log-dir-btn", "n_clicks")],
+    [State("new-log-dir-input", "value"),
+     State("log-manager-current-dir-store", "data")],
+    prevent_initial_call=True
+)
+def create_log_directory(n_clicks, dirname, current_dir):
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    try:
+        target_dir = _join_log_manager_path(current_dir, dirname)
+        normalized, dir_path = _resolve_log_dir_path(target_dir, must_exist=False)
+        if os.path.exists(dir_path) and not os.path.isdir(dir_path):
+            return dbc.Alert("同名文件已存在", color="danger", dismissable=True), dash.no_update, dash.no_update
+        os.makedirs(dir_path, exist_ok=True)
+        log_files = get_log_files()
+        return dbc.Alert(f"已创建目录: {normalized.replace(os.sep, '/')}", color="success", dismissable=True), _create_file_list_table(log_files, current_dir), ""
+    except Exception as e:
+        return dbc.Alert(f"创建目录失败: {str(e)}", color="danger", dismissable=True), dash.no_update, dash.no_update
+
 # 删除文件操作
 @app.callback(
     Output('uploaded-files-list', 'children', allow_duplicate=True),
     [Input({'type': 'delete-file-btn', 'index': ALL}, 'n_clicks')],
+    [State("log-manager-current-dir-store", "data")],
     prevent_initial_call=True
 )
-def delete_log_file(n_clicks):
+def delete_log_file(n_clicks, current_dir):
     # Determine which button was clicked
     ctx = callback_context
     if not ctx.triggered:
@@ -8206,7 +8903,7 @@ def delete_log_file(n_clicks):
             
         # 更新文件列表
         log_files = get_log_files()
-        return _create_file_list_table(log_files)
+        return _create_file_list_table(log_files, current_dir)
             
     except Exception as e:
         # 如果出错，暂不处理，或者返回原列表
@@ -8218,13 +8915,14 @@ def delete_log_file(n_clicks):
     [Output('uploaded-files-list', 'children', allow_duplicate=True),
      Output('external-program-path-input', 'value')],
     [Input('main-tabs', 'active_tab')],
+    [State("log-manager-current-dir-store", "data")],
     prevent_initial_call='initial_duplicate'
 )
-def initialize_file_list(active_tab):
+def initialize_file_list(active_tab, current_dir):
     if active_tab == "tab-3":
         log_files = get_log_files()
         ext_config = load_external_program_config()
-        return _create_file_list_table(log_files), ext_config.get("path", "")
+        return _create_file_list_table(log_files, current_dir), ext_config.get("path", "")
     
     return dash.no_update, dash.no_update
 
@@ -8275,10 +8973,11 @@ def toggle_rename_modal(rename_clicks, cancel_click, is_open):
      Output("rename-file-modal", "is_open", allow_duplicate=True)],
     [Input("rename-file-confirm-btn", "n_clicks")],
     [State("rename-target-file", "data"),
-     State("rename-file-input", "value")],
+     State("rename-file-input", "value"),
+     State("log-manager-current-dir-store", "data")],
     prevent_initial_call=True
 )
-def execute_rename(n_clicks, target_filename, new_filename):
+def execute_rename(n_clicks, target_filename, new_filename, current_dir):
     if not n_clicks:
         return dash.no_update, dash.no_update, dash.no_update
         
@@ -8302,11 +9001,12 @@ def execute_rename(n_clicks, target_filename, new_filename):
             return dash.no_update, _toast_script(f"文件名 {new_filename} 已存在", "error"), True
             
         # 重命名文件
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
         os.rename(old_path, new_path)
         
         # 更新文件列表
         log_files = get_log_files()
-        return _create_file_list_table(log_files), _toast_script(f"文件已重命名为 {new_filename}", "success"), False
+        return _create_file_list_table(log_files, current_dir), _toast_script(f"文件已重命名为 {new_filename}", "success"), False
         
     except Exception as e:
         return dash.no_update, _toast_script(f"重命名失败: {str(e)}", "error"), True
@@ -9231,6 +9931,34 @@ def create_temp_keyword_buttons(keywords):
         className="d-flex flex-wrap gap-1 justify-content-end",
         style={"width": "100%"}
     )
+
+
+@app.server.route('/api/import-log-paths', methods=['POST'])
+def import_log_paths_api():
+    """从 Electron 传入的本地路径导入日志文件、目录或压缩包。"""
+    try:
+        from flask import request, jsonify
+        data = request.get_json(silent=True) or {}
+        paths = data.get("paths") or []
+        if not isinstance(paths, list):
+            return jsonify({"ok": False, "error": "paths 必须是数组"}), 400
+        ensure_log_dir()
+        imported = []
+        failed = []
+        for source_path in paths:
+            try:
+                imported.extend(import_log_source_path(source_path))
+            except Exception as exc:
+                failed.append({"path": str(source_path), "error": str(exc)})
+        return jsonify({
+            "ok": bool(imported) and not failed,
+            "imported": imported,
+            "count": len(imported),
+            "failed": failed
+        })
+    except Exception as exc:
+        from flask import jsonify
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # API端点：获取日志窗口

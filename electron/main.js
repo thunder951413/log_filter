@@ -81,6 +81,45 @@ function getLogFilePath() {
   }
 }
 
+function postBackendJson(pathname, payload) {
+  return new Promise(function (resolve, reject) {
+    const body = Buffer.from(JSON.stringify(payload || {}), 'utf8')
+    const req = http.request({
+      hostname: HOST,
+      port: PORT,
+      path: pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': body.length
+      },
+      timeout: 300000
+    }, function (res) {
+      let data = ''
+      res.setEncoding('utf8')
+      res.on('data', function (chunk) { data += chunk })
+      res.on('end', function () {
+        try {
+          const parsed = data ? JSON.parse(data) : {}
+          if (res.statusCode >= 400) {
+            reject(new Error(parsed.error || ('HTTP ' + res.statusCode)))
+            return
+          }
+          resolve(parsed)
+        } catch (error) {
+          reject(error)
+        }
+      })
+    })
+    req.on('timeout', function () {
+      req.destroy(new Error('Backend request timed out'))
+    })
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
 function showLoadingScreen(win) {
   return win.loadURL(createInlinePage('LogFilter 正在启动', '正在启动后端服务。首次打开或冷启动通常需要 20~40 秒，请稍候。'))
 }
@@ -410,28 +449,22 @@ ipcMain.handle('openLogsDir', async function () { return shell.openPath(getAppSu
 ipcMain.handle('handleDropFiles', async function (_evt, files) {
   try {
     if (!files || !files.length) return { ok: false }
-    const destDir = getAppSubdir('logs')
-    const now = new Date()
-    function pad(n) { return String(n).padStart(2, '0') }
-    let opened = null
-    for (const src of files) {
-      const name = path.basename(src)
-      const ext = path.extname(name)
-      const base = path.basename(name, ext)
-      const stamped = `${base}_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}${ext}`
-      const dest = path.join(destDir, stamped)
-      try { fs.copyFileSync(src, dest) } catch (e) { continue }
-      opened = stamped
-      break
-    }
+    const result = await postBackendJson('/api/import-log-paths', { paths: files })
+    const imported = Array.isArray(result.imported) ? result.imported : []
+    const opened = imported[0] || null
     if (opened && mainWindow) {
       loadMainApp(mainWindow, '?open=' + encodeURIComponent(opened)).catch(function (error) {
-        log.error('Failed to open dropped file', error)
+        log.error('Failed to open dropped import', error)
       })
-      try { new Notification({ title: '日志复制成功', body: '已复制并重命名为: ' + opened }).show() } catch (_) {}
+      const failedCount = Array.isArray(result.failed) ? result.failed.length : 0
+      const body = failedCount
+        ? `已导入 ${imported.length} 个日志文件，${failedCount} 个路径失败`
+        : `已导入 ${imported.length} 个日志文件`
+      try { new Notification({ title: '日志导入完成', body }).show() } catch (_) {}
     }
-    return { ok: !!opened, file: opened }
+    return { ok: !!opened, file: opened, imported, failed: result.failed || [] }
   } catch (err) {
+    log.error('Failed to import dropped paths', err)
     return { ok: false }
   }
 })
@@ -439,21 +472,25 @@ ipcMain.handle('handleDropFiles', async function (_evt, files) {
 ipcMain.handle('handleDropBinary', async function (_evt, payload) {
   try {
     if (!payload || !payload.data) return { ok: false }
-    const destDir = getAppSubdir('logs')
     const now = new Date()
     function pad(n) { return String(n).padStart(2, '0') }
     const name = (payload.name || 'log.txt')
     const ext = path.extname(name)
     const base = path.basename(name, ext)
     const stamped = `${base}_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}${ext || '.log'}`
-    const dest = path.join(destDir, stamped)
-    try { fs.writeFileSync(dest, Buffer.from(payload.data)) } catch (e) { return { ok: false } }
-    if (mainWindow) {
-      loadMainApp(mainWindow, '?open=' + encodeURIComponent(stamped)).catch(function (error) {
+    const tempDir = path.join(app.getPath('temp'), 'log-filter-drop')
+    ensureDir(tempDir)
+    const tempPath = path.join(tempDir, stamped)
+    try { fs.writeFileSync(tempPath, Buffer.from(payload.data)) } catch (e) { return { ok: false } }
+    const result = await postBackendJson('/api/import-log-paths', { paths: [tempPath] })
+    const imported = Array.isArray(result.imported) ? result.imported : []
+    const opened = imported[0] || null
+    if (opened && mainWindow) {
+      loadMainApp(mainWindow, '?open=' + encodeURIComponent(opened)).catch(function (error) {
         log.error('Failed to open dropped binary', error)
       })
-      try { new Notification({ title: '日志复制成功', body: '已复制并重命名为: ' + stamped }).show() } catch (_) {}
+      try { new Notification({ title: '日志导入完成', body: `已导入 ${imported.length} 个日志文件` }).show() } catch (_) {}
     }
-    return { ok: true, file: stamped }
+    return { ok: !!opened, file: opened, imported, failed: result.failed || [] }
   } catch (err) { return { ok: false } }
 })

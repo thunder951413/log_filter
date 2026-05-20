@@ -1,14 +1,14 @@
 [
   {
-    "text": "STB_DPStartDecodingByTrackSelectFlag",
+    "text": "ci",
     "type": "keep"
   },
   {
-    "text": "STB_DPStartDecoding",
+    "text": "cam",
     "type": "keep"
   },
   {
-    "text": "STB_AVStartAudioDecoding",
+    "text": "dvb",
     "type": "keep"
   }
 ]

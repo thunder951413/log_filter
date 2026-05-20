@@ -1,0 +1,109 @@
+.log-manager-panel {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.log-manager-table {
+  color: #111827;
+}
+
+.log-manager-table thead th {
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  padding: 10px 14px;
+}
+
+.log-manager-table tbody td {
+  border-color: #edf2f7;
+  padding: 10px 14px;
+  vertical-align: middle;
+}
+
+.log-manager-row {
+  background: #ffffff;
+}
+
+.log-manager-row:hover {
+  background: #f8fafc;
+}
+
+.log-manager-row-recent td:first-child {
+  box-shadow: inset 3px 0 0 #38bdf8;
+}
+
+.log-manager-name {
+  color: #0f172a;
+}
+
+.log-manager-name:hover {
+  color: #0f766e;
+}
+
+.log-manager-name .bi-folder-fill {
+  color: #f59e0b;
+}
+
+.log-manager-panel .btn-outline-secondary,
+.log-manager-panel .btn-outline-danger {
+  border-color: #d1d5db;
+  border-radius: 6px;
+}
+
+.log-manager-panel .btn-outline-secondary:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.log-manager-panel .btn-outline-danger:hover {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.selected-log-file-display {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+  vertical-align: middle;
+}
+
+.log-picker-browser .log-manager-panel {
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.log-picker-browser .log-manager-name:has(.bi-folder-fill) {
+  color: #0f766e;
+  background: #ecfdf5;
+  border-radius: 6px;
+  padding: 4px 8px !important;
+}
+
+.log-picker-browser .log-manager-name:has(.bi-folder-fill):hover {
+  color: #115e59;
+  background: #ccfbf1;
+}
+
+.log-picker-browser .log-manager-name .bi-folder-fill {
+  color: #14b8a6;
+}
+
+.log-picker-row-selected {
+  background: #ecfdf5;
+}
+
+.log-picker-row-selected:hover {
+  background: #dff8ed;
+}

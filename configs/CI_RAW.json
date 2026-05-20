@@ -5,12 +5,17 @@
     ],
     "filter": []
   },
-  "STBCICC": {
+  "CI_PIN": {
     "keep": [
       "STB_CINotifyPinEvent",
       "STB_CINotifyPinReply",
       "STB_CiHandlePinEvent",
-      "STB_CiCcSendPinPlayback",
+      "STB_CiCcSendPinPlayback"
+    ],
+    "filter": []
+  },
+  "STBCICC": {
+    "keep": [
       "STB_CiCcNotifyModuleRemove",
       "STB_CiCcNotifyModuleInsert",
       "STB_CINotifyURI",

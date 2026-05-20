@@ -1,0 +1,191 @@
+2026-05-13T06:54:18.368Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T06:54:18.369Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=2 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T06:55:30.340Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T06:55:30.341Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=2 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T06:56:06.644Z [OpenAI] message_start received: req=4b1b04e4 message_id=chatcmpl-9719d870e7fc5caa
+2026-05-13T06:56:06.644Z [OpenAI] content_block_start received: req=4b1b04e4 index=0 type=text
+2026-05-13T06:56:27.211Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-13T06:56:27.211Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_bf7700c543e04457812ff56f name=Read args_chars=91
+2026-05-13T06:56:27.211Z [OpenAI] content_block_stop received: req=4b1b04e4 index=0 has_block=yes
+2026-05-13T06:56:27.212Z [OpenAI] flushing assistant content block: req=4b1b04e4 reason=content_block_stop index=0 raw_type=text
+2026-05-13T06:56:27.212Z [OpenAI] flushed assistant content block: req=4b1b04e4 reason=content_block_stop index=0 types=text
+2026-05-13T06:56:27.212Z [OpenAI] content_block_start received: req=4b1b04e4 index=1 type=tool_use
+2026-05-13T06:56:27.463Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-13T06:56:27.572Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-13T06:56:27.572Z [OpenAI] content_block_stop received: req=4b1b04e4 index=1 has_block=yes
+2026-05-13T06:56:27.572Z [OpenAI] flushing assistant content block: req=4b1b04e4 reason=content_block_stop index=1 raw_type=tool_use
+2026-05-13T06:56:27.572Z [OpenAI] flushed assistant content block: req=4b1b04e4 reason=content_block_stop index=1 types=tool_use
+2026-05-13T06:56:27.572Z [Query] assistant tool_use blocks: count=1 names=Read
+2026-05-13T06:56:28.719Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T06:56:28.719Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=4 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T06:57:18.874Z [OpenAI] message_start received: req=b8ade436 message_id=chatcmpl-89c7265a4ed2476a
+2026-05-13T06:57:18.874Z [OpenAI] content_block_start received: req=b8ade436 index=0 type=text
+2026-05-13T06:57:28.002Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-13T06:57:28.002Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_59dc38a882494d0d8f0cb78b name=Read args_chars=91
+2026-05-13T06:57:28.002Z [OpenAI] content_block_stop received: req=b8ade436 index=0 has_block=yes
+2026-05-13T06:57:28.002Z [OpenAI] flushing assistant content block: req=b8ade436 reason=content_block_stop index=0 raw_type=text
+2026-05-13T06:57:28.002Z [OpenAI] flushed assistant content block: req=b8ade436 reason=content_block_stop index=0 types=text
+2026-05-13T06:57:28.003Z [OpenAI] content_block_start received: req=b8ade436 index=1 type=tool_use
+2026-05-13T06:57:28.251Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-13T06:57:28.363Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-13T06:57:28.363Z [OpenAI] content_block_stop received: req=b8ade436 index=1 has_block=yes
+2026-05-13T06:57:28.363Z [OpenAI] flushing assistant content block: req=b8ade436 reason=content_block_stop index=1 raw_type=tool_use
+2026-05-13T06:57:28.363Z [OpenAI] flushed assistant content block: req=b8ade436 reason=content_block_stop index=1 types=tool_use
+2026-05-13T06:57:28.363Z [Query] assistant tool_use blocks: count=1 names=Read
+2026-05-13T06:57:29.341Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T06:57:29.342Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=4 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T06:58:54.910Z [OpenAI] message_start received: req=c6116e33 message_id=chatcmpl-9d3df9ebe91c8730
+2026-05-13T06:58:54.910Z [OpenAI] content_block_start received: req=c6116e33 index=0 type=text
+2026-05-13T06:59:02.014Z [OpenAI] message_start received: req=88d34ad4 message_id=chatcmpl-96149a2d080cf07b
+2026-05-13T06:59:02.015Z [OpenAI] content_block_start received: req=88d34ad4 index=0 type=text
+2026-05-13T07:00:32.853Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T07:00:32.853Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=2 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T07:00:53.091Z [OpenAI] message_start received: req=ef9c6035 message_id=chatcmpl-a922eb8821466741
+2026-05-13T07:00:53.091Z [OpenAI] content_block_start received: req=ef9c6035 index=0 type=text
+2026-05-13T07:00:58.151Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-13T07:00:58.151Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_f238ca8220a84884a4adb20b name=Read args_chars=91
+2026-05-13T07:00:58.151Z [OpenAI] content_block_stop received: req=ef9c6035 index=0 has_block=yes
+2026-05-13T07:00:58.151Z [OpenAI] flushing assistant content block: req=ef9c6035 reason=content_block_stop index=0 raw_type=text
+2026-05-13T07:00:58.171Z [OpenAI] flushed assistant content block: req=ef9c6035 reason=content_block_stop index=0 types=text
+2026-05-13T07:00:58.171Z [OpenAI] content_block_start received: req=ef9c6035 index=1 type=tool_use
+2026-05-13T07:01:05.210Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-13T07:01:05.315Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-13T07:01:05.316Z [OpenAI] content_block_stop received: req=ef9c6035 index=1 has_block=yes
+2026-05-13T07:01:05.316Z [OpenAI] flushing assistant content block: req=ef9c6035 reason=content_block_stop index=1 raw_type=tool_use
+2026-05-13T07:01:05.316Z [OpenAI] flushed assistant content block: req=ef9c6035 reason=content_block_stop index=1 types=tool_use
+2026-05-13T07:01:05.316Z [Query] assistant tool_use blocks: count=1 names=Read
+2026-05-13T07:01:06.527Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-13T07:01:06.528Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=4 tools=19 tool_choice=auto max_tokens=8192
+2026-05-13T07:02:49.077Z [OpenAI] message_start received: req=f1020b67 message_id=chatcmpl-a7b06100e7b79ebd
+2026-05-13T07:02:49.077Z [OpenAI] content_block_start received: req=f1020b67 index=0 type=text
+2026-05-15T06:51:27.403Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:51:27.404Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=2 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:51:30.124Z [OpenAI] message_start received: req=29718ebd message_id=chatcmpl-b3867e66f004bab9
+2026-05-15T06:51:30.124Z [OpenAI] content_block_start received: req=29718ebd index=0 type=text
+2026-05-15T06:51:32.718Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-15T06:51:32.718Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_b1fcf11c7bea4c07aaa2743c name=Read args_chars=91
+2026-05-15T06:51:32.718Z [OpenAI] content_block_stop received: req=29718ebd index=0 has_block=yes
+2026-05-15T06:51:32.718Z [OpenAI] flushing assistant content block: req=29718ebd reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:51:32.718Z [OpenAI] flushed assistant content block: req=29718ebd reason=content_block_stop index=0 types=text
+2026-05-15T06:51:32.718Z [OpenAI] content_block_start received: req=29718ebd index=1 type=tool_use
+2026-05-15T06:51:32.913Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-15T06:51:33.034Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-15T06:51:33.034Z [OpenAI] content_block_stop received: req=29718ebd index=1 has_block=yes
+2026-05-15T06:51:33.034Z [OpenAI] flushing assistant content block: req=29718ebd reason=content_block_stop index=1 raw_type=tool_use
+2026-05-15T06:51:33.034Z [OpenAI] flushed assistant content block: req=29718ebd reason=content_block_stop index=1 types=tool_use
+2026-05-15T06:51:33.035Z [Query] assistant tool_use blocks: count=1 names=Read
+2026-05-15T06:51:33.040Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:51:33.040Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=4 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:51:35.956Z [OpenAI] message_start received: req=f38b3d5f message_id=chatcmpl-8c3631ce675e2202
+2026-05-15T06:51:35.956Z [OpenAI] content_block_start received: req=f38b3d5f index=0 type=text
+2026-05-15T06:51:49.472Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=stop tool_calls=0
+2026-05-15T06:51:49.590Z [OpenAI] finalizing deferred finish_reason=stop
+2026-05-15T06:51:49.590Z [OpenAI] content_block_stop received: req=f38b3d5f index=0 has_block=yes
+2026-05-15T06:51:49.590Z [OpenAI] flushing assistant content block: req=f38b3d5f reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:51:49.590Z [OpenAI] flushed assistant content block: req=f38b3d5f reason=content_block_stop index=0 types=text
+2026-05-15T06:51:49.591Z [Query] execution turn retry: provider=openai prompt="你是一个日志流程分析专家。分析日志文件中的过滤后内容，识别其中的业务流程运行状态，并以 JSON 格式返回。\n\n未选择配置组\n\n日志文件路径: temp/ai_flow_input_09ac2c47.txt\n请使用 read_source_file 工具读取该文件，然后分析其中的日志内容。\n\n请严格按照以下 JSON "
+2026-05-15T06:51:49.591Z [Query] forcing tool choice: type=any because previous execution turn ended without tool_use
+2026-05-15T06:51:49.592Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:51:49.592Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=6 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:51:50.064Z [OpenAI] message_start received: req=a2cad7be message_id=chatcmpl-ab7721e8ed77e7df
+2026-05-15T06:51:50.064Z [OpenAI] content_block_start received: req=a2cad7be index=0 type=text
+2026-05-15T06:52:03.214Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-15T06:52:03.214Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_f1ff081ff50a4933a20974a4 name=TodoWrite args_chars=357
+2026-05-15T06:52:03.215Z [OpenAI] content_block_stop received: req=a2cad7be index=0 has_block=yes
+2026-05-15T06:52:03.215Z [OpenAI] flushing assistant content block: req=a2cad7be reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:52:03.216Z [OpenAI] flushed assistant content block: req=a2cad7be reason=content_block_stop index=0 types=text
+2026-05-15T06:52:03.219Z [OpenAI] content_block_start received: req=a2cad7be index=1 type=tool_use
+2026-05-15T06:52:03.407Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-15T06:52:03.519Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-15T06:52:03.519Z [OpenAI] content_block_stop received: req=a2cad7be index=1 has_block=yes
+2026-05-15T06:52:03.519Z [OpenAI] flushing assistant content block: req=a2cad7be reason=content_block_stop index=1 raw_type=tool_use
+2026-05-15T06:52:03.519Z [OpenAI] flushed assistant content block: req=a2cad7be reason=content_block_stop index=1 types=tool_use
+2026-05-15T06:52:03.520Z [Query] assistant tool_use blocks: count=1 names=TodoWrite
+2026-05-15T06:52:03.523Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:52:03.523Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=8 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:52:04.052Z [OpenAI] message_start received: req=7bc1d749 message_id=chatcmpl-98173c2f395455b0
+2026-05-15T06:52:04.052Z [OpenAI] content_block_start received: req=7bc1d749 index=0 type=text
+2026-05-15T06:52:20.303Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-15T06:52:20.303Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_c7bd86962b0e449990c093ac name=TodoWrite args_chars=355
+2026-05-15T06:52:20.303Z [OpenAI] content_block_stop received: req=7bc1d749 index=0 has_block=yes
+2026-05-15T06:52:20.303Z [OpenAI] flushing assistant content block: req=7bc1d749 reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:52:20.303Z [OpenAI] flushed assistant content block: req=7bc1d749 reason=content_block_stop index=0 types=text
+2026-05-15T06:52:20.303Z [OpenAI] content_block_start received: req=7bc1d749 index=1 type=tool_use
+2026-05-15T06:52:20.492Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-15T06:52:20.604Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-15T06:52:20.604Z [OpenAI] content_block_stop received: req=7bc1d749 index=1 has_block=yes
+2026-05-15T06:52:20.604Z [OpenAI] flushing assistant content block: req=7bc1d749 reason=content_block_stop index=1 raw_type=tool_use
+2026-05-15T06:52:20.604Z [OpenAI] flushed assistant content block: req=7bc1d749 reason=content_block_stop index=1 types=tool_use
+2026-05-15T06:52:20.606Z [Query] assistant tool_use blocks: count=1 names=TodoWrite
+2026-05-15T06:52:20.608Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:52:20.608Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=10 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:52:21.241Z [OpenAI] message_start received: req=e6675c4d message_id=chatcmpl-a1e9e406ec62e5ea
+2026-05-15T06:52:21.241Z [OpenAI] content_block_start received: req=e6675c4d index=0 type=text
+2026-05-15T06:52:21.300Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=stop tool_calls=0
+2026-05-15T06:52:21.452Z [OpenAI] finalizing deferred finish_reason=stop
+2026-05-15T06:52:21.452Z [OpenAI] content_block_stop received: req=e6675c4d index=0 has_block=yes
+2026-05-15T06:52:21.452Z [OpenAI] flushing assistant content block: req=e6675c4d reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:52:21.452Z [OpenAI] flushed assistant content block: req=e6675c4d reason=content_block_stop index=0 types=text
+2026-05-15T06:52:21.453Z [Query] execution turn retry: provider=openai prompt="你是一个日志流程分析专家。分析日志文件中的过滤后内容，识别其中的业务流程运行状态，并以 JSON 格式返回。\n\n未选择配置组\n\n日志文件路径: temp/ai_flow_input_09ac2c47.txt\n请使用 read_source_file 工具读取该文件，然后分析其中的日志内容。\n\n请严格按照以下 JSON "
+2026-05-15T06:52:21.453Z [Query] forcing tool choice: type=any because previous execution turn ended without tool_use
+2026-05-15T06:52:21.453Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T06:52:21.454Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=12 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T06:52:22.180Z [OpenAI] message_start received: req=045b5af0 message_id=chatcmpl-8cb5470cc2939c63
+2026-05-15T06:52:22.180Z [OpenAI] content_block_start received: req=045b5af0 index=0 type=text
+2026-05-15T06:52:22.587Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=stop tool_calls=0
+2026-05-15T06:52:22.700Z [OpenAI] finalizing deferred finish_reason=stop
+2026-05-15T06:52:22.700Z [OpenAI] content_block_stop received: req=045b5af0 index=0 has_block=yes
+2026-05-15T06:52:22.700Z [OpenAI] flushing assistant content block: req=045b5af0 reason=content_block_stop index=0 raw_type=text
+2026-05-15T06:52:22.700Z [OpenAI] flushed assistant content block: req=045b5af0 reason=content_block_stop index=0 types=text
+2026-05-15T07:58:13.616Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T07:58:13.617Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=2 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T07:58:18.688Z [OpenAI] message_start received: req=dd68351b message_id=chatcmpl-b029c076c14f32a8
+2026-05-15T07:58:18.689Z [OpenAI] content_block_start received: req=dd68351b index=0 type=text
+2026-05-15T07:58:21.021Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-15T07:58:21.021Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_6c675bb89ff94815a37f4912 name=Read args_chars=91
+2026-05-15T07:58:21.021Z [OpenAI] content_block_stop received: req=dd68351b index=0 has_block=yes
+2026-05-15T07:58:21.021Z [OpenAI] flushing assistant content block: req=dd68351b reason=content_block_stop index=0 raw_type=text
+2026-05-15T07:58:21.021Z [OpenAI] flushed assistant content block: req=dd68351b reason=content_block_stop index=0 types=text
+2026-05-15T07:58:21.021Z [OpenAI] content_block_start received: req=dd68351b index=1 type=tool_use
+2026-05-15T07:58:21.663Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-15T07:58:21.773Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-15T07:58:21.773Z [OpenAI] content_block_stop received: req=dd68351b index=1 has_block=yes
+2026-05-15T07:58:21.773Z [OpenAI] flushing assistant content block: req=dd68351b reason=content_block_stop index=1 raw_type=tool_use
+2026-05-15T07:58:21.773Z [OpenAI] flushed assistant content block: req=dd68351b reason=content_block_stop index=1 types=tool_use
+2026-05-15T07:58:21.773Z [Query] assistant tool_use blocks: count=1 names=Read
+2026-05-15T07:58:22.812Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T07:58:22.812Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=4 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T07:58:26.776Z [OpenAI] message_start received: req=2825c5a8 message_id=chatcmpl-b081cd2297379fae
+2026-05-15T07:58:26.776Z [OpenAI] content_block_start received: req=2825c5a8 index=0 type=text
+2026-05-15T07:58:33.768Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=none tool_calls=1
+2026-05-15T07:58:33.768Z [OpenAI] tool call start: model=deepseek-chat index=0 id=call_47a589b86d1d4cdf974a0ec1 name=Grep args_chars=181
+2026-05-15T07:58:33.768Z [OpenAI] content_block_stop received: req=2825c5a8 index=0 has_block=yes
+2026-05-15T07:58:33.768Z [OpenAI] flushing assistant content block: req=2825c5a8 reason=content_block_stop index=0 raw_type=text
+2026-05-15T07:58:33.768Z [OpenAI] flushed assistant content block: req=2825c5a8 reason=content_block_stop index=0 types=text
+2026-05-15T07:58:33.769Z [OpenAI] content_block_start received: req=2825c5a8 index=1 type=tool_use
+2026-05-15T07:58:33.972Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=tool_calls tool_calls=0
+2026-05-15T07:58:34.086Z [OpenAI] finalizing deferred finish_reason=tool_calls
+2026-05-15T07:58:34.086Z [OpenAI] content_block_stop received: req=2825c5a8 index=1 has_block=yes
+2026-05-15T07:58:34.086Z [OpenAI] flushing assistant content block: req=2825c5a8 reason=content_block_stop index=1 raw_type=tool_use
+2026-05-15T07:58:34.086Z [OpenAI] flushed assistant content block: req=2825c5a8 reason=content_block_stop index=1 types=tool_use
+2026-05-15T07:58:34.086Z [Query] assistant tool_use blocks: count=1 names=Grep
+2026-05-15T07:58:34.093Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T07:58:34.094Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=6 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T07:58:40.332Z [OpenAI] message_start received: req=b58f08c5 message_id=chatcmpl-be04dfd768396095
+2026-05-15T07:58:40.332Z [OpenAI] content_block_start received: req=b58f08c5 index=0 type=text
+2026-05-15T07:59:22.679Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=stop tool_calls=0
+2026-05-15T07:59:22.798Z [OpenAI] finalizing deferred finish_reason=stop
+2026-05-15T07:59:22.798Z [OpenAI] content_block_stop received: req=b58f08c5 index=0 has_block=yes
+2026-05-15T07:59:22.798Z [OpenAI] flushing assistant content block: req=b58f08c5 reason=content_block_stop index=0 raw_type=text
+2026-05-15T07:59:22.798Z [OpenAI] flushed assistant content block: req=b58f08c5 reason=content_block_stop index=0 types=text
+2026-05-15T07:59:22.799Z [Query] execution turn retry: provider=openai prompt="你是一个日志流程分析专家。分析日志文件中的过滤后内容，识别其中的业务流程运行状态，并以 JSON 格式返回。\n\n未选择配置组\n\n日志文件路径: temp/ai_flow_input_17d90b1e.txt\n请使用 read_source_file 工具读取该文件，然后分析其中的日志内容。\n\n请严格按照以下 JSON "
+2026-05-15T07:59:22.800Z [Query] forcing tool choice: type=any because previous execution turn ended without tool_use
+2026-05-15T07:59:22.800Z [OpenAI] client config: baseURL=https://llm.amlogic.com/8d1b5b4c endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions apiKeySource=settings apiKey=1a6ab5...1a49
+2026-05-15T07:59:22.801Z [OpenAI] streaming request: model=deepseek-chat endpoint=https://llm.amlogic.com/8d1b5b4c/chat/completions messages=8 tools=19 tool_choice=auto max_tokens=8192
+2026-05-15T07:59:23.426Z [OpenAI] message_start received: req=e95077d6 message_id=chatcmpl-9f83d306bbc724b9
+2026-05-15T07:59:23.426Z [OpenAI] content_block_start received: req=e95077d6 index=0 type=text
+2026-05-15T08:00:20.174Z [OpenAI] streaming chunk: model=deepseek-chat finish_reason=stop tool_calls=0
+2026-05-15T08:00:20.293Z [OpenAI] finalizing deferred finish_reason=stop
+2026-05-15T08:00:20.293Z [OpenAI] content_block_stop received: req=e95077d6 index=0 has_block=yes
+2026-05-15T08:00:20.293Z [OpenAI] flushing assistant content block: req=e95077d6 reason=content_block_stop index=0 raw_type=text
+2026-05-15T08:00:20.293Z [OpenAI] flushed assistant content block: req=e95077d6 reason=content_block_stop index=0 types=text

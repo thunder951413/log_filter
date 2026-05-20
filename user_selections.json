@@ -1,8 +1,9 @@
 {
-  "selected_log_file": "logcat-CIPLUS1-3-LIC-0092-Failed.txt",
+  "selected_log_file": "tcl_log/kmsg_boot.txt",
   "selected_strings": [],
-  "last_updated": "2026-05-12T17:50:23.248097",
+  "last_updated": "2026-05-20T10:47:33.486307",
   "selected_config_files": [
+    "CI_RAW",
     "CI_PIN",
     "CI_ITEMS"
   ]

@@ -155,6 +155,11 @@
       "make ",
       "git ",
       "repo "
+    ],
+    "test": [
+      "test_string",
+      "test_string1",
+      "FindDataEntryByModule"
     ]
   }
 }
